@@ -1,10 +1,16 @@
 workflows:
   ios-workflow:
-    name: LifeVault iOS Build
+    name: LifeVault iOS Release
     max_build_duration: 60
     instance_type: mac_mini_m2
 
+    integrations:
+      app_store_connect: Codemagic
+
     environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.aliomer.lifevault
       node: latest
       xcode: latest
 
@@ -12,7 +18,7 @@ workflows:
       - name: Install dependencies
         script: |
           cd web
-          npm install
+          npm ci
 
       - name: Build web app
         script: |
@@ -27,16 +33,20 @@ workflows:
           fi
           npx cap sync ios
 
-      - name: Build unsigned iOS simulator app
+      - name: Apply iOS signing
         script: |
-          cd web/ios/App
-          xcodebuild \
-           -project App.xcodeproj \
-            -scheme App \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO
+          xcode-project use-profiles
+
+      - name: Build signed IPA
+        script: |
+          xcode-project build-ipa \
+            --project "$CM_BUILD_DIR/web/ios/App/App.xcodeproj" \
+            --scheme App
 
     artifacts:
-      - web/ios/App/build/Build/Products/Debug-iphonesimulator/*.app
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      app_store_connect:
+        auth: integration

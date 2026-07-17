@@ -20,10 +20,10 @@ export default function ForgotPassword() {
   };
 
   return (
-    <div className="flex min-h-dvh flex-col px-6 pt-8">
+    <div className="flex min-h-dvh flex-col px-6 pt-safe">
       <Link
         to="/signin"
-        className="-ml-2 mb-8 flex h-10 w-10 items-center justify-center rounded-full transition-colors hover:bg-secondary"
+        className="-ml-2 mb-8 mt-3 flex h-10 w-10 items-center justify-center rounded-full transition-colors hover:bg-secondary"
         aria-label="Back to sign in"
       >
         <ChevronLeft className="h-5 w-5" />

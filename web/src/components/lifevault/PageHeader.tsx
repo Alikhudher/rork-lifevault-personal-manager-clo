@@ -16,11 +16,11 @@ export function PageHeader({ title, subtitle, back, actions, className }: PageHe
   return (
     <header
       className={cn(
-        "sticky top-0 z-30 border-b border-border/60 bg-background/85 px-4 pb-3 pt-4 backdrop-blur-xl",
+        "sticky top-0 z-30 border-b border-border/60 bg-background/85 px-4 pb-3 pt-safe backdrop-blur-xl",
         className,
       )}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 pt-2">
         {back && (
           <button
             type="button"

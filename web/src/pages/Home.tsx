@@ -86,8 +86,8 @@ export default function Home() {
   return (
     <div className="animate-fade-in">
       {/* Header */}
-      <header className="flex items-center justify-between px-4 pb-2 pt-6">
-        <div className="flex items-center gap-3">
+      <header className="flex items-center justify-between px-4 pb-2 pt-safe">
+        <div className="flex items-center gap-3 pt-4">
           <Link
             to="/profile"
             className="flex h-11 w-11 items-center justify-center rounded-full bg-primary text-[14px] font-extrabold text-primary-foreground shadow-md shadow-primary/20"
@@ -104,7 +104,7 @@ export default function Home() {
         <Link
           to="/notifications"
           aria-label="Notifications"
-          className="relative flex h-11 w-11 items-center justify-center rounded-full bg-card shadow-sm ring-1 ring-border transition-transform active:scale-95"
+          className="relative mt-4 flex h-11 w-11 items-center justify-center rounded-full bg-card shadow-sm ring-1 ring-border transition-transform active:scale-95"
         >
           <Bell className="h-5 w-5" />
           {unreadCount > 0 && (

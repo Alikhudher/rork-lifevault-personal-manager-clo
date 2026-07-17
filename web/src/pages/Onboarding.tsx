@@ -35,7 +35,7 @@ export default function Onboarding() {
   return (
     <div className="flex min-h-dvh flex-col">
       {/* Hero */}
-      <div className="relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-gradient-to-b from-[hsl(219,60%,14%)] via-[hsl(218,57%,19%)] to-[hsl(216,52%,26%)] px-8 text-center">
+      <div className="relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-gradient-to-b from-[hsl(219,60%,14%)] via-[hsl(218,57%,19%)] to-[hsl(216,52%,26%)] px-8 pt-safe text-center">
         <div className="absolute -left-24 -top-24 h-64 w-64 rounded-full bg-white/5 blur-2xl" aria-hidden />
         <div className="absolute -bottom-32 -right-16 h-72 w-72 rounded-full bg-info/20 blur-3xl" aria-hidden />
 

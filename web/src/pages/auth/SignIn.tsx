@@ -42,8 +42,8 @@ export default function SignIn() {
   };
 
   return (
-    <div className="flex min-h-dvh flex-col px-6 pt-16">
-      <div className="mb-10">
+    <div className="flex min-h-dvh flex-col px-6 pt-safe">
+      <div className="mb-10 pt-10">
         <span className="mb-6 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/25">
           <Vault className="h-7 w-7" />
         </span>

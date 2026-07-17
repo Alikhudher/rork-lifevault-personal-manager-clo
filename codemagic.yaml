@@ -1,0 +1,42 @@
+workflows:
+  ios-workflow:
+    name: LifeVault iOS Build
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+
+    environment:
+      node: latest
+      xcode: latest
+
+    scripts:
+      - name: Install dependencies
+        script: |
+          cd web
+          npm install
+
+      - name: Build web app
+        script: |
+          cd web
+          npm run build
+
+      - name: Create and sync iOS project
+        script: |
+          cd web
+          if [ ! -d "ios" ]; then
+            npx cap add ios
+          fi
+          npx cap sync ios
+
+      - name: Build unsigned iOS simulator app
+        script: |
+          cd web/ios/App
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO
+
+    artifacts:
+      - web/ios/App/build/Build/Products/Debug-iphonesimulator/*.app

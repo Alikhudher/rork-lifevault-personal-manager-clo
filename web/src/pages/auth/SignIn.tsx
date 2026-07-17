@@ -8,12 +8,13 @@ import { Field } from "@/components/lifevault/FormSheet";
 import { useApp } from "@/context/AppContext";
 
 export default function SignIn() {
-  const { signIn, settings } = useApp();
+  const { signIn, signInWithBiometric, settings } = useApp();
   const navigate = useNavigate();
   const location = useLocation();
   const [email, setEmail] = useState<string>("");
   const [password, setPassword] = useState<string>("");
   const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [submitting, setSubmitting] = useState<boolean>(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,10 +22,23 @@ export default function SignIn() {
       toast.error("Enter your email and password");
       return;
     }
-    signIn(email.trim().toLowerCase());
-    toast.success("Welcome back!");
-    const from = (location.state as { from?: string } | null)?.from;
-    navigate(from ?? "/", { replace: true });
+    setSubmitting(true);
+    // Simulate a small network delay for realism.
+    window.setTimeout(() => {
+      const result = signIn(email.trim().toLowerCase(), password);
+      setSubmitting(false);
+      if (!result.ok) {
+        toast.error(
+          result.error === "wrong_password"
+            ? "Incorrect password. Please try again."
+            : "No account found with that email.",
+        );
+        return;
+      }
+      toast.success("Welcome back!");
+      const from = (location.state as { from?: string } | null)?.from;
+      navigate(from ?? "/", { replace: true });
+    }, 350);
   };
 
   return (
@@ -79,9 +93,10 @@ export default function SignIn() {
         <Button
           type="submit"
           size="lg"
+          disabled={submitting}
           className="h-[52px] w-full rounded-2xl text-[15px] font-bold shadow-lg shadow-primary/25 transition-transform active:scale-[0.98]"
         >
-          Sign In
+          {submitting ? "Signing in…" : "Sign In"}
         </Button>
 
         {settings.biometric && (
@@ -91,7 +106,11 @@ export default function SignIn() {
             size="lg"
             className="h-[52px] w-full rounded-2xl text-[15px] font-bold"
             onClick={() => {
-              signIn("mia.thompson@example.com");
+              const result = signInWithBiometric();
+              if (!result.ok) {
+                toast.error("No saved account to unlock. Please sign in with your password.");
+                return;
+              }
               toast.success("Unlocked with Face ID");
               navigate("/", { replace: true });
             }}

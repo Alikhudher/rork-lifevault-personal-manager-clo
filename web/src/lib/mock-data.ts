@@ -4,6 +4,7 @@ import type {
   Appointment,
   DeviceSession,
   Expense,
+  RegisteredAccount,
   Settings,
   Subscription,
   VaultDocument,
@@ -175,6 +176,20 @@ export function seedAppointments(): Appointment[] {
     { id: "apt_lease", title: "Lease renewal meeting", date: dayOffset(11), time: "17:30", location: "Ray White Surry Hills", notes: "Negotiate 12-month term.", reminder: "1 day before" },
     { id: "apt_haircut", title: "Haircut", date: dayOffset(13), time: "11:00", location: "Barber & Co, Newtown", notes: "", reminder: "1 hour before" },
     { id: "apt_accountant", title: "Tax planning — accountant", date: dayOffset(20), time: "10:00", location: "Video call (Zoom)", notes: "Prepare FY expense summary export.", reminder: "1 day before" },
+  ];
+}
+
+/** Demo account used for the mock auth flow. Password: "password123" */
+export function seedAccounts(): RegisteredAccount[] {
+  return [
+    {
+      email: "mia.thompson@example.com",
+      name: "Mia Thompson",
+      photo: null,
+      password: "password123",
+      createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 87).toISOString(),
+      emailVerified: true,
+    },
   ];
 }
 

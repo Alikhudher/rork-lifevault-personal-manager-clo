@@ -149,6 +149,24 @@ export interface DeviceSession {
   current?: boolean;
 }
 
+/**
+ * A registered account record stored in the account registry.
+ * Survives logout so credentials can always be validated.
+ * Stored only for the local mock auth flow — never do this in production.
+ */
+export interface RegisteredAccount {
+  email: string;
+  name: string;
+  /** Optional profile photo as a data URL or remote URL. */
+  photo: string | null;
+  /** Stored only for the local mock auth flow — never do this in production. */
+  password: string;
+  /** ISO datetime the account was created. */
+  createdAt: string;
+  /** Whether the email has been verified (mock). */
+  emailVerified: boolean;
+}
+
 export interface UserProfile {
   name: string;
   email: string;

@@ -4,10 +4,12 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
   DEFAULT_SETTINGS,
+  seedAccounts,
   seedAppointments,
   seedDocuments,
   seedExpenses,
@@ -21,6 +23,7 @@ import type {
   Appointment,
   DeviceSession,
   Expense,
+  RegisteredAccount,
   Settings,
   Subscription,
   UserProfile,
@@ -32,6 +35,10 @@ const STORAGE_KEY = "lifevault-state-v1";
 interface PersistedState {
   onboarded: boolean;
   user: UserProfile | null;
+  /** Email of the most recently signed-in account, used for Face ID unlock. */
+  lastEmail: string | null;
+  /** Persistent registry of registered accounts — survives logout. */
+  accounts: RegisteredAccount[];
   settings: Settings;
   documents: VaultDocument[];
   expenses: Expense[];
@@ -41,10 +48,17 @@ interface PersistedState {
   sessions: DeviceSession[];
 }
 
+export type AuthResult =
+  | { ok: true; error: null }
+  | { ok: false; error: "not_found" | "wrong_password" };
+
 interface AppContextValue extends PersistedState {
   completeOnboarding: () => void;
-  signIn: (email: string) => void;
-  signUp: (name: string, email: string, password?: string) => void;
+  /** Validates password against the account registry before signing in. */
+  signIn: (email: string, password: string) => AuthResult;
+  /** Convenience for Face ID unlock — skips password validation. */
+  signInWithBiometric: () => AuthResult;
+  signUp: (name: string, email: string, password: string) => AuthResult;
   signOut: () => void;
   deleteAccount: () => void;
   updateSettings: (patch: Partial<Settings>) => void;
@@ -81,6 +95,8 @@ function freshSeed(): PersistedState {
   return {
     onboarded: false,
     user: null,
+    lastEmail: null,
+    accounts: seedAccounts(),
     settings: DEFAULT_SETTINGS,
     documents: seedDocuments(),
     expenses: seedExpenses(),
@@ -102,6 +118,8 @@ function loadState(): PersistedState {
       ...parsed,
       settings: { ...seed.settings, ...parsed.settings, notifications: { ...seed.settings.notifications, ...parsed.settings?.notifications } },
       sessions: parsed.sessions && parsed.sessions.length > 0 ? parsed.sessions : seed.sessions,
+      accounts: parsed.accounts && parsed.accounts.length > 0 ? parsed.accounts : seed.accounts,
+      lastEmail: parsed.lastEmail ?? parsed.user?.email ?? null,
     };
   } catch (error) {
     console.error("Failed to load saved state, starting fresh", error);
@@ -109,8 +127,31 @@ function loadState(): PersistedState {
   }
 }
 
+/** Build a UserProfile session from a registered account. */
+function profileFromAccount(account: RegisteredAccount): UserProfile {
+  return {
+    name: account.name,
+    email: account.email,
+    photo: account.photo,
+    createdAt: account.createdAt,
+    password: account.password,
+    emailVerified: account.emailVerified,
+  };
+}
+
+function findAccount(accounts: RegisteredAccount[], email: string): RegisteredAccount | undefined {
+  return accounts.find((a) => a.email.toLowerCase() === email.toLowerCase());
+}
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<PersistedState>(() => loadState());
+
+  // Keep a synchronous ref to the latest state so auth methods can read
+  // accounts/user synchronously and return a result before React re-renders.
+  const stateRef = useRef<PersistedState>(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   useEffect(() => {
     try {
@@ -128,56 +169,104 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setState((s) => ({ ...s, onboarded: true }));
   }, []);
 
-  const signIn = useCallback((email: string) => {
-    setState((s) => ({
+  const signIn = useCallback((email: string, password: string): AuthResult => {
+    const normalized = email.trim().toLowerCase();
+    const s = stateRef.current;
+    const account = findAccount(s.accounts, normalized);
+    if (!account) {
+      return { ok: false, error: "not_found" };
+    }
+    if (account.password !== password) {
+      return { ok: false, error: "wrong_password" };
+    }
+    const next: PersistedState = {
       ...s,
       onboarded: true,
-      user: {
-        name: s.user?.name && s.user.email === email ? s.user.name : "Mia Thompson",
-        email,
-        photo: s.user?.photo ?? null,
-        createdAt: s.user?.createdAt ?? new Date(Date.now() - 1000 * 60 * 60 * 24 * 87).toISOString(),
-        password: s.user?.password ?? null,
-        emailVerified: s.user?.emailVerified ?? true,
-      },
-    }));
+      lastEmail: account.email,
+      user: profileFromAccount(account),
+    };
+    stateRef.current = next;
+    setState(next);
+    return { ok: true, error: null };
   }, []);
 
-  const signUp = useCallback((name: string, email: string, password?: string) => {
-    setState((s) => ({
+  const signInWithBiometric = useCallback((): AuthResult => {
+    const s = stateRef.current;
+    if (!s.lastEmail) {
+      return { ok: false, error: "not_found" };
+    }
+    const account = findAccount(s.accounts, s.lastEmail);
+    if (!account) {
+      return { ok: false, error: "not_found" };
+    }
+    const next: PersistedState = {
       ...s,
       onboarded: true,
-      user: {
-        name,
-        email,
-        photo: null,
-        createdAt: new Date().toISOString(),
-        password: password ?? null,
-        emailVerified: true,
-      },
-    }));
+      user: profileFromAccount(account),
+    };
+    stateRef.current = next;
+    setState(next);
+    return { ok: true, error: null };
+  }, []);
+
+  const signUp = useCallback((name: string, email: string, password: string): AuthResult => {
+    const normalized = email.trim().toLowerCase();
+    const s = stateRef.current;
+    const existing = findAccount(s.accounts, normalized);
+    if (existing) {
+      return { ok: false, error: "not_found" };
+    }
+    const account: RegisteredAccount = {
+      email: normalized,
+      name: name.trim(),
+      photo: null,
+      password,
+      createdAt: new Date().toISOString(),
+      emailVerified: true,
+    };
+    const next: PersistedState = {
+      ...s,
+      onboarded: true,
+      lastEmail: account.email,
+      accounts: [...s.accounts, account],
+      user: profileFromAccount(account),
+    };
+    stateRef.current = next;
+    setState(next);
+    return { ok: true, error: null };
   }, []);
 
   const signOut = useCallback(() => {
-    setState((s) => ({ ...s, user: null }));
+    const s = stateRef.current;
+    const next: PersistedState = { ...s, user: null };
+    stateRef.current = next;
+    setState(next);
   }, []);
 
   const deleteAccount = useCallback(() => {
     localStorage.removeItem(STORAGE_KEY);
-    setState(freshSeed());
+    const seed = freshSeed();
+    stateRef.current = seed;
+    setState(seed);
   }, []);
 
   const changePassword = useCallback((current: string, next: string) => {
-    let success = false;
-    setState((s) => {
-      if (!s.user) return s;
-      // For the mock flow we allow the change when the current password matches
-      // or when no password has been set yet (legacy accounts).
-      if (s.user.password !== null && s.user.password !== current) return s;
-      success = true;
-      return { ...s, user: { ...s.user, password: next } };
-    });
-    return success;
+    const s = stateRef.current;
+    if (!s.user) return false;
+    // The current password must always match the registered account.
+    const account = findAccount(s.accounts, s.user.email);
+    if (!account || account.password !== current) return false;
+    const updatedAccount: RegisteredAccount = { ...account, password: next };
+    const nextState: PersistedState = {
+      ...s,
+      accounts: s.accounts.map((a) =>
+        a.email.toLowerCase() === account.email.toLowerCase() ? updatedAccount : a,
+      ),
+      user: { ...s.user, password: next },
+    };
+    stateRef.current = nextState;
+    setState(nextState);
+    return true;
   }, []);
 
   const revokeSession = useCallback((id: string) => {
@@ -185,15 +274,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signOutAllDevices = useCallback(() => {
-    setState((s) => ({
-      ...s,
-      user: null,
-      sessions: [],
-    }));
+    const s = stateRef.current;
+    const next: PersistedState = { ...s, user: null, sessions: [] };
+    stateRef.current = next;
+    setState(next);
   }, []);
 
   const verifyEmail = useCallback(() => {
-    setState((s) => (s.user ? { ...s, user: { ...s.user, emailVerified: true } } : s));
+    setState((s) => {
+      if (!s.user) return s;
+      const accounts = s.accounts.map((a) =>
+        a.email.toLowerCase() === s.user!.email.toLowerCase() ? { ...a, emailVerified: true } : a,
+      );
+      return { ...s, user: { ...s.user, emailVerified: true }, accounts };
+    });
   }, []);
 
   const updateSettings = useCallback((patch: Partial<Settings>) => {
@@ -201,7 +295,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const updateUser = useCallback((patch: Partial<UserProfile>) => {
-    setState((s) => (s.user ? { ...s, user: { ...s.user, ...patch } } : s));
+    const s = stateRef.current;
+    if (!s.user) return;
+    const updatedUser: UserProfile = { ...s.user, ...patch };
+    // Keep the account registry in sync with name/photo/email/verified changes.
+    const accounts = s.accounts.map((a) =>
+      a.email.toLowerCase() === s.user.email.toLowerCase()
+        ? {
+            ...a,
+            name: updatedUser.name,
+            email: updatedUser.email,
+            photo: updatedUser.photo,
+            emailVerified: updatedUser.emailVerified,
+          }
+        : a,
+    );
+    const next: PersistedState = { ...s, user: updatedUser, accounts, lastEmail: updatedUser.email };
+    stateRef.current = next;
+    setState(next);
   }, []);
 
   const addDocument = useCallback((doc: Omit<VaultDocument, "id" | "createdAt">) => {
@@ -291,6 +402,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ...state,
       completeOnboarding,
       signIn,
+      signInWithBiometric,
       signUp,
       signOut,
       deleteAccount,
@@ -320,6 +432,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       state,
       completeOnboarding,
       signIn,
+      signInWithBiometric,
       signUp,
       signOut,
       deleteAccount,

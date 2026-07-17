@@ -29,7 +29,11 @@ export default function SignUp() {
       toast.error("Password must be at least 6 characters");
       return;
     }
-    signUp(name.trim(), email.trim().toLowerCase(), password);
+    const result = signUp(name.trim(), email.trim().toLowerCase(), password);
+    if (!result.ok) {
+      toast.error("An account with that email already exists. Try signing in instead.");
+      return;
+    }
     toast.success(`Welcome to LifeVault, ${name.trim().split(" ")[0]}!`);
     navigate("/", { replace: true });
   };

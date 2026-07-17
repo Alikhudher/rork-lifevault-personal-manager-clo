@@ -732,6 +732,11 @@ export function SupportSheet({
       return;
     }
     setSending(true);
+    // Blur the active field before submitting so iOS doesn't refocus/zoom
+    // when the sheet closes and the toast appears.
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     window.setTimeout(() => {
       setSending(false);
       toast.success(`${meta.title} submitted`, {

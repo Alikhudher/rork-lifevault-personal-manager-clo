@@ -1,0 +1,141 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* LifeVault design system — premium navy on white. All colors HSL. */
+
+@layer base {
+  :root {
+    --background: 216 33% 97%;
+    --foreground: 219 42% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 219 42% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 219 42% 11%;
+
+    --primary: 218 57% 21%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 216 38% 94%;
+    --secondary-foreground: 218 57% 21%;
+
+    --muted: 216 30% 94%;
+    --muted-foreground: 218 15% 45%;
+
+    --accent: 216 65% 95%;
+    --accent-foreground: 218 57% 21%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+
+    --success: 152 55% 38%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 35 92% 47%;
+    --warning-foreground: 0 0% 100%;
+
+    --info: 214 84% 56%;
+    --info-foreground: 0 0% 100%;
+
+    --border: 216 25% 90%;
+    --input: 216 25% 88%;
+    --ring: 218 57% 30%;
+
+    --radius: 1rem;
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 221 40% 7%;
+    --foreground: 214 30% 94%;
+
+    --card: 220 34% 11%;
+    --card-foreground: 214 30% 94%;
+
+    --popover: 220 34% 11%;
+    --popover-foreground: 214 30% 94%;
+
+    --primary: 214 80% 68%;
+    --primary-foreground: 221 45% 10%;
+
+    --secondary: 219 30% 16%;
+    --secondary-foreground: 214 30% 92%;
+
+    --muted: 219 28% 15%;
+    --muted-foreground: 216 15% 62%;
+
+    --accent: 218 35% 17%;
+    --accent-foreground: 214 60% 85%;
+
+    --destructive: 0 65% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 152 50% 45%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 35 90% 55%;
+    --warning-foreground: 24 45% 10%;
+
+    --info: 214 84% 62%;
+    --info-foreground: 0 0% 100%;
+
+    --border: 219 26% 17%;
+    --input: 219 26% 20%;
+    --ring: 214 80% 68%;
+
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04";
+  }
+
+  input,
+  textarea,
+  select {
+    font-size: 16px; /* prevents iOS zoom on focus */
+  }
+}
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}

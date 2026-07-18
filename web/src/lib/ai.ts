@@ -204,6 +204,45 @@ function safeJsonParse<T>(raw: string): T | null {
 }
 
 /** Find the first balanced top-level JSON object in a string. */
+/**
+ * Compact redacted summary of chat messages for diagnostic logging.
+ * Reports text content length and image byte size — never raw base64.
+ */
+function summarizeMessages(messages: unknown[]): string {
+  try {
+    return messages
+      .map((m) => {
+        const msg = m as { role?: string; content?: unknown };
+        const role = msg.role ?? "?";
+        const c = msg.content;
+        if (typeof c === "string") {
+          return `${role}:text(${c.length})`;
+        }
+        if (Array.isArray(c)) {
+          const parts = c
+            .map((p) => {
+              const part = p as { type?: string; text?: string; image_url?: { url?: string } };
+              if (part.type === "text") return `text(${(part.text ?? "").length})`;
+              if (part.type === "image_url") {
+                const url = part.image_url?.url ?? "";
+                const size = url.startsWith("data:")
+                  ? `~${Math.round((url.length * 3) / 4 / 1024)}KB`
+                  : `${url.length}chars`;
+                return `image(${size})`;
+              }
+              return part.type ?? "?";
+            })
+            .join(",");
+          return `${role}:[${parts}]`;
+        }
+        return `${role}:?`;
+      })
+      .join(" | ");
+  } catch {
+    return "<unsummarizable>";
+  }
+}
+
 function extractFirstJsonObject(s: string): string | null {
   const start = s.indexOf("{");
   if (start === -1) return null;
@@ -285,9 +324,20 @@ async function chatComplete(
     temperature: options?.temperature ?? 0.2,
     max_tokens: options?.maxTokens ?? 1500,
   };
-  if (options?.json) {
+  // NOTE: Do NOT send `response_format: { type: "json_object" }` for Gemini
+  // models on the Vercel AI Gateway. Gemini does not reliably support OpenAI
+  // JSON mode, and combining it with vision (image_url) input causes HTTP 400.
+  // We rely on a strict system prompt + safeJsonParse (strips fences/prose)
+  // plus a retry path to obtain valid JSON instead.
+  if (options?.json && !MODEL_ID.startsWith("google/")) {
     body.response_format = { type: "json_object" };
   }
+
+  // Diagnostic summary of the request payload (no raw base64/images logged).
+  const reqSummary = summarizeMessages(messages as unknown[]);
+  console.info(
+    `[ai] chatComplete -> ${CHAT_URL} | model=${MODEL_ID} | temp=${body.temperature} | max_tokens=${body.max_tokens} | msgs=${reqSummary}`,
+  );
 
   const res = await fetch(CHAT_URL, {
     method: "POST",
@@ -302,6 +352,9 @@ async function chatComplete(
     } catch {
       // ignore
     }
+    console.error(
+      `[ai] HTTP ${res.status} from gateway | model=${MODEL_ID} | body=${detail.slice(0, 500)} | reqMsgs=${reqSummary}`,
+    );
     const err = new Error(
       `AI_HTTP_${res.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
     ) as Error & { status?: number };
@@ -514,7 +567,9 @@ export async function scanDocument(imageDataUrl: string): Promise<ScanResult> {
     },
   ];
 
-  // Use JSON mode + higher token limit to avoid truncation on detailed docs.
+  // Higher token limit to avoid truncation on detailed docs. JSON mode is
+  // intentionally NOT used for Gemini (it returns 400 when combined with
+  // vision input); safeJsonParse + the retry path below handle non-JSON output.
   const raw = await chatComplete(messages, {
     temperature: 0.1,
     maxTokens: 2000,

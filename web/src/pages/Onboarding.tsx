@@ -77,7 +77,7 @@ export default function Onboarding() {
       </div>
 
       {/* Actions */}
-      <div className="space-y-3 px-6 pb-10 pt-8 pb-safe">
+      <div className="space-y-3 px-6 pt-8" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 2.5rem)" }}>
         <Button
           size="lg"
           className="h-[52px] w-full rounded-2xl text-[15px] font-bold shadow-lg shadow-primary/25 transition-transform active:scale-[0.98]"

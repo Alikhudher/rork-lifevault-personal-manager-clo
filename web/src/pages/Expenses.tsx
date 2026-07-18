@@ -62,7 +62,7 @@ export default function Expenses() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<ExpenseFormState>(emptyForm());
   const currency = settings.currency;
-  const now = new Date();
+  const now = useMemo(() => new Date(), []);
 
   useEffect(() => {
     if (searchParams.get("add") === "1") {

@@ -45,7 +45,7 @@ const QUICK_ACTIONS = [
 export default function Home() {
   const { user, settings, expenses, subscriptions, documents, appointments, unreadCount } = useApp();
   const navigate = useNavigate();
-  const now = new Date();
+  const now = useMemo(() => new Date(), []);
   const currency = settings.currency;
 
   const stats = useMemo(() => {
@@ -87,16 +87,16 @@ export default function Home() {
     <div className="animate-fade-in">
       {/* Header */}
       <header className="flex items-center justify-between px-4 pb-2 pt-safe">
-        <div className="flex items-center gap-3 pt-4">
+        <div className="flex items-center gap-3 pt-5">
           <Link
             to="/profile"
-            className="flex h-11 w-11 items-center justify-center rounded-full bg-primary text-[14px] font-extrabold text-primary-foreground shadow-md shadow-primary/20"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-primary text-[14px] font-extrabold text-primary-foreground shadow-md shadow-primary/20 transition-transform active:scale-95"
           >
             {initials(user?.name ?? "You")}
           </Link>
-          <div>
+          <div className="min-w-0">
             <p className="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">{greeting()}</p>
-            <h1 className="text-[19px] font-extrabold leading-tight tracking-tight">
+            <h1 className="truncate text-[19px] font-extrabold leading-tight tracking-tight">
               {user?.name.split(" ")[0] ?? "there"}
             </h1>
           </div>
@@ -104,7 +104,7 @@ export default function Home() {
         <Link
           to="/notifications"
           aria-label="Notifications"
-          className="relative mt-4 flex h-11 w-11 items-center justify-center rounded-full bg-card shadow-sm ring-1 ring-border transition-transform active:scale-95"
+          className="relative mt-5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-card shadow-sm ring-1 ring-border transition-transform active:scale-95"
         >
           <Bell className="h-5 w-5" />
           {unreadCount > 0 && (
@@ -134,9 +134,9 @@ export default function Home() {
                 style={{ width: `${stats.budgetPct}%` }}
               />
             </div>
-            <div className="mt-2.5 flex items-center justify-between text-[13px]">
-              <span className="text-white/60">{stats.budgetPct}% of {formatCurrency(settings.monthlyBudget, currency, true)} budget</span>
-              <span className="font-bold">
+            <div className="mt-2.5 flex items-center justify-between gap-3 text-[13px]">
+              <span className="min-w-0 truncate text-white/60">{stats.budgetPct}% of {formatCurrency(settings.monthlyBudget, currency, true)} budget</span>
+              <span className="shrink-0 font-bold">
                 {stats.remaining >= 0
                   ? `${formatCurrency(stats.remaining, currency)} left`
                   : `${formatCurrency(Math.abs(stats.remaining), currency)} over`}

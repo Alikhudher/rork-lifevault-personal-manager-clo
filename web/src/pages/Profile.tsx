@@ -68,6 +68,15 @@ import { cn } from "@/lib/utils";
 
 const APP_VERSION = "1.0.0";
 
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  AUD: "A$",
+  USD: "$",
+  EUR: "€",
+  GBP: "£",
+  NZD: "NZ$",
+  CAD: "C$",
+};
+
 type SheetKind =
   | "edit"
   | "password"
@@ -391,15 +400,20 @@ export default function Profile() {
             title="Monthly budget"
             subtitle={`Currently ${settings.currency}`}
             right={
-              <Input
-                type="number"
-                inputMode="numeric"
-                min="0"
-                value={settings.monthlyBudget}
-                onChange={(e) => updateSettings({ monthlyBudget: Math.max(0, Number(e.target.value) || 0) })}
-                className="h-9 w-[104px] rounded-lg text-right text-[13px] font-bold tabular"
-                aria-label="Monthly budget"
-              />
+              <div className="relative">
+                <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] font-bold text-muted-foreground">
+                  {CURRENCY_SYMBOLS[settings.currency] ?? ""}
+                </span>
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min="0"
+                  value={settings.monthlyBudget}
+                  onChange={(e) => updateSettings({ monthlyBudget: Math.max(0, Number(e.target.value) || 0) })}
+                  className="h-9 w-[112px] rounded-lg pl-6 pr-2 text-right text-[13px] font-bold tabular"
+                  aria-label="Monthly budget"
+                />
+              </div>
             }
           />
           <SettingRow
@@ -491,7 +505,7 @@ export default function Profile() {
             isLast
           />
         </SettingsCard>
-        <p className="pb-4 pt-6 text-center text-[12px] text-muted-foreground">
+        <p className="pb-6 pt-6 text-center text-[12px] text-muted-foreground">
           LifeVault v{APP_VERSION} · Made with care
         </p>
       </section>

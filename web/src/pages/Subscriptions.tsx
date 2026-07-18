@@ -192,6 +192,7 @@ export default function Subscriptions() {
       {/* List */}
       <div className="space-y-2.5 px-4 pt-4">
         {tab === "active" && <SectionTitle>Upcoming renewals</SectionTitle>}
+        {tab === "cancelled" && list.length > 0 && <SectionTitle>Cancelled subscriptions</SectionTitle>}
         {list.length === 0 ? (
           <div className="flex flex-col items-center rounded-2xl bg-card py-14 text-center shadow-sm ring-1 ring-border">
             {tab === "active" ? (

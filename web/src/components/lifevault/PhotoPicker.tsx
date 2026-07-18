@@ -81,12 +81,18 @@ function fileToDownscaledDataUrl(file: File): Promise<string> {
 /**
  * Profile photo picker.
  *
- * On a Capacitor native runtime (iOS/Android) it uses `@capacitor/camera`,
- * which performs the real permission prompt, launches the native camera /
- * photo picker, and returns a pre-downscaled base64 JPEG.
+ * The **Photo Library** is the primary action on every platform, matching the
+ * user's expectation: tapping the avatar opens the library picker.
  *
- * On plain web it falls back to a hidden file input with the same canvas
- * downscaling pipeline.
+ * On a Capacitor native runtime (iOS/Android) it uses `@capacitor/camera`,
+ * which performs the real permission prompt, launches the native photo picker,
+ * and returns a pre-downscaled base64 JPEG. A secondary "Take photo" action is
+ * offered on native.
+ *
+ * On plain web it falls back to a visually-hidden (but rendered) file input
+ * with the same canvas downscaling pipeline. The input is kept in the layout
+ * (`position:absolute; opacity:0`) rather than `display:none` because some
+ * sandboxed WebViews refuse to honour `.click()` on detached/hidden nodes.
  *
  * Permission denials are handled gracefully: a friendly toast is shown and,
  * on native, the user is offered a one-tap shortcut to open the system
@@ -184,6 +190,10 @@ export function PhotoPicker({
     (source: Option) => {
       if (!isNative) {
         // Web fallback — file input triggers its own browser prompt.
+        // Always reset value so re-picking the same file fires onChange.
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
         fileInputRef.current?.click();
         return;
       }
@@ -211,9 +221,15 @@ export function PhotoPicker({
     [handlePermissionDenied, isNative, pickFromNative],
   );
 
+  /** Primary action — always opens the Photo Library. */
+  const pickFromLibrary = useCallback(() => {
+    pickWithPermissionRequest("photos");
+  }, [pickWithPermissionRequest]);
+
   const handleFilePick = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
+      // Reset so choosing the same file again fires a change event.
       e.target.value = "";
       if (!file) return;
       setBusy("photos");
@@ -238,10 +254,10 @@ export function PhotoPicker({
     <div className="flex flex-col items-center gap-3 pb-1">
       <button
         type="button"
-        onClick={() => pickWithPermissionRequest(isNative ? "camera" : "photos")}
+        onClick={pickFromLibrary}
         disabled={busy !== null}
         className="group relative flex h-24 w-24 items-center justify-center rounded-full bg-secondary ring-2 ring-border transition-transform active:scale-95 disabled:opacity-60"
-        aria-label="Change profile photo"
+        aria-label="Choose profile photo from library"
       >
         {value ? (
           <Avatar className="h-24 w-24 rounded-full">
@@ -257,12 +273,22 @@ export function PhotoPicker({
           </span>
         )}
         <span className="absolute -bottom-1 -right-1 flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md ring-2 ring-background transition-transform group-hover:scale-105">
-          <CameraIcon className="h-[18px] w-[18px]" />
+          <ImageIcon className="h-[18px] w-[18px]" />
         </span>
       </button>
 
       {isNative ? (
         <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
+          <button
+            type="button"
+            onClick={pickFromLibrary}
+            disabled={busy !== null}
+            className="inline-flex items-center gap-1.5 text-[13px] font-bold text-primary disabled:opacity-60 dark:text-foreground"
+          >
+            <ImageIcon className="h-4 w-4" />
+            {busy === "photos" ? "Choosing…" : "Choose photo"}
+          </button>
+          <span className="text-muted-foreground">·</span>
           <button
             type="button"
             onClick={() => pickWithPermissionRequest("camera")}
@@ -271,16 +297,6 @@ export function PhotoPicker({
           >
             <CameraIcon className="h-4 w-4" />
             {busy === "camera" ? "Taking…" : "Take photo"}
-          </button>
-          <span className="text-muted-foreground">·</span>
-          <button
-            type="button"
-            onClick={() => pickWithPermissionRequest("photos")}
-            disabled={busy !== null}
-            className="inline-flex items-center gap-1.5 text-[13px] font-bold text-primary disabled:opacity-60 dark:text-foreground"
-          >
-            <ImageIcon className="h-4 w-4" />
-            {busy === "photos" ? "Choosing…" : "Choose photo"}
           </button>
           {value && (
             <>
@@ -304,11 +320,11 @@ export function PhotoPicker({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => pickWithPermissionRequest("photos")}
+            onClick={pickFromLibrary}
             disabled={busy !== null}
             className="text-[13px] font-bold text-primary disabled:opacity-60 dark:text-foreground"
           >
-            {busy === "photos" ? "Processing…" : "Upload photo"}
+            {busy === "photos" ? "Processing…" : "Choose from library"}
           </button>
           {value && (
             <>
@@ -329,16 +345,35 @@ export function PhotoPicker({
         </div>
       )}
 
-      {/* Hidden file input — only used on the web fallback path. No
-          `capture` attribute so mobile browsers open the file picker
-          (photo library) instead of forcing the camera. */}
+      {/*
+        Hidden file input — only used on the web fallback path. No `capture`
+        attribute so mobile browsers open the file picker (photo library)
+        instead of forcing the camera.
+
+        Kept rendered (absolute, opacity 0, pointer-events none) rather than
+        `display:none` because some sandboxed WebViews and iframe-based
+        previews ignore `.click()` on detached nodes. This keeps the node in
+        the layout so the programmatic click is honoured.
+      */}
       <input
         ref={fileInputRef}
         type="file"
         accept="image/*"
-        className="hidden"
         onChange={handleFilePick}
         aria-hidden
+        tabIndex={-1}
+        style={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          padding: 0,
+          margin: -1,
+          overflow: "hidden",
+          clip: "rect(0,0,0,0)",
+          border: 0,
+          opacity: 0,
+          pointerEvents: "none",
+        }}
       />
     </div>
   );

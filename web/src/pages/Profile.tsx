@@ -49,8 +49,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { PageHeader, SectionTitle } from "@/components/lifevault/PageHeader";
+import { FormSheet } from "@/components/lifevault/FormSheet";
 import {
   ActiveSessionsSheet,
   ChangePasswordSheet,
@@ -535,40 +535,40 @@ export default function Profile() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Legal dialog */}
-      <Dialog open={legalDoc !== null} onOpenChange={(open) => !open && setLegalDoc(null)}>
-        <DialogContent className="mx-auto max-w-[360px] rounded-2xl">
-          <DialogHeader>
-            <DialogTitle>{legalDoc === "privacy" ? "Privacy Policy" : "Terms & Conditions"}</DialogTitle>
-          </DialogHeader>
-          <div className="max-h-[50dvh] space-y-3 overflow-y-auto text-[13px] leading-relaxed text-muted-foreground">
-            {legalDoc === "privacy" ? (
-              <>
-                <p>
-                  LifeVault stores your documents, expenses and appointments locally on your device. We never sell
-                  your personal information or share it with third parties.
-                </p>
-                <p>
-                  Data you export belongs entirely to you. Biometric authentication is handled by your device and
-                  never leaves it.
-                </p>
-                <p>You may delete your account and all associated data at any time from Settings.</p>
-              </>
-            ) : (
-              <>
-                <p>
-                  By using LifeVault you agree to use the app for personal, lawful purposes. LifeVault provides
-                  reminders as a convenience and is not responsible for missed renewals or expired documents.
-                </p>
-                <p>
-                  The app is provided "as is" without warranty of any kind. Always verify important dates with the
-                  issuing authority.
-                </p>
-              </>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
+      {/* Legal bottom sheet */}
+      <FormSheet
+        open={legalDoc !== null}
+        onOpenChange={(open) => !open && setLegalDoc(null)}
+        title={legalDoc === "privacy" ? "Privacy Policy" : "Terms & Conditions"}
+        description="Last updated July 2026"
+      >
+        <div className="space-y-4 text-[13px] leading-relaxed text-muted-foreground">
+          {legalDoc === "privacy" ? (
+            <>
+              <p>
+                LifeVault stores your documents, expenses and appointments locally on your device. We never sell
+                your personal information or share it with third parties.
+              </p>
+              <p>
+                Data you export belongs entirely to you. Biometric authentication is handled by your device and
+                never leaves it.
+              </p>
+              <p>You may delete your account and all associated data at any time from Settings.</p>
+            </>
+          ) : (
+            <>
+              <p>
+                By using LifeVault you agree to use the app for personal, lawful purposes. LifeVault provides
+                reminders as a convenience and is not responsible for missed renewals or expired documents.
+              </p>
+              <p>
+                The app is provided "as is" without warranty of any kind. Always verify important dates with the
+                issuing authority.
+              </p>
+            </>
+          )}
+        </div>
+      </FormSheet>
     </div>
   );
 }

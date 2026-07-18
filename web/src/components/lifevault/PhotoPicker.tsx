@@ -2,7 +2,12 @@ import React, { useCallback, useRef, useState } from "react";
 import { Camera as CameraIcon, Image as ImageIcon, Trash2, User } from "lucide-react";
 import { toast } from "sonner";
 import { Capacitor } from "@capacitor/core";
-import { Camera, CameraPermissionState, CameraResultType, CameraSource } from "@capacitor/camera";
+import {
+  Camera,
+  CameraPermissionState,
+  CameraResultType,
+  CameraSource,
+} from "@capacitor/camera";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { initials } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -78,10 +83,7 @@ function fileToDownscaledDataUrl(file: File): Promise<string> {
  *
  * On a Capacitor native runtime (iOS/Android) it uses `@capacitor/camera`,
  * which performs the real permission prompt, launches the native camera /
- * photo picker, and returns a pre-downscaled base64 JPEG. This avoids the
- * crashes that the old `<input type="file">` path caused on iOS WKWebView
- * (object-URL + canvas on a 12MP HEIC can exhaust memory and the webview
- * terminates the app).
+ * photo picker, and returns a pre-downscaled base64 JPEG.
  *
  * On plain web it falls back to a hidden file input with the same canvas
  * downscaling pipeline.
@@ -132,13 +134,17 @@ export function PhotoPicker({
       try {
         const photo = await Camera.getPhoto({
           quality: 85,
-          allowEditing: true,
+          // allowEditing is only supported for CameraSource.Camera on iOS.
+          // Setting it for Photos causes a native crash, so gate it.
+          allowEditing: source === "camera",
           resultType: CameraResultType.DataUrl,
           source: source === "camera" ? CameraSource.Camera : CameraSource.Photos,
           width: MAX_EDGE,
           height: MAX_EDGE,
           correctOrientation: true,
-          presentationStyle: "popover",
+          // Use the default 'fullscreen' presentation style. 'popover' is
+          // iPad-only and crashes on iPhone (no source view for the popover
+          // controller), so we omit it entirely.
         });
         const dataUrl = photo.dataUrl;
         if (!dataUrl) {
@@ -169,12 +175,12 @@ export function PhotoPicker({
   );
 
   /**
-   * Pre-flight permission check so we can show the friendly "open settings"
-   * toast BEFORE the native picker silently fails. `Camera.getPhoto` prompts
-   * automatically, but checking first lets us branch on an explicit "denied"
-   * state and surface the settings shortcut.
+   * Pre-flight permission request. We use `requestPermissions` (not just
+   * `checkPermissions`) so iOS shows the system prompt on first launch and
+   * returns the final state. If the user already denied, we surface the
+   * "open Settings" shortcut instead of silently failing.
    */
-  const pickWithPermissionCheck = useCallback(
+  const pickWithPermissionRequest = useCallback(
     (source: Option) => {
       if (!isNative) {
         // Web fallback — file input triggers its own browser prompt.
@@ -183,16 +189,21 @@ export function PhotoPicker({
       }
       void (async () => {
         try {
-          const status = await Camera.checkPermissions();
+          const status = await Camera.requestPermissions({
+            permissions: [source],
+          });
           const state: CameraPermissionState =
             source === "camera" ? status.camera : status.photos;
           if (state === "denied") {
             handlePermissionDenied(source);
             return;
           }
+          // "granted" | "limited" | "prompt" → proceed. getPhoto will handle
+          // any remaining prompt if the system didn't show one.
           await pickFromNative(source);
         } catch {
-          // checkPermissions can throw on older runtimes — just attempt the pick.
+          // requestPermissions can throw on older runtimes — just attempt the
+          // pick; getPhoto() will prompt internally as a fallback.
           await pickFromNative(source);
         }
       })();
@@ -227,7 +238,7 @@ export function PhotoPicker({
     <div className="flex flex-col items-center gap-3 pb-1">
       <button
         type="button"
-        onClick={() => pickWithPermissionCheck(isNative ? "camera" : "photos")}
+        onClick={() => pickWithPermissionRequest(isNative ? "camera" : "photos")}
         disabled={busy !== null}
         className="group relative flex h-24 w-24 items-center justify-center rounded-full bg-secondary ring-2 ring-border transition-transform active:scale-95 disabled:opacity-60"
         aria-label="Change profile photo"
@@ -254,7 +265,7 @@ export function PhotoPicker({
         <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
           <button
             type="button"
-            onClick={() => pickWithPermissionCheck("camera")}
+            onClick={() => pickWithPermissionRequest("camera")}
             disabled={busy !== null}
             className="inline-flex items-center gap-1.5 text-[13px] font-bold text-primary disabled:opacity-60 dark:text-foreground"
           >
@@ -264,7 +275,7 @@ export function PhotoPicker({
           <span className="text-muted-foreground">·</span>
           <button
             type="button"
-            onClick={() => pickWithPermissionCheck("photos")}
+            onClick={() => pickWithPermissionRequest("photos")}
             disabled={busy !== null}
             className="inline-flex items-center gap-1.5 text-[13px] font-bold text-primary disabled:opacity-60 dark:text-foreground"
           >
@@ -293,7 +304,7 @@ export function PhotoPicker({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => pickWithPermissionCheck("photos")}
+            onClick={() => pickWithPermissionRequest("photos")}
             disabled={busy !== null}
             className="text-[13px] font-bold text-primary disabled:opacity-60 dark:text-foreground"
           >
@@ -318,12 +329,13 @@ export function PhotoPicker({
         </div>
       )}
 
-      {/* Hidden file input — only used on the web fallback path. */}
+      {/* Hidden file input — only used on the web fallback path. No
+          `capture` attribute so mobile browsers open the file picker
+          (photo library) instead of forcing the camera. */}
       <input
         ref={fileInputRef}
         type="file"
         accept="image/*"
-        capture="user"
         className="hidden"
         onChange={handleFilePick}
         aria-hidden

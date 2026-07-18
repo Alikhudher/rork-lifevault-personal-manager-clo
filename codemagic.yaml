@@ -34,11 +34,15 @@ workflows:
           npx cap sync ios
 
           # Inject camera & photo library permission strings into the
-          # generated iOS Info.plist. Without these, iOS terminates the app
-          # when a file input triggers the camera or photo picker.
+          # generated iOS Info.plist. Capacitor's Camera plugin requires
+          # ALL THREE keys to be present, otherwise iOS terminates the app
+          # with: "crashed because it attempted to access privacy-sensitive
+          # data without a usage description." This is a hard crash, not a
+          # warning, so every key must be set before the IPA is built.
           PLIST="web/ios/App/App/Info.plist"
           /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'LifeVault uses the camera to take a profile photo.'" "$PLIST" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string 'LifeVault uses your photo library to choose a profile photo.'" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryAddUsageDescription string 'LifeVault may save profile photos to your photo library.'" "$PLIST" 2>/dev/null || true
 
       - name: Set version and build number
         script: |

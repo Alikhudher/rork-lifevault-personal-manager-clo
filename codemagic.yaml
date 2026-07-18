@@ -33,6 +33,13 @@ workflows:
           fi
           npx cap sync ios
 
+          # Inject camera & photo library permission strings into the
+          # generated iOS Info.plist. Without these, iOS terminates the app
+          # when a file input triggers the camera or photo picker.
+          PLIST="web/ios/App/App/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'LifeVault uses the camera to take a profile photo.'" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string 'LifeVault uses your photo library to choose a profile photo.'" "$PLIST" 2>/dev/null || true
+
       - name: Set version and build number
         script: |
           cd web/ios/App

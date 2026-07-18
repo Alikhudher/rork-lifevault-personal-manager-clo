@@ -119,14 +119,60 @@ export function EditProfileSheet({
 
   const handlePhotoPick = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Always reset the input value so the same file can be re-picked.
+    e.target.value = "";
     if (!file) return;
-    if (file.size > 4 * 1024 * 1024) {
-      toast.error("Photo must be under 4 MB");
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please choose an image file");
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => setPhoto(reader.result as string);
-    reader.readAsDataURL(file);
+    if (file.size > 20 * 1024 * 1024) {
+      toast.error("Photo must be under 20 MB");
+      return;
+    }
+    // Downscale large images via canvas before storing as a data URL.
+    // This avoids memory crashes on real iPhones when a 12MP camera photo
+    // is read directly into a base64 string and persisted to localStorage.
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const maxDim = 512;
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        if (width >= height) {
+          height = Math.round((height / width) * maxDim);
+          width = maxDim;
+        } else {
+          width = Math.round((width / height) * maxDim);
+          height = maxDim;
+        }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        toast.error("Could not process the photo");
+        return;
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+      try {
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+        if (dataUrl.length > 4 * 1024 * 1024) {
+          toast.error("Photo is too large after processing");
+          return;
+        }
+        setPhoto(dataUrl);
+      } catch {
+        toast.error("Could not process the photo");
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      toast.error("Could not load that image");
+    };
+    img.src = url;
   }, []);
 
   const sendCode = useCallback(() => {

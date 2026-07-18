@@ -261,17 +261,10 @@ export default function Profile() {
         </div>
       </section>
 
-      {/* Account — Edit Profile */}
+      {/* Account */}
       <section className="px-4 pt-6">
         <SectionTitle>Account</SectionTitle>
         <SettingsCard>
-          <SettingRow
-            icon={UserCog}
-            bubble="bg-primary/12 text-primary dark:text-foreground"
-            title="Edit profile"
-            subtitle="Photo, name & email"
-            onClick={() => openSheet("edit")}
-          />
           <SettingRow
             icon={KeyRound}
             bubble="bg-warning/12 text-warning"

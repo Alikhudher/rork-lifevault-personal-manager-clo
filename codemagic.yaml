@@ -20,28 +20,39 @@ workflows:
           # This project uses bun as its package manager (bun.lock is the
           # source of truth). Install bun into the CI environment so every
           # subsequent step can use it instead of npm.
+          export BUN_INSTALL="$HOME/.bun"
           if ! command -v bun >/dev/null 2>&1; then
             curl -fsSL https://bun.sh/install | bash
-            export BUN_INSTALL="$HOME/.bun"
-            export PATH="$BUN_INSTALL/bin:$PATH"
           fi
-          # Persist bun on PATH for all following scripts.
-          echo "export BUN_INSTALL=\"$HOME/.bun\"" >> "$CM_ENV_DIR/env.sh"
-          echo "export PATH=\"$BUN_INSTALL/bin:$PATH\"" >> "$CM_ENV_DIR/env.sh"
+          # Codemagic persists env vars across scripts by reading KEY=value
+          # lines from $CM_ENV and exporting them into every following step.
+          # We must expand $BUN_INSTALL and $PATH *now* (at write time) so
+          # the literal resolved paths are stored, not the variable names.
+          RESOLVED_PATH="$BUN_INSTALL/bin:$PATH"
+          echo "BUN_INSTALL=$BUN_INSTALL" >> "$CM_ENV"
+          echo "PATH=$RESOLVED_PATH" >> "$CM_ENV"
+          # Also export for this same script, then verify bun is callable.
+          export PATH="$RESOLVED_PATH"
           bun --version
+          echo "Bun installed at $(command -v bun)"
 
       - name: Install dependencies
         script: |
+          set -e
+          echo "Using bun: $(command -v bun)"
+          bun --version
           cd web
           bun install --frozen-lockfile
 
       - name: Build web app
         script: |
+          set -e
           cd web
           bun run build
 
       - name: Create and sync iOS project
         script: |
+          set -e
           cd web
           if [ ! -d "ios" ]; then
             bunx cap add ios

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
@@ -16,13 +16,6 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import { Capacitor } from "@capacitor/core";
-import {
-  Camera as CameraCap,
-  CameraPermissionState,
-  CameraResultType,
-  CameraSource,
-} from "@capacitor/camera";
 import { PageHeader } from "@/components/lifevault/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +29,7 @@ import {
   type SearchResults,
   type SuggestedAction,
 } from "@/lib/ai";
+import { captureImage } from "@/lib/native-camera";
 import type {
   Appointment,
   Expense,
@@ -77,188 +71,6 @@ function userFacingError(err: unknown): string {
   return "Something went wrong. Please try again.";
 }
 
-/* ------------------------- image capture ------------------------- */
-
-type CaptureSource = "camera" | "photos";
-
-const isNativePlatform = (): boolean =>
-  typeof Capacitor !== "undefined" && Capacitor.isNativePlatform();
-
-/**
- * Show a permission-denied toast with a one-tap shortcut to the system
- * Settings page (Apple's `app-settings:` URL scheme). Only on native.
- */
-function showPermissionDeniedToast(source: CaptureSource): void {
-  const what = source === "camera" ? "Camera" : "Photo library";
-  toast.error(`${what} access denied`, {
-    description: "Enable it in Settings to use this feature.",
-    action: {
-      label: "Open settings",
-      onClick: () => {
-        try {
-          window.location.href = "app-settings:";
-        } catch {
-          /* ignore */
-        }
-      },
-    },
-  });
-}
-
-/**
- * Get the current permission state for the requested source without
- * triggering a system prompt. Returns "granted" | "limited" | "denied" |
- * "prompt" | "unknown".
- */
-async function getPermissionState(
-  source: CaptureSource,
-): Promise<CameraPermissionState | "unknown"> {
-  try {
-    const status = await CameraCap.checkPermissions();
-    return source === "camera" ? status.camera : status.photos;
-  } catch {
-    return "unknown";
-  }
-}
-
-/**
- * Trigger the iOS system permission dialog for the requested source.
- * Returns the resulting state, or "unknown" if the call throws (older
- * runtimes / missing plugin).
- */
-async function requestPermission(
-  source: CaptureSource,
-): Promise<CameraPermissionState | "unknown"> {
-  try {
-    const result = await CameraCap.requestPermissions({
-      permissions: [source],
-    });
-    return source === "camera" ? result.camera : result.photos;
-  } catch {
-    return "unknown";
-  }
-}
-
-/**
- * Ensure the requested source has permission before launching the picker /
- * camera. This is CRITICAL on iOS because of the camera permission race
- * condition: if `getPhoto` is called for the camera while the permission
- * is still "prompt", iOS shows the system dialog *while* the camera tries
- * to initialize. The camera preview fails to start (permission not yet
- * granted), so the first call fails silently. On the second attempt the
- * permission is already "granted" and it works. Pre-requesting eliminates
- * the race: by the time `getPhoto` runs, the permission is already granted.
- *
- * For the Photo Library (CameraSource.Photos), some iOS versions silently
- * fail `getPhoto` when the state is "prompt" instead of showing the dialog,
- * so pre-requesting is equally important there.
- *
- * Flow:
- *  1. checkPermissions → read current state (no prompt).
- *  2. "denied" → show Settings toast (iOS won't re-prompt).
- *  3. "prompt" → requestPermissions (triggers system dialog), proceed only
-n *     on "granted" / "limited".
- *  4. "granted" / "limited" / "unknown" → proceed to getPhoto.
- */
-async function ensurePermission(
-  source: CaptureSource,
-): Promise<boolean> {
-  const state = await getPermissionState(source);
-
-  if (state === "denied") {
-    showPermissionDeniedToast(source);
-    return false;
-  }
-
-  if (state === "prompt") {
-    const after = await requestPermission(source);
-    if (after === "denied") {
-      showPermissionDeniedToast(source);
-      return false;
-    }
-    // granted | limited | unknown → proceed
-    return true;
-  }
-
-  // granted | limited | unknown → proceed
-  return true;
-}
-
-/**
- * Launch the native camera or photo picker via Capacitor. Assumes
- * permissions are already handled by `ensurePermission`.
- */
-async function getPhotoFromNative(
-  source: CaptureSource,
-): Promise<string | null> {
-  try {
-    const photo = await CameraCap.getPhoto({
-      quality: 90,
-      // allowEditing is only supported for CameraSource.Camera on iOS.
-      // Setting it for Photos causes a native crash, so gate it.
-      allowEditing: source === "camera",
-      resultType: CameraResultType.DataUrl,
-      source: source === "camera" ? CameraSource.Camera : CameraSource.Photos,
-      width: 1600,
-      height: 1600,
-      correctOrientation: true,
-      saveToGallery: false,
-    });
-    return photo.dataUrl ?? null;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // User dismissed the picker / camera — silent.
-    if (/cancel/i.test(msg)) return null;
-    // Permission denied at runtime — offer a shortcut to Settings.
-    if (/denied|permission/i.test(msg)) {
-      showPermissionDeniedToast(source);
-      return null;
-    }
-    toast.error(userFacingError(err));
-    return null;
-  }
-}
-
-/**
- * Capture an image from the camera or photo library. On native iOS this
- * pre-requests permissions to avoid the camera race condition and silent
- * photo-library failures. On web it falls back to a file input.
- */
-async function captureImage(source: CaptureSource): Promise<string | null> {
-  if (isNativePlatform()) {
-    // Pre-request permission BEFORE calling getPhoto. This fixes two bugs:
-    //  1. Camera race condition: first call fails because the permission
-    //     dialog is shown while the camera tries to init.
-    //  2. Photo library silent failure: some iOS versions don't show the
-    //     permission dialog from inside getPhoto(Photos).
-    const granted = await ensurePermission(source);
-    if (!granted) return null;
-    return getPhotoFromNative(source);
-  }
-
-  // Web fallback: trigger a file input.
-  return new Promise((resolve) => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-    input.capture = source === "camera" ? "environment" : undefined;
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (!file) {
-        resolve(null);
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () => {
-        toast.error("Couldn't read that image.");
-        resolve(null);
-      };
-      reader.readAsDataURL(file);
-    };
-    input.click();
-  });
-}
 
 /* ------------------------- Scan panel ------------------------- */
 
@@ -273,7 +85,9 @@ function ScanPanel({ onScanComplete }: ScanPanelProps) {
 
   const handleCapture = useCallback(
     async (source: "camera" | "photos") => {
-      const dataUrl = await captureImage(source);
+      // 1600px max edge preserves enough detail for OCR / field extraction
+      // while keeping the data URL well under the AI gateway body limit.
+      const dataUrl = await captureImage(source, 1600);
       if (!dataUrl) return;
       setImage(dataUrl);
       setLoading(true);

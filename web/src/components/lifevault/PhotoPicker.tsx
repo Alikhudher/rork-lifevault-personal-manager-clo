@@ -1,20 +1,15 @@
 import React, { useCallback, useRef, useState } from "react";
 import { Camera as CameraIcon, Image as ImageIcon, Trash2, User } from "lucide-react";
 import { toast } from "sonner";
-import { Capacitor } from "@capacitor/core";
-import {
-  Camera,
-  CameraPermissionState,
-  CameraResultType,
-  CameraSource,
-} from "@capacitor/camera";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { initials } from "@/lib/format";
+import { captureImage, isNativePlatform } from "@/lib/native-camera";
 
 /**
  * Maximum stored edge length (px) and encoded size (bytes) for a profile
- * photo. Camera images are downscaled by the plugin (`width`/`height`) and
- * re-encoded as JPEG so we never persist a multi-megabyte HEIC into state.
+ * photo. Native capture uses this as `targetWidth`/`targetHeight`; the web
+ * fallback downscales via canvas to the same limit so we never persist a
+ * multi-megabyte image into app state.
  */
 const MAX_EDGE = 512;
 const MAX_BYTES = 4 * 1024 * 1024;
@@ -83,31 +78,18 @@ function fileToDownscaledDataUrl(file: File): Promise<string> {
  * The **Photo Library** is the primary action on every platform, matching the
  * user's expectation: tapping the avatar opens the library picker.
  *
- * On a Capacitor native runtime (iOS/Android) it uses `@capacitor/camera`,
- * which performs the real permission prompt, launches the native photo picker
- * or camera, and returns a pre-downscaled base64 JPEG. A secondary "Take photo"
- * action is offered on native.
+ * On a Capacitor native runtime (iOS/Android) it uses the shared
+ * `captureImage` helper from `@/lib/native-camera`, which wraps the v8.1+
+ * `chooseFromGallery` / `takePhoto` APIs (the deprecated `getPhoto` had a
+ * well-known iOS camera race condition where the first call failed because
+ * the permission dialog appeared while the camera initialized). The shared
+ * helper handles permissions, cancellation, denial-toastery, and full-res
+ * reading via `@capacitor/filesystem`.
  *
  * On plain web it falls back to a visually-hidden (but rendered) file input
  * with the same canvas downscaling pipeline. The input is kept in the layout
  * (`position:absolute; opacity:0`) rather than `display:none` because some
  * sandboxed WebViews refuse to honour `.click()` on detached/hidden nodes.
- *
- * Permission denials are handled gracefully: a friendly toast is shown and,
- * on native, the user is offered a one-tap shortcut to open the system
- * settings page for the app so they can grant access without hunting for it.
- *
- * Camera reliability notes:
- *  - We pre-check permissions with `checkPermissions` first. If the state is
- *    `denied`, iOS will NOT re-prompt, so we immediately route to the
- *    "Open Settings" toast instead of calling `requestPermissions` (which
- *    would silently no-op and confuse the user).
- *  - If the state is `prompt`, we call `requestPermissions` to trigger the
- *    system dialog, then proceed only if it resolves to `granted`/`limited`.
- *  - `saveToGallery: false` avoids an extra "Add Photos" permission prompt
- *    on iOS when capturing with the camera.
- *  - `allowEditing` is only set for `CameraSource.Camera` — setting it for
- *    `Photos` causes a native crash on iOS.
  */
 export function PhotoPicker({
   value,
@@ -120,157 +102,53 @@ export function PhotoPicker({
 }) {
   const [busy, setBusy] = useState<Option | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const isNative = typeof Capacitor !== "undefined" && Capacitor.isNativePlatform();
+  const isNative = isNativePlatform();
 
-  const openSettings = useCallback(async () => {
-    // `app-settings:` is Apple's officially supported URL scheme that opens
-    // this app's row in the Settings app (privacy/permissions section). It
-    // works directly from WKWebView — no native plugin required.
-    try {
-      window.location.href = "app-settings:";
-    } catch {
-      // ignore — toast already shown
-    }
-  }, []);
-
-  const handlePermissionDenied = useCallback(
-    (which: Option) => {
-      const what = which === "camera" ? "camera" : "photo library";
-      toast.error(`${what.charAt(0).toUpperCase() + what.slice(1)} access denied`, {
-        description: isNative
-          ? "Tap below to open Settings and enable it."
-          : "Update your browser permissions and try again.",
-        action: isNative
-          ? { label: "Open settings", onClick: () => void openSettings() }
-          : undefined,
-      });
-    },
-    [isNative, openSettings],
-  );
-
+  /**
+   * Native capture via the shared `captureImage` helper. Enforces the profile
+   * photo size budget (MAX_EDGE / MAX_BYTES) after capture so we never persist
+   * a huge image into app state — the helper returns a full-res data URL on
+   * native, so we downscale via canvas if it exceeds the budget.
+   */
   const pickFromNative = useCallback(
     async (source: Option) => {
       setBusy(source);
       try {
-        const photo = await Camera.getPhoto({
-          quality: 85,
-          // allowEditing is only supported for CameraSource.Camera on iOS.
-          // Setting it for Photos causes a native crash, so gate it.
-          allowEditing: source === "camera",
-          resultType: CameraResultType.DataUrl,
-          source: source === "camera" ? CameraSource.Camera : CameraSource.Photos,
-          width: MAX_EDGE,
-          height: MAX_EDGE,
-          correctOrientation: true,
-          // Do not save captured photos to the gallery — avoids an extra
-          // "Add Photos" permission prompt on iOS.
-          saveToGallery: false,
-          // Use the default 'fullscreen' presentation style. 'popover' is
-          // iPad-only and crashes on iPhone (no source view for the popover
-          // controller), so we omit it entirely.
-        });
-        const dataUrl = photo.dataUrl;
-        if (!dataUrl) {
-          toast.error("Could not capture that photo. Please try again.");
-          return;
-        }
+        const dataUrl = await captureImage(source, MAX_EDGE);
+        if (!dataUrl) return; // cancelled / error already surfaced
         if (dataUrl.length > MAX_BYTES) {
-          toast.error("Photo is too large after processing");
-          return;
+          // Still too large after native sizing — downscale via canvas.
+          try {
+            const downscaled = await downscaleDataUrl(dataUrl, MAX_EDGE);
+            onChange(downscaled);
+          } catch {
+            toast.error("Photo is too large after processing");
+            return;
+          }
+        } else {
+          onChange(dataUrl);
         }
-        onChange(dataUrl);
         toast.success(source === "camera" ? "Photo taken" : "Photo selected");
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        // Capacitor throws "User denied photos access" / "User denied access to camera"
-        if (/denied|permission/i.test(message)) {
-          handlePermissionDenied(source);
-          return;
-        }
-        // "cancelled" / user dismissed — silent
-        if (/cancel/i.test(message)) return;
-        // "no camera available" / hardware errors
-        if (/no camera|unavailable|not available/i.test(message)) {
-          toast.error("No camera available on this device");
-          return;
-        }
-        toast.error("Could not capture that photo. Please try again.");
       } finally {
         setBusy(null);
       }
     },
-    [handlePermissionDenied, onChange],
-  );
-
-  /**
-   * Robust permission-gated pick flow:
-   *  1. `checkPermissions` — read the current system state without prompting.
-   *  2. `denied` → route straight to the "Open Settings" toast. iOS will not
-   *     re-prompt, so calling `requestPermissions` would silently no-op.
-   *  3. `prompt` → call `requestPermissions` to trigger the system dialog,
-   *     then proceed only on `granted` / `limited`.
-   *  4. `granted` / `limited` → launch the picker directly.
-   *
-   * If anything throws (older runtimes, missing plugin), fall back to calling
-   * `getPhoto` directly — Capacitor's `getPhoto` internally prompts when no
-   * permission has been recorded yet.
-   */
-  const pickWithPermissionRequest = useCallback(
-    (source: Option) => {
-      if (!isNative) {
-        // Web fallback — file input triggers its own browser prompt.
-        // Always reset value so re-picking the same file fires onChange.
-        if (fileInputRef.current) {
-          fileInputRef.current.value = "";
-        }
-        fileInputRef.current?.click();
-        return;
-      }
-      void (async () => {
-        try {
-          const status = await Camera.checkPermissions();
-          const current: CameraPermissionState =
-            source === "camera" ? status.camera : status.photos;
-
-          if (current === "denied") {
-            // iOS won't re-prompt once denied — send the user to Settings.
-            handlePermissionDenied(source);
-            return;
-          }
-
-          if (current === "prompt") {
-            // Trigger the system permission dialog.
-            const requested = await Camera.requestPermissions({
-              permissions: [source],
-            });
-            const nextState: CameraPermissionState =
-              source === "camera" ? requested.camera : requested.photos;
-            if (nextState === "denied") {
-              handlePermissionDenied(source);
-              return;
-            }
-            // granted | limited → proceed
-            await pickFromNative(source);
-            return;
-          }
-
-          // granted | limited (or unknown on older runtimes) → proceed
-          await pickFromNative(source);
-        } catch {
-          // checkPermissions/requestPermissions can throw on older runtimes —
-          // just attempt the pick; getPhoto() will prompt internally as a
-          // fallback.
-          await pickFromNative(source);
-        }
-      })();
-    },
-    [handlePermissionDenied, isNative, pickFromNative],
+    [onChange],
   );
 
   /** Primary action — always opens the Photo Library. */
   const pickFromLibrary = useCallback(() => {
-    pickWithPermissionRequest("photos");
-  }, [pickWithPermissionRequest]);
+    if (isNative) {
+      void pickFromNative("photos");
+    } else {
+      // Web fallback — file input triggers its own browser prompt.
+      // Always reset value so re-picking the same file fires onChange.
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      fileInputRef.current?.click();
+    }
+  }, [isNative, pickFromNative]);
 
   const handleFilePick = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -337,7 +215,7 @@ export function PhotoPicker({
           <span className="text-muted-foreground">·</span>
           <button
             type="button"
-            onClick={() => pickWithPermissionRequest("camera")}
+            onClick={() => void pickFromNative("camera")}
             disabled={busy !== null}
             className="inline-flex items-center gap-1.5 text-[13px] font-bold text-primary disabled:opacity-60 dark:text-foreground"
           >
@@ -423,6 +301,45 @@ export function PhotoPicker({
       />
     </div>
   );
+}
+
+/**
+ * Downscale an existing data URL to a JPEG within `maxEdge` px via canvas.
+ * Used when the native capture helper returns a full-res image that exceeds
+ * the profile photo size budget.
+ */
+function downscaleDataUrl(dataUrl: string, maxEdge: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxEdge || height > maxEdge) {
+        if (width >= height) {
+          height = Math.round((height / width) * maxEdge);
+          width = maxEdge;
+        } else {
+          width = Math.round((width / height) * maxEdge);
+          height = maxEdge;
+        }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        reject(new Error("no-canvas"));
+        return;
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+      try {
+        resolve(canvas.toDataURL("image/jpeg", 0.85));
+      } catch (err) {
+        reject(err);
+      }
+    };
+    img.onerror = () => reject(new Error("load-failed"));
+    img.src = dataUrl;
+  });
 }
 
 // Re-export so callers can import the canvas helper if ever needed.

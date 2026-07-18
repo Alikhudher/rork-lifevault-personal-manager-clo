@@ -39,9 +39,11 @@ workflows:
           # with: "crashed because it attempted to access privacy-sensitive
           # data without a usage description." This is a hard crash, not a
           # warning, so every key must be set before the IPA is built.
+          # The strings cover both the profile photo picker and the AI
+          # document scanner, which both use the Camera plugin.
           PLIST="web/ios/App/App/Info.plist"
-          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'LifeVault uses the camera to take a profile photo.'" "$PLIST" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string 'LifeVault uses your photo library to choose a profile photo.'" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'LifeVault uses the camera to take a profile photo and scan documents with AI.'" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string 'LifeVault uses your photo library to choose a profile photo and scan documents with AI.'" "$PLIST" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryAddUsageDescription string 'LifeVault may save profile photos to your photo library.'" "$PLIST" 2>/dev/null || true
 
       - name: Set version and build number

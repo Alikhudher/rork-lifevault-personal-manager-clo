@@ -79,7 +79,11 @@ export function FormSheet({ open, onOpenChange, title, description, children }: 
     try {
       Keyboard.addListener("keyboardWillShow", (info) => {
         setKeyboardHeight(info.keyboardHeight);
-        if (window.visualViewport) setViewportHeight(window.innerHeight - info.keyboardHeight);
+        // With resize:none, window.innerHeight stays at the full size while
+        // the keyboard overlays it. visualViewport.height is the un-occluded
+        // height — use it so the sheet's max-height fits the visible area.
+        const vv = window.visualViewport;
+        setViewportHeight(vv ? vv.height : Math.max(0, window.innerHeight - info.keyboardHeight));
       }).then((h) => {
         kapShow = h;
       });
@@ -110,18 +114,39 @@ export function FormSheet({ open, onOpenChange, title, description, children }: 
     };
   }, [open]);
 
-  // When the keyboard appears, scroll the focused input into view inside the
-  // sheet body so it isn't hidden behind the keyboard or the header.
-  useEffect(() => {
+  // When the keyboard appears or focus changes while it's open, scroll the
+  // focused input into view inside the sheet body so it isn't hidden behind
+  // the keyboard or the header. Uses a small extra top margin so the field
+  // sits clearly above the keyboard, not flush against it.
+  const scrollFocusedIntoView = useCallback(() => {
     if (!open || keyboardHeight <= 0) return;
     const el = document.activeElement;
-    if (el instanceof HTMLElement && bodyRef.current?.contains(el)) {
-      // Defer until the transform / max-height has been applied.
-      const id = window.requestAnimationFrame(() => {
-        el.scrollIntoView({ block: "center", behavior: "smooth" });
+    const body = bodyRef.current;
+    if (!(el instanceof HTMLElement) || !body || !body.contains(el)) return;
+    const id = window.requestAnimationFrame(() => {
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [open, keyboardHeight]);
+
+  useEffect(() => {
+    return scrollFocusedIntoView();
+  }, [scrollFocusedIntoView]);
+
+  // Re-run when focus moves between fields while the keyboard is already up.
+  useEffect(() => {
+    if (!open || keyboardHeight <= 0) return;
+    const body = bodyRef.current;
+    if (!body) return;
+    const onFocusIn = (e: FocusEvent) => {
+      const target = e.target;
+      if (!(target instanceof HTMLElement) || !body.contains(target)) return;
+      window.requestAnimationFrame(() => {
+        target.scrollIntoView({ block: "center", behavior: "smooth" });
       });
-      return () => window.cancelAnimationFrame(id);
-    }
+    };
+    document.addEventListener("focusin", onFocusIn);
+    return () => document.removeEventListener("focusin", onFocusIn);
   }, [open, keyboardHeight]);
 
   const handleRef = useCallback((node: HTMLDivElement | null) => {
@@ -129,6 +154,9 @@ export function FormSheet({ open, onOpenChange, title, description, children }: 
   }, []);
 
   const raised = keyboardHeight > 0;
+  // Small breathing room above the keyboard so the focused field is clearly
+  // visible and not flush against the top of the keyboard.
+  const liftMargin = 12;
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -138,8 +166,8 @@ export function FormSheet({ open, onOpenChange, title, description, children }: 
         style={{
           // Raise the sheet above the keyboard and clamp its height to the
           // visible (un-occluded) viewport so the header never scrolls away.
-          transform: raised ? `translateY(-${keyboardHeight}px)` : undefined,
-          maxHeight: raised ? `${viewportHeight}px` : "92dvh",
+          transform: raised ? `translateY(-${keyboardHeight + liftMargin}px)` : undefined,
+          maxHeight: raised ? `${Math.max(0, viewportHeight - liftMargin)}px` : "92dvh",
           transition: "transform 0.25s ease, max-height 0.25s ease",
         }}
       >

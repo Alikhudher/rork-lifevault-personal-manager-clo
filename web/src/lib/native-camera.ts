@@ -1,33 +1,33 @@
 /**
  * Shared native camera / photo-library capture utility.
  *
- * Uses the Capacitor Camera plugin's v8.1+ API (`takePhoto` / `chooseFromGallery`)
- * instead of the deprecated `getPhoto`. The deprecated `getPhoto` had a well-known
- * iOS camera race condition (GitHub issue #1996): on the first call, iOS shows the
- * permission dialog *while* the camera tries to initialize, so the camera preview
- * fails to start and the call rejects silently; on the second attempt the
- * permission is already granted and it works. `getPhoto` with `CameraSource.Photos`
- * also silently fails on some iOS versions instead of showing the permission
- * dialog. The new `takePhoto` / `chooseFromGallery` methods handle permissions
- * correctly internally — no pre-requesting needed, no race.
+ * Uses the battle-tested `getPhoto` API with explicit `CameraSource` selection:
+ *  - "camera" → `CameraSource.Camera` (opens the camera)
+ *  - "photos" → `CameraSource.Photos` (opens the photo library)
  *
- * The new API returns a `MediaResult` with `uri` (native) or `thumbnail` /
- * `webPath` (web). On native, `thumbnail` is only a small preview, so to get the
- * full-resolution image we read `uri` via `@capacitor/filesystem` and construct a
- * data URL. On web, `thumbnail` contains the full base64-encoded image.
+ * The v8.1+ `takePhoto` / `chooseFromGallery` methods are newer and less
+ * battle-tested — `chooseFromGallery` in particular has been reported to open
+ * the camera on some iOS builds when the native pods aren't perfectly synced.
+ * `getPhoto` with an explicit source has been reliable since Capacitor 1.0.
  *
- * Both capture paths return a JPEG data URL (`data:image/jpeg;base64,...`) so the
- * caller (profile photo picker, AI scanner) can use it directly.
+ * Camera race-condition fix: the known iOS issue (#1996) is that the first
+ * `getPhoto(Camera)` call fails because iOS shows the permission dialog while
+ * the camera tries to initialize. We fix this by **pre-requesting** camera
+ * permission before calling `getPhoto` — once permission is already granted,
+ * the camera initializes immediately with no race.
+ *
+ * Returns a JPEG data URL (`data:image/jpeg;base64,...`) on success, or `null`
+ * if the user cancelled or an error was already surfaced via toast.
  */
 import { Capacitor } from "@capacitor/core";
 import {
   Camera,
   CameraErrorCode,
   CameraPermissionState,
-  MediaTypeSelection,
-  type MediaResult,
+  CameraResultType,
+  CameraSource,
+  type ImageOptions,
 } from "@capacitor/camera";
-import { Filesystem } from "@capacitor/filesystem";
 import { toast } from "sonner";
 
 export type CaptureSource = "camera" | "photos";
@@ -35,37 +35,8 @@ export type CaptureSource = "camera" | "photos";
 const isNativePlatform = (): boolean =>
   typeof Capacitor !== "undefined" && Capacitor.isNativePlatform();
 
-/**
- * Read a native `MediaResult.uri` into a JPEG data URL via the Filesystem plugin.
- * Only used on native platforms where `thumbnail` is a low-res preview.
- */
-async function readUriAsDataUrl(uri: string): Promise<string> {
-  // `Filesystem.readFile` returns base64 when `directory` is omitted and the
-  // path is a fully-qualified Capacitor URI (which `MediaResult.uri` is).
-  const { data } = await Filesystem.readFile({ path: uri });
-  // `data` is a string (base64) on native. Guard just in case.
-  const base64 = typeof data === "string" ? data : await blobToBase64(data as Blob);
-  return `data:image/jpeg;base64,${base64}`;
-}
+/* ----------------------- permission helpers ----------------------- */
 
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      // Strip any data: prefix the reader may have added.
-      const comma = result.indexOf(",");
-      resolve(comma === -1 ? result : result.slice(comma + 1));
-    };
-    reader.onerror = () => reject(new Error("BLOB_READ_FAILED"));
-    reader.readAsDataURL(blob);
-  });
-}
-
-/**
- * Show a permission-denied toast with a one-tap shortcut to the system Settings
- * page (Apple's `app-settings:` URL scheme). Only meaningful on native iOS.
- */
 function showPermissionDeniedToast(source: CaptureSource): void {
   const what = source === "camera" ? "Camera" : "Photo library";
   toast.error(`${what} access denied`, {
@@ -84,56 +55,17 @@ function showPermissionDeniedToast(source: CaptureSource): void {
 }
 
 /**
- * Map a Capacitor Camera error code (OS-PLUG-CAMR-*) to a user-facing action.
- * Returns:
- *  - "silent"            → user cancelled, no toast.
- *  - "permission-denied" → permission denied toast already shown.
- *  - string              → user-facing error message to toast.
- *  - null                → unexpected, caller shows generic message.
- */
-function classifyCameraError(err: unknown, source: CaptureSource): "silent" | "permission-denied" | string | null {
-  const code =
-    (err as { code?: string })?.code ??
-    (err instanceof Error ? err.message : String(err));
-  const lower = String(code).toLowerCase();
-
-  // User cancelled — silent.
-  if (
-    code === CameraErrorCode.TakePhotoCancelled ||
-    /cancel/i.test(lower)
-  ) {
-    return "silent";
-  }
-
-  // Permission denied — show the Settings shortcut toast.
-  if (
-    code === CameraErrorCode.CameraPermissionDenied ||
-    code === CameraErrorCode.GalleryPermissionDenied ||
-    /denied|permission/i.test(lower)
-  ) {
-    showPermissionDeniedToast(source);
-    return "permission-denied";
-  }
-
-  // No camera hardware.
-  if (
-    code === CameraErrorCode.NoCameraAvailable ||
-    /no camera|unavailable|not available/i.test(lower)
-  ) {
-    return "No camera available on this device.";
-  }
-
-  return null;
-}
-
-/**
- * Pre-check + request permission for a capture source. The v8.1+ methods handle
- * permissions internally, but we still pre-check so that an already-denied state
- * (which iOS will NOT re-prompt) routes straight to the Settings toast instead
- * of calling the native method and getting a confusing rejection.
+ * Pre-check and request permission for a capture source.
  *
- * Returns true if it's safe to proceed (granted / limited / prompt→granted /
- * unknown), false if denied (toast already shown).
+ * For the camera, this is critical: it ensures the permission is already
+ * granted BEFORE `getPhoto` tries to initialize the camera preview, avoiding
+ * the well-known iOS race condition where the first call fails.
+ *
+ * For the photo library, this routes already-denied users straight to the
+ * Settings toast instead of a confusing rejection.
+ *
+ * Returns `true` if safe to proceed (granted / limited / unknown), `false` if
+ * denied (toast already shown).
  */
 async function ensurePermission(source: CaptureSource): Promise<boolean> {
   try {
@@ -163,57 +95,65 @@ async function ensurePermission(source: CaptureSource): Promise<boolean> {
     // granted | limited | unknown → proceed
     return true;
   } catch {
-    // checkPermissions can throw on older runtimes — fall through to the
-    // native method, which prompts internally as a last resort.
+    // checkPermissions can throw on older runtimes — fall through to getPhoto,
+    // which prompts internally as a last resort.
     return true;
   }
 }
 
-/**
- * Convert a `MediaResult` from the v8.1+ API into a JPEG data URL.
- *
- * - Native: read `uri` via Filesystem for full resolution.
- * - Web: `thumbnail` already contains the full base64-encoded image.
- *
- * `thumbnail` on native is a low-res preview, so we prefer `uri` there.
- */
-async function mediaResultToDataUrl(result: MediaResult): Promise<string> {
-  // Native path — full resolution via Filesystem.
-  if (isNativePlatform() && result.uri) {
-    return readUriAsDataUrl(result.uri);
+/* ----------------------- error classification ----------------------- */
+
+function classifyCameraError(
+  err: unknown,
+  source: CaptureSource,
+): "silent" | "permission-denied" | string | null {
+  const code =
+    (err as { code?: string })?.code ??
+    (err instanceof Error ? err.message : String(err));
+  const lower = String(code).toLowerCase();
+
+  // User cancelled — silent.
+  if (/cancel/i.test(lower)) {
+    return "silent";
   }
-  // Web path — thumbnail is the full image.
-  if (result.thumbnail) {
-    // `thumbnail` is base64 without a data: prefix on web.
-    return result.thumbnail.startsWith("data:")
-      ? result.thumbnail
-      : `data:image/jpeg;base64,${result.thumbnail}`;
+
+  // Permission denied — show the Settings shortcut toast.
+  if (
+    code === CameraErrorCode.CameraPermissionDenied ||
+    code === CameraErrorCode.GalleryPermissionDenied ||
+    /denied|permission/i.test(lower)
+  ) {
+    showPermissionDeniedToast(source);
+    return "permission-denied";
   }
-  // Last-resort: fetch webPath and convert. This is async-heavy but ensures
-  // we never return null when the plugin gave us *something*.
-  if (result.webPath) {
-    const res = await fetch(result.webPath);
-    const blob = await res.blob();
-    const base64 = await blobToBase64(blob);
-    return `data:image/jpeg;base64,${base64}`;
+
+  // No camera hardware.
+  if (
+    code === CameraErrorCode.NoCameraAvailable ||
+    /no camera|unavailable|not available/i.test(lower)
+  ) {
+    return "No camera available on this device.";
   }
-  throw new Error("NO_IMAGE_DATA");
+
+  return null;
 }
+
+/* ----------------------- public API ----------------------- */
 
 /**
  * Capture an image from the camera or photo library.
  *
- * On native iOS uses the v8.1+ `takePhoto` / `chooseFromGallery` methods, which
- * handle permissions correctly internally (no first-call race condition).
- * Pre-checks permission only to route already-denied users straight to the
- * Settings shortcut. Returns a JPEG data URL, or `null` if the user cancelled or
- * an error was already surfaced via toast.
+ * On native iOS uses `getPhoto` with an explicit `CameraSource`:
+ *  - "camera" → opens the camera (permission pre-requested to avoid race)
+ *  - "photos" → opens the photo library (never the camera)
+ *
+ * Returns a JPEG data URL, or `null` if the user cancelled or an error was
+ * already surfaced via toast.
  *
  * On web, falls back to a hidden file input (`capture` for camera).
  *
  * @param source  "camera" to take a new photo, "photos" to pick from the library.
- * @param maxEdge Optional max edge (px) for the captured image. Only applies on
- *                native (passed as `targetWidth`/`targetHeight`).
+ * @param maxEdge Optional max edge (px) for the captured image (native only).
  */
 export async function captureImage(
   source: CaptureSource,
@@ -223,34 +163,31 @@ export async function captureImage(
     const granted = await ensurePermission(source);
     if (!granted) return null;
 
+    const options: ImageOptions = {
+      resultType: CameraResultType.DataUrl,
+      source: source === "camera" ? CameraSource.Camera : CameraSource.Photos,
+      quality: 92,
+      correctOrientation: true,
+      // `allowEditing` is only supported for Camera on iOS, not Photos.
+      allowEditing: source === "camera",
+      saveToGallery: false,
+      // Width/height constrain the longest edge (aspect ratio preserved).
+      ...(maxEdge ? { width: maxEdge, height: maxEdge } : {}),
+    };
+
     try {
-      let result: MediaResult;
-      if (source === "camera") {
-        result = await Camera.takePhoto({
-          quality: 92,
-          correctOrientation: true,
-          saveToGallery: false,
-          // `editable` replaces the old `allowEditing`. Use in-app editing so
-          // the user can crop on iOS (external isn't supported on iOS anyway).
-          editable: "in-app",
-          ...(maxEdge
-            ? { targetWidth: maxEdge, targetHeight: maxEdge }
-            : {}),
-        });
-      } else {
-        const { results } = await Camera.chooseFromGallery({
-          mediaType: MediaTypeSelection.Photo,
-          allowMultipleSelection: false,
-          quality: 92,
-          correctOrientation: true,
-          ...(maxEdge
-            ? { targetWidth: maxEdge, targetHeight: maxEdge }
-            : {}),
-        });
-        if (!results || results.length === 0) return null;
-        result = results[0];
+      const photo = await Camera.getPhoto(options);
+      if (!photo.dataUrl) {
+        // Fallback: if dataUrl is missing, try webPath → fetch → data URL.
+        if (photo.webPath) {
+          const res = await fetch(photo.webPath);
+          const blob = await res.blob();
+          const dataUrl = await blobToDataUrl(blob);
+          return dataUrl;
+        }
+        throw new Error("NO_IMAGE_DATA");
       }
-      return await mediaResultToDataUrl(result);
+      return photo.dataUrl;
     } catch (err) {
       const classified = classifyCameraError(err, source);
       if (classified === "silent" || classified === "permission-denied") {
@@ -260,7 +197,6 @@ export async function captureImage(
         toast.error(classified);
         return null;
       }
-      // Unexpected error — surface a generic message but log for debugging.
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[native-camera] capture failed:", source, msg);
       toast.error("Could not capture that photo. Please try again.");
@@ -289,6 +225,15 @@ export async function captureImage(
       reader.readAsDataURL(file);
     };
     input.click();
+  });
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error("BLOB_READ_FAILED"));
+    reader.readAsDataURL(blob);
   });
 }
 

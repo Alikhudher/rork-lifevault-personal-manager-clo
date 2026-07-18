@@ -148,23 +148,99 @@ export interface ScanResult {
 
 /** ---------- Helpers ---------- */
 
+/**
+ * Robustly extract a JSON object from a model response.
+ *
+ * Handles the common failure modes:
+ *  1. Plain JSON → direct parse.
+ *  2. Markdown-fenced JSON (```json ... ``` or ``` ... ```) → strip fences.
+ *  3. JSON wrapped in prose ("Here is the result: {...}") → slice the first
+ *     balanced `{...}` block using brace matching (not just first/last index,
+ *     which breaks if prose contains stray braces).
+ *  4. Trailing content after the JSON object → brace matching stops at the
+ *     closing brace of the top-level object.
+ *  5. JSON with trailing commas (some models add them) → strip them.
+ *  6. Single-quoted strings (rare) → normalize to double quotes.
+ *
+ * Returns the parsed object or `null` if no valid JSON could be extracted.
+ */
 function safeJsonParse<T>(raw: string): T | null {
+  if (!raw || !raw.trim()) return null;
+
+  // Attempt 1: direct parse.
   try {
     return JSON.parse(raw) as T;
   } catch {
-    // Model sometimes wraps JSON in fences or prose. Try to slice out the
-    // first {...} block.
-    const start = raw.indexOf("{");
-    const end = raw.lastIndexOf("}");
-    if (start !== -1 && end > start) {
+    // continue
+  }
+
+  // Attempt 2: strip markdown code fences.
+  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch) {
+    try {
+      return JSON.parse(fenceMatch[1].trim()) as T;
+    } catch {
+      // continue to brace matching
+    }
+  }
+
+  // Attempt 3: balanced brace matching — find the first complete {...} block.
+  const extracted = extractFirstJsonObject(raw);
+  if (extracted) {
+    try {
+      return JSON.parse(extracted) as T;
+    } catch {
+      // Attempt 4: fix common issues (trailing commas, single quotes).
+      const cleaned = cleanJsonString(extracted);
       try {
-        return JSON.parse(raw.slice(start, end + 1)) as T;
+        return JSON.parse(cleaned) as T;
       } catch {
-        return null;
+        // give up
       }
     }
-    return null;
   }
+
+  return null;
+}
+
+/** Find the first balanced top-level JSON object in a string. */
+function extractFirstJsonObject(s: string): string | null {
+  const start = s.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+    } else if (ch === '"') {
+      inString = true;
+    } else if (ch === "{") {
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return s.slice(start, i + 1);
+      }
+    }
+  }
+  return null; // unbalanced — truncated output
+}
+
+/** Best-effort cleanup of common model JSON mistakes. */
+function cleanJsonString(s: string): string {
+  return s
+    // Remove trailing commas before } or ].
+    .replace(/,\s*([}\]])/g, "$1")
+    // Normalize single-quoted strings to double-quoted (naive but helps).
+    .replace(/'([^']*)'/g, '"$1"');
 }
 
 interface ChatChoice {
@@ -178,10 +254,18 @@ interface ChatResponse {
 /**
  * Low-level chat completion. Returns the assistant's text content.
  * Throws `AI_HTTP_ERROR` with status on non-2xx, `AI_EMPTY` on empty reply.
+ *
+ * Sends `response_format: { type: "json_object" }` when `json: true` to force
+ * valid JSON output (supported by Gemini via the Vercel AI Gateway). This
+ * eliminates the most common parse-failure cause (markdown fences / prose).
  */
 async function chatComplete(
   messages: unknown[],
-  options?: { temperature?: number; maxTokens?: number },
+  options?: {
+    temperature?: number;
+    maxTokens?: number;
+    json?: boolean;
+  },
 ): Promise<string> {
   if (!TOOLKIT_URL) {
     throw new Error("AI_NOT_CONFIGURED");
@@ -195,15 +279,20 @@ async function chatComplete(
   // runtime overwrites it with a delegated token before transport.
   if (TOOLKIT_SECRET) headers["Authorization"] = `Bearer ${TOOLKIT_SECRET}`;
 
+  const body: Record<string, unknown> = {
+    model: MODEL_ID,
+    messages,
+    temperature: options?.temperature ?? 0.2,
+    max_tokens: options?.maxTokens ?? 1500,
+  };
+  if (options?.json) {
+    body.response_format = { type: "json_object" };
+  }
+
   const res = await fetch(CHAT_URL, {
     method: "POST",
     headers,
-    body: JSON.stringify({
-      model: MODEL_ID,
-      messages,
-      temperature: options?.temperature ?? 0.2,
-      max_tokens: options?.maxTokens ?? 1500,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
@@ -425,8 +514,39 @@ export async function scanDocument(imageDataUrl: string): Promise<ScanResult> {
     },
   ];
 
-  const raw = await chatComplete(messages, { temperature: 0.1, maxTokens: 1200 });
-  const parsed = safeJsonParse<RawScan>(raw);
+  // Use JSON mode + higher token limit to avoid truncation on detailed docs.
+  const raw = await chatComplete(messages, {
+    temperature: 0.1,
+    maxTokens: 2000,
+    json: true,
+  });
+  let parsed = safeJsonParse<RawScan>(raw);
+
+  // If the first attempt fails to parse, retry once with a stricter prompt
+  // that explicitly demands pure JSON (no fences, no prose). This catches
+  // the rare case where JSON mode isn't honored by the upstream provider.
+  if (!parsed) {
+    console.warn("[ai] scan parse failed, retrying with stricter prompt");
+    const retryMessages = [
+      {
+        role: "system",
+        content: `${SCAN_SYSTEM}\n\nIMPORTANT: Respond with ONLY a raw JSON object. No markdown, no code fences, no explanation — just the JSON object starting with { and ending with }.`,
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Return only the JSON object now." },
+          { type: "image_url", image_url: { url: dataUrl } },
+        ],
+      },
+    ];
+    const retryRaw = await chatComplete(retryMessages, {
+      temperature: 0,
+      maxTokens: 2000,
+    });
+    parsed = safeJsonParse<RawScan>(retryRaw);
+  }
+
   if (!parsed) {
     throw new Error("AI_PARSE_FAILED");
   }
@@ -564,7 +684,11 @@ export async function naturalLanguageSearch(
       content: `VAULT SNAPSHOT:\n${ctx}\n\nQUESTION:\n${query}`,
     },
   ];
-  const raw = await chatComplete(messages, { temperature: 0.2, maxTokens: 800 });
+  const raw = await chatComplete(messages, {
+    temperature: 0.2,
+    maxTokens: 800,
+    json: true,
+  });
   const parsed = safeJsonParse<RawSearch>(raw);
   if (!parsed) {
     throw new Error("AI_PARSE_FAILED");

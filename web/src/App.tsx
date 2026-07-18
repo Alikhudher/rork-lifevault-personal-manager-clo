@@ -19,6 +19,7 @@ import CalendarPage from "./pages/CalendarPage";
 import Notifications from "./pages/Notifications";
 import NotificationSettings from "./pages/NotificationSettings";
 import Profile from "./pages/Profile";
+import Security from "./pages/Security";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -76,6 +77,7 @@ const AppRoutes = () => (
       <Route path="/notifications" element={<Notifications />} />
       <Route path="/notifications/settings" element={<NotificationSettings />} />
       <Route path="/profile" element={<Profile />} />
+      <Route path="/security" element={<Security />} />
     </Route>
 
     {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

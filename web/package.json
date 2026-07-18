@@ -15,12 +15,15 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@aparajita/capacitor-biometric-auth": "^10.0.0",
+    "@aparajita/capacitor-secure-storage": "^8.0.0",
     "@capacitor/camera": "^8.2.1",
     "@capacitor/cli": "^8.4.2",
     "@capacitor/core": "^8.4.2",
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/ios": "^8.4.2",
     "@capacitor/keyboard": "^8.0.5",
+    "@capacitor/privacy-screen": "^2.0.1",
     "@hookform/resolvers": "^3.10.0",
     "@radix-ui/react-accordion": "^1.2.11",
     "@radix-ui/react-alert-dialog": "^1.1.14",

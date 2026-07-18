@@ -191,6 +191,7 @@ export interface NotificationPrefs {
 export interface Settings {
   currency: string;
   darkMode: boolean;
+  /** Legacy biometric toggle (kept for backwards compat). Real config lives in SecuritySettings. */
   biometric: boolean;
   monthlyBudget: number;
   notifications: NotificationPrefs;
@@ -204,3 +205,47 @@ export const CURRENCIES: { code: string; label: string }[] = [
   { code: "NZD", label: "New Zealand Dollar (NZ$)" },
   { code: "CAD", label: "Canadian Dollar (C$)" },
 ];
+
+/* ------------------------------------------------------------------ */
+/* Security settings                                                   */
+/* ------------------------------------------------------------------ */
+
+/** PIN length: 4 or 6 digits. */
+export type PinLength = 4 | 6;
+
+/**
+ * Delay before the app re-locks after being backgrounded.
+ * `0` = lock immediately, `null` = never auto-lock.
+ */
+export type AutoLockDelay = 0 | 60 | 300 | 900 | null;
+
+export interface SecuritySettings {
+  /** Whether Face ID / Touch ID unlock is enabled. */
+  biometricEnabled: boolean;
+  /** Whether a numeric PIN is configured. */
+  pinEnabled: boolean;
+  /** PIN length (4 or 6). Only meaningful when `pinEnabled`. */
+  pinLength: PinLength;
+  /** Auto-lock delay in seconds, or `null` for never. */
+  autoLockDelay: AutoLockDelay;
+  /** Hide app content in the iOS App Switcher (privacy screen). */
+  hideInAppSwitcher: boolean;
+}
+
+export const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
+  biometricEnabled: false,
+  pinEnabled: false,
+  pinLength: 4,
+  autoLockDelay: 0,
+  hideInAppSwitcher: false,
+};
+
+export const AUTO_LOCK_OPTIONS: { value: AutoLockDelay; label: string }[] = [
+  { value: 0, label: "Immediately" },
+  { value: 60, label: "After 1 minute" },
+  { value: 300, label: "After 5 minutes" },
+  { value: 900, label: "After 15 minutes" },
+  { value: null, label: "Never" },
+];
+
+export const PIN_LENGTH_OPTIONS: PinLength[] = [4, 6];

@@ -17,7 +17,6 @@ import {
   MessageSquarePlus,
   Moon,
   PiggyBank,
-  ScanFace,
   Share2,
   Shield,
   ShieldCheck,
@@ -341,20 +340,11 @@ export default function Profile() {
             onClick={() => openSheet("password")}
           />
           <SettingRow
-            icon={ScanFace}
+            icon={Shield}
             bubble="bg-info/12 text-info"
-            title="Face ID / biometric lock"
-            subtitle="Require Face ID to open the app"
-            right={
-              <Switch
-                checked={settings.biometric}
-                onCheckedChange={(biometric) => {
-                  updateSettings({ biometric });
-                  toast.success(biometric ? "Biometric lock enabled" : "Biometric lock disabled");
-                }}
-                aria-label="Toggle biometric lock"
-              />
-            }
+            title="Security"
+            subtitle="Face ID, PIN, auto-lock & privacy"
+            onClick={() => navigate("/security")}
           />
           <SettingRow
             icon={Smartphone}

@@ -10,7 +10,6 @@ import {
 } from "@capacitor/camera";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { initials } from "@/lib/format";
-import { cn } from "@/lib/utils";
 
 /**
  * Maximum stored edge length (px) and encoded size (bytes) for a profile
@@ -85,9 +84,9 @@ function fileToDownscaledDataUrl(file: File): Promise<string> {
  * user's expectation: tapping the avatar opens the library picker.
  *
  * On a Capacitor native runtime (iOS/Android) it uses `@capacitor/camera`,
- * which performs the real permission prompt, launches the native photo picker,
- * and returns a pre-downscaled base64 JPEG. A secondary "Take photo" action is
- * offered on native.
+ * which performs the real permission prompt, launches the native photo picker
+ * or camera, and returns a pre-downscaled base64 JPEG. A secondary "Take photo"
+ * action is offered on native.
  *
  * On plain web it falls back to a visually-hidden (but rendered) file input
  * with the same canvas downscaling pipeline. The input is kept in the layout
@@ -97,6 +96,18 @@ function fileToDownscaledDataUrl(file: File): Promise<string> {
  * Permission denials are handled gracefully: a friendly toast is shown and,
  * on native, the user is offered a one-tap shortcut to open the system
  * settings page for the app so they can grant access without hunting for it.
+ *
+ * Camera reliability notes:
+ *  - We pre-check permissions with `checkPermissions` first. If the state is
+ *    `denied`, iOS will NOT re-prompt, so we immediately route to the
+ *    "Open Settings" toast instead of calling `requestPermissions` (which
+ *    would silently no-op and confuse the user).
+ *  - If the state is `prompt`, we call `requestPermissions` to trigger the
+ *    system dialog, then proceed only if it resolves to `granted`/`limited`.
+ *  - `saveToGallery: false` avoids an extra "Add Photos" permission prompt
+ *    on iOS when capturing with the camera.
+ *  - `allowEditing` is only set for `CameraSource.Camera` — setting it for
+ *    `Photos` causes a native crash on iOS.
  */
 export function PhotoPicker({
   value,
@@ -112,9 +123,10 @@ export function PhotoPicker({
   const isNative = typeof Capacitor !== "undefined" && Capacitor.isNativePlatform();
 
   const openSettings = useCallback(async () => {
+    // `app-settings:` is Apple's officially supported URL scheme that opens
+    // this app's row in the Settings app (privacy/permissions section). It
+    // works directly from WKWebView — no native plugin required.
     try {
-      // @capacitor/app is not installed; use the generic iOS URL scheme via
-      // window.open which the WKWebView routes to Settings on iOS.
       window.location.href = "app-settings:";
     } catch {
       // ignore — toast already shown
@@ -125,9 +137,11 @@ export function PhotoPicker({
     (which: Option) => {
       const what = which === "camera" ? "camera" : "photo library";
       toast.error(`${what.charAt(0).toUpperCase() + what.slice(1)} access denied`, {
-        description: isNative ? "Tap below to open Settings and enable it." : undefined,
+        description: isNative
+          ? "Tap below to open Settings and enable it."
+          : "Update your browser permissions and try again.",
         action: isNative
-          ? { label: "Open settings", onClick: openSettings }
+          ? { label: "Open settings", onClick: () => void openSettings() }
           : undefined,
       });
     },
@@ -148,6 +162,9 @@ export function PhotoPicker({
           width: MAX_EDGE,
           height: MAX_EDGE,
           correctOrientation: true,
+          // Do not save captured photos to the gallery — avoids an extra
+          // "Add Photos" permission prompt on iOS.
+          saveToGallery: false,
           // Use the default 'fullscreen' presentation style. 'popover' is
           // iPad-only and crashes on iPhone (no source view for the popover
           // controller), so we omit it entirely.
@@ -172,6 +189,11 @@ export function PhotoPicker({
         }
         // "cancelled" / user dismissed — silent
         if (/cancel/i.test(message)) return;
+        // "no camera available" / hardware errors
+        if (/no camera|unavailable|not available/i.test(message)) {
+          toast.error("No camera available on this device");
+          return;
+        }
         toast.error("Could not capture that photo. Please try again.");
       } finally {
         setBusy(null);
@@ -181,10 +203,17 @@ export function PhotoPicker({
   );
 
   /**
-   * Pre-flight permission request. We use `requestPermissions` (not just
-   * `checkPermissions`) so iOS shows the system prompt on first launch and
-   * returns the final state. If the user already denied, we surface the
-   * "open Settings" shortcut instead of silently failing.
+   * Robust permission-gated pick flow:
+   *  1. `checkPermissions` — read the current system state without prompting.
+   *  2. `denied` → route straight to the "Open Settings" toast. iOS will not
+   *     re-prompt, so calling `requestPermissions` would silently no-op.
+   *  3. `prompt` → call `requestPermissions` to trigger the system dialog,
+   *     then proceed only on `granted` / `limited`.
+   *  4. `granted` / `limited` → launch the picker directly.
+   *
+   * If anything throws (older runtimes, missing plugin), fall back to calling
+   * `getPhoto` directly — Capacitor's `getPhoto` internally prompts when no
+   * permission has been recorded yet.
    */
   const pickWithPermissionRequest = useCallback(
     (source: Option) => {
@@ -199,21 +228,38 @@ export function PhotoPicker({
       }
       void (async () => {
         try {
-          const status = await Camera.requestPermissions({
-            permissions: [source],
-          });
-          const state: CameraPermissionState =
+          const status = await Camera.checkPermissions();
+          const current: CameraPermissionState =
             source === "camera" ? status.camera : status.photos;
-          if (state === "denied") {
+
+          if (current === "denied") {
+            // iOS won't re-prompt once denied — send the user to Settings.
             handlePermissionDenied(source);
             return;
           }
-          // "granted" | "limited" | "prompt" → proceed. getPhoto will handle
-          // any remaining prompt if the system didn't show one.
+
+          if (current === "prompt") {
+            // Trigger the system permission dialog.
+            const requested = await Camera.requestPermissions({
+              permissions: [source],
+            });
+            const nextState: CameraPermissionState =
+              source === "camera" ? requested.camera : requested.photos;
+            if (nextState === "denied") {
+              handlePermissionDenied(source);
+              return;
+            }
+            // granted | limited → proceed
+            await pickFromNative(source);
+            return;
+          }
+
+          // granted | limited (or unknown on older runtimes) → proceed
           await pickFromNative(source);
         } catch {
-          // requestPermissions can throw on older runtimes — just attempt the
-          // pick; getPhoto() will prompt internally as a fallback.
+          // checkPermissions/requestPermissions can throw on older runtimes —
+          // just attempt the pick; getPhoto() will prompt internally as a
+          // fallback.
           await pickFromNative(source);
         }
       })();

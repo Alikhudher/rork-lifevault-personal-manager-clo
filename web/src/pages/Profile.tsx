@@ -216,21 +216,16 @@ export default function Profile() {
             aria-hidden
           />
           <div className="relative flex items-center gap-4">
-            <button
-              type="button"
-              onClick={() => openSheet("edit")}
-              className="transition-transform active:scale-95"
-              aria-label="Change profile photo"
-            >
-              <Avatar className="h-16 w-16 rounded-full ring-2 ring-white/25">
-                {user?.photo ? (
-                  <AvatarImage src={user.photo} alt={user?.name ?? "Profile"} />
-                ) : null}
-                <AvatarFallback className="rounded-full bg-white/15 text-[20px] font-extrabold text-white">
-                  {initials(user?.name ?? "You")}
-                </AvatarFallback>
-              </Avatar>
-            </button>
+            {/* Avatar is decorative only — editing is done via the Edit
+                button in the header, so there's a single entry point. */}
+            <Avatar className="h-16 w-16 shrink-0 rounded-full ring-2 ring-white/25" aria-hidden>
+              {user?.photo ? (
+                <AvatarImage src={user.photo} alt={user?.name ?? "Profile"} />
+              ) : null}
+              <AvatarFallback className="rounded-full bg-white/15 text-[20px] font-extrabold text-white">
+                {initials(user?.name ?? "You")}
+              </AvatarFallback>
+            </Avatar>
             <div className="min-w-0 flex-1">
               <p className="truncate text-[18px] font-extrabold tracking-tight">{user?.name}</p>
               <p className="truncate text-[13px] text-white/65">{user?.email}</p>

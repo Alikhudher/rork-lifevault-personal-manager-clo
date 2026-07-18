@@ -8,6 +8,7 @@
         "@capacitor/cli": "^8.4.2",
         "@capacitor/core": "^8.4.2",
         "@capacitor/ios": "^8.4.2",
+        "@capacitor/keyboard": "^8.0.5",
         "@hookform/resolvers": "^3.10.0",
         "@radix-ui/react-accordion": "^1.2.11",
         "@radix-ui/react-alert-dialog": "^1.1.14",
@@ -112,6 +113,8 @@
     "@capacitor/core": ["@capacitor/core@8.4.2", "", { "dependencies": { "tslib": "^2.1.0" } }, "sha512-fQPRb3JXRaU2pnufDUvqOjhsrYxDQeFRZyaj/sHydIUxD2NxOGHKMpmKUdI+U4OOmKuGZyvRpi7TSJU+7Bjbmg=="],
 
     "@capacitor/ios": ["@capacitor/ios@8.4.2", "", { "peerDependencies": { "@capacitor/core": "^8.4.0" } }, "sha512-ClVzIjK++yRjsRPOpdEzhsZfbHfoEc0f4M6vD0v7sWh0qcoF6NkxNAeHpWTn4OPJpJfpGGoYsq+IfEHrYyBiWA=="],
+
+    "@capacitor/keyboard": ["@capacitor/keyboard@8.0.5", "", { "peerDependencies": { "@capacitor/core": ">=8.0.0" } }, "sha512-oFXygC4eKYA5l2MdpTR06L2M/4x6e2SLD5yS1T9+UBDKTkzyvhWKEhbYLUaTIBPpLKqlfGudJw1X73S1H9eUzQ=="],
 
     "@csstools/color-helpers": ["@csstools/color-helpers@6.1.0", "", {}, "sha512-064IFJdjTfUqnjpCVpMOdbr8FLQBhinbZj6yRv2An2E41O/pLEXqfFRWqGq/SxlE5PEUYTlvWsG2r8MswAVvkg=="],
 

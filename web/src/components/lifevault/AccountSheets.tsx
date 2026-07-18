@@ -1,6 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Camera,
   Check,
   CheckCircle2,
   Clock,
@@ -17,7 +16,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow, parseISO } from "date-fns";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -44,8 +42,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { FormSheet, Field } from "@/components/lifevault/FormSheet";
+import { PhotoPicker } from "@/components/lifevault/PhotoPicker";
 import { useApp } from "@/context/AppContext";
-import { initials } from "@/lib/format";
 import type { DeviceSession } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -82,7 +80,6 @@ export function EditProfileSheet({
   const [code, setCode] = useState<string>("");
   const [sending, setSending] = useState<boolean>(false);
   const [resendIn, setResendIn] = useState<number>(0);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Sync form state whenever the sheet opens.
   useEffect(() => {
@@ -116,64 +113,6 @@ export function EditProfileSheet({
       (a) => a.email.toLowerCase() === normalized && a.email.toLowerCase() !== (user?.email ?? "").toLowerCase(),
     );
   }, [email, accounts, user?.email]);
-
-  const handlePhotoPick = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    // Always reset the input value so the same file can be re-picked.
-    e.target.value = "";
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      toast.error("Please choose an image file");
-      return;
-    }
-    if (file.size > 20 * 1024 * 1024) {
-      toast.error("Photo must be under 20 MB");
-      return;
-    }
-    // Downscale large images via canvas before storing as a data URL.
-    // This avoids memory crashes on real iPhones when a 12MP camera photo
-    // is read directly into a base64 string and persisted to localStorage.
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      const maxDim = 512;
-      let { width, height } = img;
-      if (width > maxDim || height > maxDim) {
-        if (width >= height) {
-          height = Math.round((height / width) * maxDim);
-          width = maxDim;
-        } else {
-          width = Math.round((width / height) * maxDim);
-          height = maxDim;
-        }
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        toast.error("Could not process the photo");
-        return;
-      }
-      ctx.drawImage(img, 0, 0, width, height);
-      try {
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
-        if (dataUrl.length > 4 * 1024 * 1024) {
-          toast.error("Photo is too large after processing");
-          return;
-        }
-        setPhoto(dataUrl);
-      } catch {
-        toast.error("Could not process the photo");
-      }
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      toast.error("Could not load that image");
-    };
-    img.src = url;
-  }, []);
 
   const sendCode = useCallback(() => {
     setSending(true);
@@ -233,59 +172,9 @@ export function EditProfileSheet({
     >
       {step === "form" ? (
         <div className="space-y-5">
-          {/* Photo picker */}
-          <div className="flex flex-col items-center gap-3 pb-1">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="group relative flex h-24 w-24 items-center justify-center rounded-full bg-secondary ring-2 ring-border transition-transform active:scale-95"
-              aria-label="Change profile photo"
-            >
-              {photo ? (
-                <Avatar className="h-24 w-24 rounded-full">
-                  <AvatarImage src={photo} alt={name || "Profile"} />
-                  <AvatarFallback className="rounded-full bg-primary text-[22px] font-extrabold text-primary-foreground">
-                    {initials(name || "You")}
-                  </AvatarFallback>
-                </Avatar>
-              ) : (
-                <span className="text-[24px] font-extrabold text-primary">
-                  {initials(name || "You")}
-                </span>
-              )}
-              <span className="absolute -bottom-1 -right-1 flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md ring-2 ring-background transition-transform group-hover:scale-105">
-                <Camera className="h-[18px] w-[18px]" />
-              </span>
-            </button>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="text-[13px] font-bold text-primary dark:text-foreground"
-              >
-                Upload photo
-              </button>
-              {photo && (
-                <>
-                  <span className="text-muted-foreground">·</span>
-                  <button
-                    type="button"
-                    onClick={() => setPhoto(null)}
-                    className="text-[13px] font-bold text-destructive"
-                  >
-                    Remove
-                  </button>
-                </>
-              )}
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={handlePhotoPick}
-            />
-          </div>
+          {/* Photo picker — uses @capacitor/camera on native (real permission
+              prompts + native picker) and a hidden file input on the web. */}
+          <PhotoPicker value={photo} onChange={setPhoto} name={name} />
 
           <Field label="Full name">
             <Input

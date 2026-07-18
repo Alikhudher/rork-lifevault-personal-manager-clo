@@ -15,31 +15,38 @@ workflows:
       xcode: latest
 
     scripts:
-      - name: Install dependencies
+      - name: Install Bun
         script: |
-          cd web
           # This project uses bun as its package manager (bun.lock is the
-          # source of truth). The stale package-lock.json was removed, so we
-          # must install with bun --frozen-lockfile instead of npm ci.
+          # source of truth). Install bun into the CI environment so every
+          # subsequent step can use it instead of npm.
           if ! command -v bun >/dev/null 2>&1; then
             curl -fsSL https://bun.sh/install | bash
             export BUN_INSTALL="$HOME/.bun"
             export PATH="$BUN_INSTALL/bin:$PATH"
           fi
+          # Persist bun on PATH for all following scripts.
+          echo "export BUN_INSTALL=\"$HOME/.bun\"" >> "$CM_ENV_DIR/env.sh"
+          echo "export PATH=\"$BUN_INSTALL/bin:$PATH\"" >> "$CM_ENV_DIR/env.sh"
+          bun --version
+
+      - name: Install dependencies
+        script: |
+          cd web
           bun install --frozen-lockfile
 
       - name: Build web app
         script: |
           cd web
-          npm run build
+          bun run build
 
       - name: Create and sync iOS project
         script: |
           cd web
           if [ ! -d "ios" ]; then
-            npx cap add ios
+            bunx cap add ios
           fi
-          npx cap sync ios
+          bunx cap sync ios
 
           # Inject camera, photo library & Face ID permission strings into the
           # generated iOS Info.plist. Capacitor's Camera plugin requires

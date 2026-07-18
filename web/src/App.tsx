@@ -11,6 +11,7 @@ import SignIn from "./pages/auth/SignIn";
 import SignUp from "./pages/auth/SignUp";
 import ForgotPassword from "./pages/auth/ForgotPassword";
 import Home from "./pages/Home";
+import AIAssistant from "./pages/AIAssistant";
 import Documents from "./pages/Documents";
 import Expenses from "./pages/Expenses";
 import Subscriptions from "./pages/Subscriptions";
@@ -67,6 +68,7 @@ const AppRoutes = () => (
 
     <Route element={<AppShell />}>
       <Route path="/" element={<Home />} />
+      <Route path="/assistant" element={<AIAssistant />} />
       <Route path="/documents" element={<Documents />} />
       <Route path="/expenses" element={<Expenses />} />
       <Route path="/subscriptions" element={<Subscriptions />} />

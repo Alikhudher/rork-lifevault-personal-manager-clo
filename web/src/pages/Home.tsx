@@ -11,6 +11,7 @@ import {
   PiggyBank,
   Plus,
   RefreshCcw,
+  Sparkles,
   Wallet,
 } from "lucide-react";
 import { useApp } from "@/context/AppContext";
@@ -144,6 +145,29 @@ export default function Home() {
             </div>
           </div>
         </div>
+      </section>
+
+      {/* AI Assistant hero */}
+      <section className="px-4 pt-4">
+        <Link
+          to="/assistant"
+          className="group relative flex items-center gap-4 overflow-hidden rounded-3xl bg-gradient-to-br from-[hsl(219,60%,15%)] via-[hsl(218,57%,20%)] to-[hsl(255,55%,32%)] p-4 text-white shadow-lg shadow-primary/20 transition-transform active:scale-[0.99]"
+        >
+          <div className="absolute -right-10 -top-12 h-36 w-36 rounded-full bg-white/5" aria-hidden />
+          <div className="absolute -bottom-12 -left-8 h-32 w-32 rounded-full bg-info/15 blur-2xl" aria-hidden />
+          <span className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/10 ring-1 ring-white/15">
+            <Sparkles className="h-6 w-6" />
+          </span>
+          <div className="relative min-w-0 flex-1">
+            <p className="text-[15px] font-extrabold tracking-tight">AI Assistant</p>
+            <p className="mt-0.5 truncate text-[12.5px] text-white/70">
+              Scan a photo or search your vault in natural language
+            </p>
+          </div>
+          <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/10 ring-1 ring-white/15 transition-transform group-hover:translate-x-0.5">
+            <ArrowRight className="h-4 w-4" />
+          </span>
+        </Link>
       </section>
 
       {/* Stat grid */}

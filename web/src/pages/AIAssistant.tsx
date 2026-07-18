@@ -19,7 +19,6 @@ import { toast } from "sonner";
 import { Capacitor } from "@capacitor/core";
 import {
   Camera as CameraCap,
-  CameraPermissionState,
   CameraResultType,
   CameraSource,
 } from "@capacitor/camera";
@@ -85,43 +84,17 @@ async function captureImage(
   const isNative =
     typeof Capacitor !== "undefined" && Capacitor.isNativePlatform();
   if (isNative) {
-    try {
-      const status = await CameraCap.checkPermissions();
-      const current: CameraPermissionState =
-        source === "camera" ? status.camera : status.photos;
-      if (current === "denied") {
-        toast.error("Permission denied", {
-          description: "Enable it in Settings to use this feature.",
-          action: {
-            label: "Open settings",
-            onClick: () => {
-              try {
-                window.location.href = "app-settings:";
-              } catch {
-                /* ignore */
-              }
-            },
-          },
-        });
-        return null;
-      }
-      if (current === "prompt") {
-        const requested = await CameraCap.requestPermissions({
-          permissions: [source],
-        });
-        const next: CameraPermissionState =
-          source === "camera" ? requested.camera : requested.photos;
-        if (next === "denied") {
-          toast.error("Permission denied");
-          return null;
-        }
-      }
-    } catch {
-      // checkPermissions may throw on older runtimes — fall through to getPhoto.
-    }
+    // We call getPhoto directly and let Capacitor handle the iOS permission
+    // prompt internally. The previous pre-check flow (checkPermissions +
+    // requestPermissions) was fragile: on some iOS versions `photos` reports
+    // `denied` before any prompt, which short-circuited the pick and, in some
+    // Capacitor builds, made the source fall back to the camera. Calling
+    // getPhoto directly with the explicit source is the reliable path.
     try {
       const photo = await CameraCap.getPhoto({
         quality: 90,
+        // allowEditing is only supported for CameraSource.Camera on iOS.
+        // Setting it for Photos causes a native crash, so gate it.
         allowEditing: source === "camera",
         resultType: CameraResultType.DataUrl,
         source: source === "camera" ? CameraSource.Camera : CameraSource.Photos,
@@ -133,7 +106,30 @@ async function captureImage(
       return photo.dataUrl ?? null;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // User dismissed the picker / camera — silent.
       if (/cancel/i.test(msg)) return null;
+      // Permission denied — offer a shortcut to Settings.
+      if (/denied|permission/i.test(msg)) {
+        toast.error(
+          source === "camera"
+            ? "Camera access denied"
+            : "Photo library access denied",
+          {
+            description: "Enable it in Settings to use this feature.",
+            action: {
+              label: "Open settings",
+              onClick: () => {
+                try {
+                  window.location.href = "app-settings:";
+                } catch {
+                  /* ignore */
+                }
+              },
+            },
+          },
+        );
+        return null;
+      }
       toast.error(userFacingError(err));
       return null;
     }
@@ -279,7 +275,7 @@ function ScanPanel({ onScanComplete }: ScanPanelProps) {
                   className="flex flex-col items-center gap-2 rounded-2xl bg-white/10 px-4 py-5 text-center ring-1 ring-white/15 transition-all active:scale-[0.98] hover:bg-white/15"
                 >
                   <ImageIcon className="h-6 w-6" />
-                  <span className="text-[13px] font-bold">Photo library</span>
+                  <span className="text-[13px] font-bold">Add photo</span>
                 </button>
               </div>
             )}

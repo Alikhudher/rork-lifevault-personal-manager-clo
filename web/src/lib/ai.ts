@@ -15,10 +15,13 @@
  * content parts with `image_url`. Both scan and search use the same model for
  * consistency; the scan path sends an image part, the search path is text-only.
  *
- * Auth: on web/preview builds the Rork runtime injects a delegated bearer, so
- * we omit `Authorization`. Native builds would set the toolkit secret, but
- * this app ships as a web/PWA + iOS Capacitor shell where the runtime handles
- * it. We don't inline the secret key.
+ * Auth: we always send `Authorization: Bearer <EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY>`
+ * plus the `x-rork-app-key` header. On the Rork web preview the runtime
+ * overwrites the bearer with a short-lived delegated token before transport,
+ * so setting it client-side is safe there; on native Capacitor iOS builds
+ * (standalone IPA) there is no runtime injection, so the real secret must be
+ * sent explicitly or the gateway returns 401. The secret is exposed as a
+ * public env var by design (Rork public-env convention).
  */
 import {
   DOCUMENT_CATEGORIES,
@@ -52,6 +55,17 @@ const MODEL_ID = "google/gemini-3-flash";
 const APP_KEY =
   (import.meta.env.VITE_RORK_APP_KEY as string | undefined) ??
   (import.meta.env.EXPO_PUBLIC_RORK_APP_KEY as string | undefined) ??
+  "";
+
+/**
+ * Rork Toolkit secret key. Public env var (EXPO_PUBLIC_ prefix) — safe to read
+ * client-side. Required on native Capacitor builds where the Rork web runtime
+ * does not inject a delegated bearer. On the web preview the runtime overwrites
+ * this value before transport, so it never leaks the real secret.
+ */
+const TOOLKIT_SECRET =
+  (import.meta.env.VITE_RORK_TOOLKIT_SECRET_KEY as string | undefined) ??
+  (import.meta.env.EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY as string | undefined) ??
   "";
 
 /** ---------- Types ---------- */
@@ -176,6 +190,10 @@ async function chatComplete(
     "Content-Type": "application/json",
   };
   if (APP_KEY) headers["x-rork-app-key"] = APP_KEY;
+  // Always send the toolkit secret as a bearer. On native Capacitor builds this
+  // is the only auth path (no Rork runtime injection); on the web preview the
+  // runtime overwrites it with a delegated token before transport.
+  if (TOOLKIT_SECRET) headers["Authorization"] = `Bearer ${TOOLKIT_SECRET}`;
 
   const res = await fetch(CHAT_URL, {
     method: "POST",

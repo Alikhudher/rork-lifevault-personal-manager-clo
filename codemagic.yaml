@@ -18,7 +18,15 @@ workflows:
       - name: Install dependencies
         script: |
           cd web
-          npm ci
+          # This project uses bun as its package manager (bun.lock is the
+          # source of truth). The stale package-lock.json was removed, so we
+          # must install with bun --frozen-lockfile instead of npm ci.
+          if ! command -v bun >/dev/null 2>&1; then
+            curl -fsSL https://bun.sh/install | bash
+            export BUN_INSTALL="$HOME/.bun"
+            export PATH="$BUN_INSTALL/bin:$PATH"
+          fi
+          bun install --frozen-lockfile
 
       - name: Build web app
         script: |

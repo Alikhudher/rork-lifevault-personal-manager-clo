@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
@@ -7,7 +7,6 @@ import {
   Camera,
   ChevronRight,
   FileText,
-  Image as ImageIcon,
   Loader2,
   Receipt,
   Search as SearchIcon,
@@ -81,13 +80,12 @@ interface ScanPanelProps {
 function ScanPanel({ onScanComplete }: ScanPanelProps) {
   const [image, setImage] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleCapture = useCallback(
-    async (source: "camera" | "photos") => {
+    async () => {
       // 1600px max edge preserves enough detail for OCR / field extraction
       // while keeping the data URL well under the AI gateway body limit.
-      const dataUrl = await captureImage(source, 1600);
+      const dataUrl = await captureImage("camera", 1600);
       if (!dataUrl) return;
       setImage(dataUrl);
       setLoading(true);
@@ -100,31 +98,6 @@ function ScanPanel({ onScanComplete }: ScanPanelProps) {
       } finally {
         setLoading(false);
       }
-    },
-    [onScanComplete],
-  );
-
-  const handleFilePick = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      e.target.value = "";
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const dataUrl = reader.result as string;
-        setImage(dataUrl);
-        setLoading(true);
-        try {
-          const result = await scanDocument(dataUrl);
-          onScanComplete(result);
-        } catch (err) {
-          const msg = userFacingError(err);
-          if (msg) toast.error(msg);
-        } finally {
-          setLoading(false);
-        }
-      };
-      reader.readAsDataURL(file);
     },
     [onScanComplete],
   );
@@ -178,37 +151,17 @@ function ScanPanel({ onScanComplete }: ScanPanelProps) {
                 )}
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={() => handleCapture("camera")}
-                  className="flex flex-col items-center gap-2 rounded-2xl bg-white/10 px-4 py-5 text-center ring-1 ring-white/15 transition-all active:scale-[0.98] hover:bg-white/15"
-                >
-                  <Camera className="h-6 w-6" />
-                  <span className="text-[13px] font-bold">Take photo</span>
-                </button>
-                <button
-                  onClick={() => handleCapture("photos")}
-                  className="flex flex-col items-center gap-2 rounded-2xl bg-white/10 px-4 py-5 text-center ring-1 ring-white/15 transition-all active:scale-[0.98] hover:bg-white/15"
-                >
-                  <ImageIcon className="h-6 w-6" />
-                  <span className="text-[13px] font-bold">Add photo</span>
-                </button>
-              </div>
+              <button
+                onClick={() => void handleCapture()}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-white/10 px-4 py-5 text-center ring-1 ring-white/15 transition-all active:scale-[0.98] hover:bg-white/15"
+              >
+                <Camera className="h-6 w-6" />
+                <span className="text-[15px] font-bold">Take photo</span>
+              </button>
             )}
           </div>
         </div>
       </div>
-
-      {/* Hidden file input for web */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        onChange={handleFilePick}
-        aria-hidden
-        tabIndex={-1}
-        className="hidden"
-      />
 
       {/* Tips */}
       <div className="rounded-2xl bg-card p-4 shadow-sm ring-1 ring-border">

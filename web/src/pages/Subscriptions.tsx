@@ -5,6 +5,16 @@ import { CircleSlash, Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { PageHeader, SectionTitle } from "@/components/lifevault/PageHeader";
 import { ChipPicker, Field, FormSheet } from "@/components/lifevault/FormSheet";
 import { SubStatusBadge } from "@/components/lifevault/StatusBadge";
@@ -58,6 +68,7 @@ export default function Subscriptions() {
   const [tab, setTab] = useState<"active" | "cancelled">("active");
   const [sheetOpen, setSheetOpen] = useState<boolean>(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
   const [form, setForm] = useState<SubFormState>(emptyForm());
   const currency = settings.currency;
 
@@ -337,11 +348,7 @@ export default function Subscriptions() {
                 type="button"
                 variant="outline"
                 aria-label="Delete subscription"
-                onClick={() => {
-                  deleteSubscription(editingId);
-                  setSheetOpen(false);
-                  toast.success("Subscription deleted");
-                }}
+                onClick={() => setConfirmDelete(true)}
                 className="h-12 rounded-xl border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
               >
                 <Trash2 className="h-[18px] w-[18px]" />
@@ -353,6 +360,32 @@ export default function Subscriptions() {
           </div>
         </div>
       </FormSheet>
+
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent className="mx-auto max-w-[340px] rounded-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this subscription?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove it from your tracked recurring payments. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="rounded-xl">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (!editingId) return;
+                deleteSubscription(editingId);
+                setConfirmDelete(false);
+                setSheetOpen(false);
+                toast.success("Subscription deleted");
+              }}
+              className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

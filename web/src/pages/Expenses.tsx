@@ -6,6 +6,16 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { PageHeader, SectionTitle } from "@/components/lifevault/PageHeader";
 import { ChipPicker, Field, FormSheet } from "@/components/lifevault/FormSheet";
 import { CategoryBubble, EXPENSE_META, PAYMENT_META } from "@/components/lifevault/category-meta";
@@ -60,6 +70,7 @@ export default function Expenses() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [sheetOpen, setSheetOpen] = useState<boolean>(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
   const [form, setForm] = useState<ExpenseFormState>(emptyForm());
   const currency = settings.currency;
   const now = useMemo(() => new Date(), []);
@@ -121,6 +132,10 @@ export default function Expenses() {
     const amount = Number.parseFloat(form.amount);
     if (!Number.isFinite(amount) || amount <= 0) {
       toast.error("Enter a valid amount");
+      return;
+    }
+    if (!form.date) {
+      toast.error("Pick a date");
       return;
     }
     const iso = new Date(`${form.date}T${form.time || "12:00"}`).toISOString();
@@ -368,11 +383,7 @@ export default function Expenses() {
                 type="button"
                 variant="outline"
                 aria-label="Delete expense"
-                onClick={() => {
-                  deleteExpense(editingId);
-                  setSheetOpen(false);
-                  toast.success("Expense deleted");
-                }}
+                onClick={() => setConfirmDelete(true)}
                 className="h-12 rounded-xl border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
               >
                 <Trash2 className="h-[18px] w-[18px]" />
@@ -384,6 +395,32 @@ export default function Expenses() {
           </div>
         </div>
       </FormSheet>
+
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent className="mx-auto max-w-[340px] rounded-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this expense?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove it from your records. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="rounded-xl">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (!editingId) return;
+                deleteExpense(editingId);
+                setConfirmDelete(false);
+                setSheetOpen(false);
+                toast.success("Expense deleted");
+              }}
+              className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

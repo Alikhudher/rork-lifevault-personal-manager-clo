@@ -19,6 +19,16 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { PageHeader } from "@/components/lifevault/PageHeader";
 import { ChipPicker, Field, FormSheet } from "@/components/lifevault/FormSheet";
 import { useApp } from "@/context/AppContext";
@@ -54,6 +64,7 @@ export default function CalendarPage() {
   const [selectedDay, setSelectedDay] = useState<Date>(new Date());
   const [sheetOpen, setSheetOpen] = useState<boolean>(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
   const [form, setForm] = useState<AptFormState>(emptyForm());
 
   useEffect(() => {
@@ -363,11 +374,7 @@ export default function CalendarPage() {
                 type="button"
                 variant="outline"
                 aria-label="Delete appointment"
-                onClick={() => {
-                  deleteAppointment(editingId);
-                  setSheetOpen(false);
-                  toast.success("Appointment deleted");
-                }}
+                onClick={() => setConfirmDelete(true)}
                 className="h-12 rounded-xl border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
               >
                 <Trash2 className="h-[18px] w-[18px]" />
@@ -379,6 +386,32 @@ export default function CalendarPage() {
           </div>
         </div>
       </FormSheet>
+
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent className="mx-auto max-w-[340px] rounded-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this appointment?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove it from your calendar. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="rounded-xl">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (!editingId) return;
+                deleteAppointment(editingId);
+                setConfirmDelete(false);
+                setSheetOpen(false);
+                toast.success("Appointment deleted");
+              }}
+              className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

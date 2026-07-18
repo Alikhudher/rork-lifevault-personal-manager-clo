@@ -74,7 +74,7 @@ export function EditProfileSheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { user, updateUser, verifyEmail } = useApp();
+  const { user, updateUser, verifyEmail, accounts } = useApp();
   const [name, setName] = useState<string>("");
   const [email, setEmail] = useState<string>("");
   const [photo, setPhoto] = useState<string | null>(null);
@@ -108,6 +108,15 @@ export function EditProfileSheet({
     [email, user?.email],
   );
 
+  /** True if the chosen email is already used by another account. */
+  const emailTaken = useMemo(() => {
+    const normalized = email.trim().toLowerCase();
+    if (!normalized) return false;
+    return accounts.some(
+      (a) => a.email.toLowerCase() === normalized && a.email.toLowerCase() !== (user?.email ?? "").toLowerCase(),
+    );
+  }, [email, accounts, user?.email]);
+
   const handlePhotoPick = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -136,6 +145,10 @@ export function EditProfileSheet({
     }
     if (!EMAIL_REGEX.test(email.trim())) {
       toast.error("Enter a valid email address");
+      return;
+    }
+    if (emailTaken) {
+      toast.error("That email is already linked to another account");
       return;
     }
     if (emailChanged) {
@@ -240,7 +253,13 @@ export function EditProfileSheet({
 
           <Field
             label="Email address"
-            hint={emailChanged ? "You'll need to verify the new email before saving." : undefined}
+            hint={
+              emailTaken
+                ? "That email is already linked to another account."
+                : emailChanged
+                  ? "You'll need to verify the new email before saving."
+                  : undefined
+            }
           >
             <div className="relative">
               <Input

@@ -79,7 +79,9 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          agvtool new-version -all 2
+          # App Store Connect rejected the previous upload because build
+          # number 2 was already used. Bump to the next unused number (3).
+          agvtool new-version -all 3
 
       - name: Apply iOS signing
         script: |

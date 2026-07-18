@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Bell,
@@ -67,6 +67,80 @@ import { CURRENCIES } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const APP_VERSION = "1.0.0";
+
+/**
+ * Budget input with currency prefix rendered outside the editable field and
+ * leading-zero-replacement behavior (typing 5 over an initial 0 yields 5, not 05).
+ */
+function BudgetInput({
+  value,
+  currency,
+  onChange,
+}: {
+  value: number;
+  currency: string;
+  onChange: (next: number) => void;
+}) {
+  const symbol = CURRENCY_SYMBOLS[currency] ?? "";
+  const [draft, setDraft] = useState<string>(() => (value ? String(value) : ""));
+  const hasFocusRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (!hasFocusRef.current) {
+      setDraft(value ? String(value) : "");
+    }
+  }, [value]);
+
+  const commit = (next: number) => onChange(Math.max(0, Number.isFinite(next) ? next : 0));
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value;
+    let cleaned = raw.replace(/[^0-9.]/g, "");
+    const firstDot = cleaned.indexOf(".");
+    if (firstDot !== -1) {
+      cleaned = `${cleaned.slice(0, firstDot + 1)}${cleaned.slice(firstDot + 1).replace(/\./g, "")}`;
+    }
+    if (cleaned === "") {
+      setDraft("");
+      commit(0);
+      return;
+    }
+    // Replace a lone leading zero before a new digit: "0" + "5" -> "5"
+    if (/^0\d/.test(cleaned)) {
+      cleaned = cleaned.replace(/^0+/, "");
+    }
+    setDraft(cleaned);
+    commit(Number(cleaned) || 0);
+  };
+
+  const handleFocus = () => {
+    hasFocusRef.current = true;
+  };
+
+  const handleBlur = (e: React.ChangeEvent<HTMLInputElement>) => {
+    hasFocusRef.current = false;
+    const n = Number(e.target.value) || 0;
+    setDraft(n ? String(n) : "");
+    commit(n);
+  };
+
+  return (
+    <div className="flex h-9 w-[124px] items-center gap-1.5 rounded-lg bg-secondary/60 px-2.5">
+      <span className="shrink-0 select-none text-[13px] font-bold text-muted-foreground">{symbol}</span>
+      <Input
+        type="text"
+        inputMode="decimal"
+        value={draft}
+        onChange={handleChange}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        placeholder="0"
+        className="h-9 min-w-0 flex-1 border-0 bg-transparent px-0 text-right text-[13px] font-bold tabular shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+        aria-label="Monthly budget"
+      />
+    </div>
+  );
+}
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
   AUD: "A$",
@@ -388,20 +462,11 @@ export default function Profile() {
             title="Monthly budget"
             subtitle={`Currently ${settings.currency}`}
             right={
-              <div className="relative">
-                <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] font-bold text-muted-foreground">
-                  {CURRENCY_SYMBOLS[settings.currency] ?? ""}
-                </span>
-                <Input
-                  type="number"
-                  inputMode="numeric"
-                  min="0"
-                  value={settings.monthlyBudget}
-                  onChange={(e) => updateSettings({ monthlyBudget: Math.max(0, Number(e.target.value) || 0) })}
-                  className="h-9 w-[112px] rounded-lg pl-6 pr-2 text-right text-[13px] font-bold tabular"
-                  aria-label="Monthly budget"
-                />
-              </div>
+              <BudgetInput
+                value={settings.monthlyBudget}
+                currency={settings.currency}
+                onChange={(monthlyBudget) => updateSettings({ monthlyBudget })}
+              />
             }
           />
           <SettingRow

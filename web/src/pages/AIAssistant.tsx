@@ -5,6 +5,7 @@ import {
   BellRing,
   CalendarPlus,
   Camera,
+  Check,
   ChevronRight,
   Clock,
   FileText,
@@ -48,11 +49,15 @@ import {
   type SuggestedAction,
 } from "@/lib/ai";
 import { captureImage } from "@/lib/native-camera";
+import { ChipPicker, Field, FormSheet } from "@/components/lifevault/FormSheet";
+import { DOCUMENT_META } from "@/components/lifevault/category-meta";
 import type {
   Appointment,
+  DocumentCategory,
   Expense,
   VaultDocument,
 } from "@/lib/types";
+import { DOCUMENT_CATEGORIES, REMINDER_OPTIONS, type ReminderDays } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Tab = "scan" | "search";
@@ -641,6 +646,25 @@ function ScanResultCard({
   const { addDocument, addExpense, addAppointment } = useApp();
   const [accepted, setAccepted] = useState<Set<string>>(new Set());
   const [showText, setShowText] = useState<boolean>(false);
+  const [saveOpen, setSaveOpen] = useState<boolean>(false);
+  const [saveName, setSaveName] = useState<string>("");
+  const [saveCategory, setSaveCategory] = useState<DocumentCategory>("Other");
+  const [saveReminderDays, setSaveReminderDays] = useState<ReminderDays>(30);
+  const [saveNotes, setSaveNotes] = useState<string>("");
+  const [savedDocId, setSavedDocId] = useState<string | null>(null);
+
+  // Pre-fill the save sheet with the AI's suggested title, category, and
+  // summary whenever the scan result changes.
+  useEffect(() => {
+    setSaveName(result.title);
+    setSaveCategory(result.category);
+    setSaveReminderDays(30);
+    setSaveNotes(result.summary);
+    setSavedDocId(null);
+  }, [result.id, result.title, result.category, result.summary]);
+
+  const suggestedCatMeta = DOCUMENT_META[result.category];
+  const SuggestedCatIcon = suggestedCatMeta.icon;
 
   const GroupIcon = GROUP_ICON[result.group];
   const confidencePct = Math.round(result.confidence * 100);
@@ -714,6 +738,29 @@ function ScanResultCard({
     },
     [navigate],
   );
+
+  const handleSaveToVault = useCallback(() => {
+    const name = saveName.trim();
+    if (!name) {
+      toast.error("Enter a document name");
+      return;
+    }
+    const doc: Omit<VaultDocument, "id" | "createdAt"> = {
+      name,
+      category: saveCategory,
+      issueDate: result.issueDate,
+      expiryDate: result.expiryDate,
+      notes: saveNotes.trim(),
+      reminderDays: saveReminderDays,
+      fileName: null,
+      fileKind: "image",
+    };
+    addDocument(doc);
+    setSavedDocId("saved");
+    toast.success(`Saved to ${saveCategory}`, {
+      description: `"${name}" is now in your vault.`,
+    });
+  }, [saveName, saveCategory, saveNotes, saveReminderDays, result.issueDate, result.expiryDate, addDocument]);
 
   return (
     <div className="animate-fade-in space-y-4 px-4 pt-4">
@@ -885,6 +932,161 @@ function ScanResultCard({
           })}
         </div>
       )}
+
+      {/* Save to vault — AI suggests a file name + folder, user confirms/edits */}
+      <div className="space-y-2.5">
+        <p className="px-1 text-[13px] font-bold text-muted-foreground">
+          Save to your vault
+        </p>
+        <div className="rounded-2xl bg-card p-4 shadow-sm ring-1 ring-border">
+          {/* AI suggestion preview */}
+          <div className="flex items-start gap-3">
+            <span
+              className={cn(
+                "flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl",
+                suggestedCatMeta.bubble,
+              )}
+            >
+              <SuggestedCatIcon className="h-5 w-5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                AI suggestion
+              </p>
+              <p className="truncate text-[14.5px] font-extrabold text-foreground">
+                {result.title}
+              </p>
+              <p className="mt-0.5 flex items-center gap-1 text-[12.5px] font-semibold text-muted-foreground">
+                <Check className="h-3.5 w-3.5 text-success" />
+                {result.category}
+                {result.expiryDate && ` · expires ${result.expiryDate}`}
+              </p>
+            </div>
+          </div>
+
+          <Button
+            onClick={() => setSaveOpen(true)}
+            disabled={!!savedDocId}
+            className="mt-3.5 h-12 w-full rounded-2xl text-[15px] font-extrabold shadow-md shadow-primary/20 transition-transform active:scale-[0.98]"
+          >
+            {savedDocId ? (
+              <>
+                <Check className="mr-1.5 h-4 w-4" /> Saved to {saveCategory}
+              </>
+            ) : (
+              <>
+                <FileText className="mr-1.5 h-4 w-4" /> Save document
+              </>
+            )}
+          </Button>
+          {savedDocId && (
+            <button
+              onClick={() => navigate("/documents")}
+              className="mt-2 flex w-full items-center justify-center gap-1 text-[12.5px] font-bold text-primary dark:text-foreground"
+            >
+              View in Documents <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Save sheet — confirm/ edit AI's suggested name + folder */}
+      <FormSheet
+        open={saveOpen}
+        onOpenChange={setSaveOpen}
+        title="Save to vault"
+        description="The AI suggests a file name and folder. Edit either before saving."
+      >
+        <div className="space-y-4">
+          {/* AI suggestion banner */}
+          <div className="flex items-start gap-3 rounded-2xl bg-info/8 p-3.5">
+            <span
+              className={cn(
+                "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl",
+                suggestedCatMeta.bubble,
+              )}
+            >
+              <SuggestedCatIcon className="h-5 w-5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-info">
+                AI suggestion
+              </p>
+              <p className="truncate text-[14px] font-extrabold">
+                {result.title}
+              </p>
+              <p className="mt-0.5 flex items-center gap-1 text-[12.5px] font-semibold text-muted-foreground">
+                <Check className="h-3.5 w-3.5 text-success" />
+                {result.category}
+              </p>
+            </div>
+          </div>
+
+          <Field label="File name">
+            <Input
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
+              placeholder="e.g. Driver Licence"
+              className="h-12 rounded-xl"
+            />
+          </Field>
+
+          <Field label="Save to folder" hint="Pick the category that best fits this document.">
+            <ChipPicker
+              options={DOCUMENT_CATEGORIES}
+              value={saveCategory}
+              onChange={(cat) => setSaveCategory(cat)}
+              render={(cat) => cat}
+            />
+          </Field>
+
+          {(result.expiryDate || result.issueDate) && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Issue date">
+                <Input
+                  type="date"
+                  value={result.issueDate ?? ""}
+                  readOnly
+                  className="h-12 rounded-xl bg-secondary/40 text-muted-foreground"
+                />
+              </Field>
+              <Field label="Expiry date">
+                <Input
+                  type="date"
+                  value={result.expiryDate ?? ""}
+                  readOnly
+                  className="h-12 rounded-xl bg-secondary/40 text-muted-foreground"
+                />
+              </Field>
+            </div>
+          )}
+
+          <Field label="Remind me before expiry">
+            <ChipPicker
+              options={REMINDER_OPTIONS}
+              value={saveReminderDays}
+              onChange={(days) => setSaveReminderDays(days)}
+              render={(days) => `${days} days`}
+            />
+          </Field>
+
+          <Field label="Notes">
+            <Input
+              value={saveNotes}
+              onChange={(e) => setSaveNotes(e.target.value)}
+              placeholder="AI summary or extra details…"
+              className="h-12 rounded-xl"
+            />
+          </Field>
+
+          <Button
+            onClick={handleSaveToVault}
+            className="h-[52px] w-full rounded-2xl text-[15px] font-extrabold shadow-lg shadow-primary/25 transition-transform active:scale-[0.98]"
+          >
+            <FileText className="mr-1.5 h-4 w-4" /> Save to {saveCategory}
+          </Button>
+        </div>
+      </FormSheet>
     </div>
   );
 }

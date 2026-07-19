@@ -225,8 +225,8 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Bump to 9 for the next App Store Connect upload (previous was 8).
-          agvtool new-version -all 9
+          # Bump to 10 for the next App Store Connect upload (previous was 9).
+          agvtool new-version -all 10
 
       - name: Apply iOS signing
         script: |

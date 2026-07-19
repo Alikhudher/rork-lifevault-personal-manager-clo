@@ -8,11 +8,25 @@ workflows:
       app_store_connect: Codemagic
 
     environment:
+      # Variables added in the Codemagic dashboard ("Environment variables"
+      # → encrypted) live inside named variable groups. They are NOT injected
+      # into build scripts automatically — the workflow must list the group(s)
+      # here so Codemagic exports them into every script step.
+      #
+      # "Default" is the group Codemagic creates by default. If you stored the
+      # Supabase vars in a differently-named group, add that name to this list.
+      groups:
+        - Default
       ios_signing:
         distribution_type: app_store
         bundle_identifier: com.aliomer.lifevault
       node: latest
       xcode: latest
+      # Declare the vars so Codemagic surfaces them clearly in build logs and
+      # fails fast with a readable message if the group import is missing.
+      vars:
+        VITE_SUPABASE_URL: ""
+        VITE_SUPABASE_ANON_KEY: ""
 
     scripts:
       - name: Install Bun
@@ -43,24 +57,36 @@ workflows:
           #   VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
           # These MUST be present at build time so Vite inlines them into
           # the bundle (import.meta.env.VITE_*). Add them in the Codemagic
-          # dashboard under "Environment variables" as encrypted values.
-          #
-          # The EXPO_PUBLIC_* Rork toolkit vars below are written to web/.env
-          # by Rork and are already in the build environment.
-          missing=0
-          for var in VITE_SUPABASE_URL VITE_SUPABASE_ANON_KEY; do
-            if [ -z "$(eval echo \"\$$var\")" ]; then
-              echo "ERROR: $var is not set. Add it in Codemagic dashboard → Environment variables (encrypted)."
-              missing=1
-            else
-              echo "OK: $var is present."
-            fi
-          done
-          if [ "$missing" = "1" ]; then
-            echo "Failing build: Supabase env vars are required for cloud backup & sync."
-            echo "If you intentionally want a build without cloud backup, remove this check."
+          # dashboard under "Environment variables" (encrypted), inside a
+          # variable group named "Default" (or add your group name to the
+          # environment.groups list above).
+          echo "--- Resolving Supabase env vars from Codemagic environment ---"
+          # Use printenv to read straight from the process environment that
+          # Codemagic populated after importing the variable group(s). This
+          # avoids shell-expansion quirks and shows exactly what the build
+          # sees.
+          URL_VAL="$(printenv VITE_SUPABASE_URL || true)"
+          KEY_VAL="$(printenv VITE_SUPABASE_ANON_KEY || true)"
+          echo "VITE_SUPABASE_URL      : ${URL_VAL:+present (len ${#URL_VAL})}${URL_VAL:-MISSING}"
+          echo "VITE_SUPABASE_ANON_KEY : ${KEY_VAL:+present (len ${#KEY_VAL})}${KEY_VAL:-MISSING}"
+          if [ -z "$URL_VAL" ] || [ -z "$KEY_VAL" ]; then
+            echo ""
+            echo "ERROR: One or both Supabase env vars are not visible to this build."
+            echo "Troubleshooting checklist:"
+            echo "  1. In Codemagic dashboard → Environment variables, confirm both"
+            echo "     VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are saved as"
+            echo "     encrypted values."
+            echo "  2. Confirm they belong to a variable group named \"Default\""
+            echo "     (or update environment.groups in codemagic.yaml to match"
+            echo "     your group name)."
+            echo "  3. Confirm the group is shared with this app/workflow."
+            echo "  4. Re-run the build. Dashboard edits take effect on the next build."
+            echo ""
+            echo "If you intentionally want a build WITHOUT cloud backup, remove"
+            echo "this verification step and the vars: block in codemagic.yaml."
             exit 1
           fi
+          echo "OK: Both Supabase env vars are present in the build environment."
 
       - name: Install dependencies
         script: |
@@ -74,16 +100,23 @@ workflows:
         script: |
           set -e
           cd web
-          # Vite reads VITE_* from process.env at build time, so the
-          # Supabase vars set in the Codemagic dashboard are inlined
-          # automatically. We also append them to .env as a belt-and-
-          # suspenders measure so local tooling that reads .env works too.
+          # Vite inlines VITE_* vars from process.env at build time, so the
+          # Supabase vars imported via the Codemagic variable group are picked
+          # up automatically. We ALSO write them into web/.env so any local
+          # tooling that reads .env (and Vite's own .env loader) sees them,
+          # and so the build is reproducible regardless of how Vite resolves
+          # its env precedence.
           if [ -n "$VITE_SUPABASE_URL" ] && [ -n "$VITE_SUPABASE_ANON_KEY" ]; then
-            # Append only if not already present (idempotent).
-            grep -q '^VITE_SUPABASE_URL=' .env 2>/dev/null || \
-              echo "VITE_SUPABASE_URL=$VITE_SUPABASE_URL" >> .env
-            grep -q '^VITE_SUPABASE_ANON_KEY=' .env 2>/dev/null || \
-              echo "VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY" >> .env
+            # Rewrite the two Supabase lines (idempotent) — remove any stale
+            # entries first, then append fresh values. This guarantees the
+            # file always reflects the current dashboard values.
+            touch .env
+            sed -i '' '/^VITE_SUPABASE_URL=/d; /^VITE_SUPABASE_ANON_KEY=/d' .env || true
+            echo "VITE_SUPABASE_URL=$VITE_SUPABASE_URL" >> .env
+            echo "VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY" >> .env
+            echo "Wrote Supabase vars to web/.env"
+          else
+            echo "WARNING: Supabase vars empty; building without cloud backup."
           fi
           bun run build
 

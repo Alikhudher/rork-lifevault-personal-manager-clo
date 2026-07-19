@@ -85,26 +85,52 @@ workflows:
           fi
           echo "OK: Both Supabase env vars are present in the build environment."
 
-          # --- AI gateway (recommended — warn if missing, do NOT fail) ---
-          # These are PUBLIC values (not secrets). They identify this project
-          # to the Rork AI toolkit proxy. If not set in the dashboard, the
-          # build script falls back to EXPO_PUBLIC_* and then to hardcoded
-          # public defaults, so AI always works in production.
+          # --- AI gateway (REQUIRED for iOS production builds) ---
+          # The Rork web preview runtime injects a short-lived delegated bearer
+          # token for browser / React Native web previews, so the placeholder
+          # "rork_web_delegated_auth" works there. A native Capacitor build
+          # (iOS TestFlight / App Store) runs in a WKWebView where the runtime
+          # CANNOT intercept fetch requests, so the bundle MUST contain the
+          # real EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY. Building with the
+          # placeholder results in HTTP 401/403 "AI Cloud access was denied".
           TK_URL="$(printenv VITE_TOOLKIT_URL || true)"
           APP_KEY="$(printenv VITE_RORK_APP_KEY || true)"
           TK_SECRET="$(printenv VITE_RORK_TOOLKIT_SECRET_KEY || true)"
+          # Also accept the Rork public env vars if the user added those instead.
+          [ -z "$TK_URL" ] && TK_URL="$(printenv EXPO_PUBLIC_TOOLKIT_URL || true)"
+          [ -z "$APP_KEY" ] && APP_KEY="$(printenv EXPO_PUBLIC_RORK_APP_KEY || true)"
+          [ -z "$TK_SECRET" ] && TK_SECRET="$(printenv EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY || true)"
+
           echo ""
-          echo "VITE_TOOLKIT_URL             : ${TK_URL:+present}${TK_URL:-missing (will use fallback)}"
-          echo "VITE_RORK_APP_KEY            : ${APP_KEY:+present}${APP_KEY:-missing (will use fallback)}"
-          echo "VITE_RORK_TOOLKIT_SECRET_KEY : ${TK_SECRET:+present}${TK_SECRET:-missing (will use fallback)}"
+          echo "VITE_TOOLKIT_URL             : ${TK_URL:+present}${TK_URL:-missing}"
+          echo "VITE_RORK_APP_KEY            : ${APP_KEY:+present}${APP_KEY:-missing}"
+          echo "VITE_RORK_TOOLKIT_SECRET_KEY : ${TK_SECRET:+present}${TK_SECRET:-missing}"
+          echo "EXPO_PUBLIC_TOOLKIT_URL             : $(printenv EXPO_PUBLIC_TOOLKIT_URL || true)"
+          echo "EXPO_PUBLIC_RORK_APP_KEY            : $(printenv EXPO_PUBLIC_RORK_APP_KEY || true)"
+          echo "EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY : $(printenv EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY || true)"
+
           if [ -z "$TK_URL" ] || [ -z "$APP_KEY" ] || [ -z "$TK_SECRET" ]; then
-            echo "WARNING: Some AI env vars are not set in the dashboard."
-            echo "  The build will fall back to EXPO_PUBLIC_* or public defaults."
-            echo "  To make the values explicit, add them in Codemagic dashboard →"
-            echo "  Environment variables (encrypted), inside the \"Default\" group."
-          else
-            echo "OK: All AI env vars are present in the build environment."
+            echo ""
+            echo "ERROR: One or more AI gateway env vars are not visible to this iOS build."
+            echo "Add them in Codemagic dashboard → Environment variables (encrypted),"
+            echo "inside the \"Default\" group (or whichever group is imported in"
+            echo "codemagic.yaml environment.groups):"
+            echo "  VITE_TOOLKIT_URL              = https://toolkit.rork.com"
+            echo "  VITE_RORK_APP_KEY             = copy from Rork dashboard → EXPO_PUBLIC_RORK_APP_KEY"
+            echo "  VITE_RORK_TOOLKIT_SECRET_KEY  = copy from Rork dashboard → EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY"
+            echo ""
+            echo "Do NOT use the placeholder value rork_web_delegated_auth for the secret."
+            exit 1
           fi
+          if [ "$TK_SECRET" = "rork_web_delegated_auth" ]; then
+            echo ""
+            echo "ERROR: VITE_RORK_TOOLKIT_SECRET_KEY / EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY"
+            echo "is set to the delegated-auth placeholder 'rork_web_delegated_auth'."
+            echo "This placeholder only works in the Rork web preview runtime. Native iOS"
+            echo "builds require the real toolkit secret from the Rork dashboard."
+            exit 1
+          fi
+          echo "OK: All AI gateway env vars are present and valid."
 
       - name: Install dependencies
         script: |
@@ -141,10 +167,21 @@ workflows:
           fi
 
           # --- AI gateway (required for AI document analysis) ---
-          # Resolve each var with fallback chain: VITE_* → EXPO_PUBLIC_* → default.
+          # Resolve each var with fallback chain: VITE_* → EXPO_PUBLIC_*.
+          # The verification step already failed the build if any of these are
+          # missing or if the secret is the placeholder, so we can trust them here.
           RESOLVED_TK_URL="${VITE_TOOLKIT_URL:-${EXPO_PUBLIC_TOOLKIT_URL:-https://toolkit.rork.com}}"
-          RESOLVED_APP_KEY="${VITE_RORK_APP_KEY:-${EXPO_PUBLIC_RORK_APP_KEY:-rpk_p2samtqe2dbgg0rtbnht2cbcza07h7kn}}"
-          RESOLVED_TK_SECRET="${VITE_RORK_TOOLKIT_SECRET_KEY:-${EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY:-rork_web_delegated_auth}}"
+          RESOLVED_APP_KEY="${VITE_RORK_APP_KEY:-${EXPO_PUBLIC_RORK_APP_KEY:-}}"
+          RESOLVED_TK_SECRET="${VITE_RORK_TOOLKIT_SECRET_KEY:-${EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY:-}}"
+
+          # Defensive: if the secret somehow ended up as the placeholder, fail
+          # loudly instead of silently shipping a broken TestFlight build.
+          if [ -z "$RESOLVED_TK_SECRET" ] || [ "$RESOLVED_TK_SECRET" = "rork_web_delegated_auth" ]; then
+            echo "ERROR: Resolved AI toolkit secret is missing or is the delegated-auth placeholder."
+            echo "  VITE_RORK_TOOLKIT_SECRET_KEY=${VITE_RORK_TOOLKIT_SECRET_KEY:-<unset>}"
+            echo "  EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY=${EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY:-<unset>}"
+            exit 1
+          fi
 
           # Remove stale entries then append fresh resolved values.
           sed -i '' '/^VITE_TOOLKIT_URL=/d; /^VITE_RORK_APP_KEY=/d; /^VITE_RORK_TOOLKIT_SECRET_KEY=/d' .env || true

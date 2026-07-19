@@ -188,8 +188,14 @@ export async function captureImage(
       source: source === "camera" ? CameraSource.Camera : CameraSource.Photos,
       quality: 94,
       correctOrientation: true,
-      // `allowEditing` is only supported for Camera on iOS, not Photos.
-      allowEditing: source === "camera",
+      // `allowEditing` is intentionally disabled for the document scanner.
+      // On iOS the native edit UI presents a square crop overlay by default,
+      // which aggressively cuts off the top and bottom of receipts, bills,
+      // prescriptions and other tall documents. The user sees the full photo in
+      // the thumbnail strip and can retake it if the framing is wrong.
+      // Any scaling is handled later by enhanceForOCR, which preserves the
+      // aspect ratio and never crops content.
+      allowEditing: false,
       saveToGallery: false,
       // No width/height — full photo returned, aspect ratio preserved.
       // Resizing happens later in enhanceForOCR (canvas-based, no cropping).

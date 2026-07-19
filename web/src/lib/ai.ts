@@ -28,6 +28,7 @@
  * Auth & transport: same as before — `Authorization: Bearer <TOOLKIT_SECRET>`
  * + `x-rork-app-key` header, endpoint `/v2/vercel/v1/chat/completions`.
  */
+import { Capacitor } from "@capacitor/core";
 import {
   APPOINTMENT_REMINDERS,
   BILLING_FREQUENCIES,
@@ -466,6 +467,17 @@ export interface ScanOutcome {
   pages: string[];
 }
 
+/* ----------------------------- runtime environment ----------------------------- */
+
+/** True when the bundle is running inside a Capacitor native app (iOS/Android). */
+function isNativeApp(): boolean {
+  try {
+    return typeof Capacitor !== "undefined" && Capacitor.isNativePlatform();
+  } catch {
+    return false;
+  }
+}
+
 /* ----------------------------- low-level chat ----------------------------- */
 
 interface ChatChoice {
@@ -527,6 +539,25 @@ async function chatComplete(
   if (!TOOLKIT_URL) {
     throw new Error("AI_NOT_CONFIGURED");
   }
+
+  // The Rork web preview runtime injects a short-lived delegated bearer token
+  // for browser / React Native web builds, so the placeholder value
+  // "rork_web_delegated_auth" works there. In a native Capacitor build (iOS
+  // TestFlight / App Store) the runtime cannot intercept WKWebView fetch
+  // requests, so the bundle must contain the real EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY.
+  // If we only have the placeholder in a native build, the server rejects the
+  // request with ACCESS_DENIED / 401. Fail early with the same message as a
+  // missing config so the user sees a clear error instead of a server denial.
+  const isPlaceholderSecret = TOOLKIT_SECRET === "rork_web_delegated_auth";
+  if (isNativeApp() && (!TOOLKIT_SECRET || isPlaceholderSecret)) {
+    console.error(
+      "[ai] Native build missing real RORK_TOOLKIT_SECRET_KEY. " +
+        "The TestFlight / App Store bundle must be built with a valid " +
+        "EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY or VITE_RORK_TOOLKIT_SECRET_KEY.",
+    );
+    throw new Error("AI_NOT_CONFIGURED");
+  }
+
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };

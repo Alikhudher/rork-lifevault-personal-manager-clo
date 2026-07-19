@@ -125,6 +125,21 @@ interface AppContextValue extends PersistedState {
   markNotificationRead: (id: string) => void;
   markAllNotificationsRead: () => void;
   unreadCount: number;
+
+  /* ---- Cloud restore ---- */
+  /** Replace all local state with the given restored records (cloud restore). */
+  applyRestoredRecords: (records: RestoredRecord[]) => void;
+  /** Wipe all local data (used when disabling cloud backup). */
+  clearLocalData: () => void;
+}
+
+/** A flat record as returned by the cloud sync engine. */
+export interface RestoredRecord {
+  id: string;
+  kind: "document" | "expense" | "subscription" | "appointment" | "notification" | "settings" | "security" | "folder";
+  data: unknown;
+  updatedAt: number;
+  deletedAt: number | null;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -540,6 +555,65 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
+  const applyRestoredRecords = useCallback((records: RestoredRecord[]) => {
+    const docs: VaultDocument[] = [];
+    const exps: Expense[] = [];
+    const subs: Subscription[] = [];
+    const apts: Appointment[] = [];
+    const notifs: AppNotification[] = [];
+    let settings = state.settings;
+    let security = state.security;
+    for (const r of records) {
+      if (r.deletedAt) continue;
+      switch (r.kind) {
+        case "document":
+          if (r.data && typeof r.data === "object") docs.push(r.data as VaultDocument);
+          break;
+        case "expense":
+          if (r.data && typeof r.data === "object") exps.push(r.data as Expense);
+          break;
+        case "subscription":
+          if (r.data && typeof r.data === "object") subs.push(r.data as Subscription);
+          break;
+        case "appointment":
+          if (r.data && typeof r.data === "object") apts.push(r.data as Appointment);
+          break;
+        case "notification":
+          if (r.data && typeof r.data === "object") notifs.push(r.data as AppNotification);
+          break;
+        case "settings":
+          if (r.data && typeof r.data === "object") settings = { ...settings, ...(r.data as Partial<Settings>) };
+          break;
+        case "security":
+          if (r.data && typeof r.data === "object") security = { ...security, ...(r.data as Partial<SecuritySettings>) };
+          break;
+        default:
+          break;
+      }
+    }
+    setState((s) => ({
+      ...s,
+      documents: docs.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      expenses: exps.sort((a, b) => b.date.localeCompare(a.date)),
+      subscriptions: subs,
+      appointments: apts.sort((a, b) => b.date.localeCompare(a.date)),
+      notifications: notifs.sort((a, b) => b.date.localeCompare(a.date)),
+      settings,
+      security,
+    }));
+  }, [state.settings, state.security]);
+
+  const clearLocalData = useCallback(() => {
+    setState((s) => ({
+      ...s,
+      documents: [],
+      expenses: [],
+      subscriptions: [],
+      appointments: [],
+      notifications: [],
+    }));
+  }, []);
+
   const unreadCount = useMemo(
     () => state.notifications.filter((n) => !n.read).length,
     [state.notifications],
@@ -587,6 +661,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       markNotificationRead,
       markAllNotificationsRead,
       unreadCount,
+      applyRestoredRecords,
+      clearLocalData,
     }),
     [
       state,
@@ -628,6 +704,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       markNotificationRead,
       markAllNotificationsRead,
       unreadCount,
+      applyRestoredRecords,
+      clearLocalData,
     ],
   );
 

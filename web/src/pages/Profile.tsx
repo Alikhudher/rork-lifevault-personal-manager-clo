@@ -6,6 +6,7 @@ import {
   Calendar,
   ChevronRight,
   CircleDollarSign,
+  Cloud,
   Download,
   FileText,
   HelpCircle,
@@ -338,6 +339,13 @@ export default function Profile() {
             bubble="bg-warning/12 text-warning"
             title="Change password"
             onClick={() => openSheet("password")}
+          />
+          <SettingRow
+            icon={Cloud}
+            bubble="bg-sky-500/12 text-sky-600 dark:text-sky-400"
+            title="Backup & Sync"
+            subtitle="Secure encrypted cloud backup"
+            onClick={() => navigate("/backup")}
           />
           <SettingRow
             icon={Shield}

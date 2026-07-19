@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
-import { Toaster } from "@/components/ui/sonner";
+import { Toaster } from "@components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppProvider, useApp } from "@/context/AppContext";
+import { SyncProvider } from "@/context/SyncContext";
 import { AppShell, PublicShell } from "@/components/lifevault/AppShell";
 
 import Onboarding from "./pages/Onboarding";
@@ -20,6 +21,8 @@ import Notifications from "./pages/Notifications";
 import NotificationSettings from "./pages/NotificationSettings";
 import Profile from "./pages/Profile";
 import Security from "./pages/Security";
+import BackupSync from "./pages/BackupSync";
+import Restore from "./pages/Restore";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -78,6 +81,8 @@ const AppRoutes = () => (
       <Route path="/notifications/settings" element={<NotificationSettings />} />
       <Route path="/profile" element={<Profile />} />
       <Route path="/security" element={<Security />} />
+      <Route path="/backup" element={<BackupSync />} />
+      <Route path="/restore" element={<Restore />} />
     </Route>
 
     {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
@@ -88,12 +93,14 @@ const AppRoutes = () => (
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <AppProvider>
-      <TooltipProvider>
-        <Toaster position="top-center" />
-        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-          <AppRoutes />
-        </BrowserRouter>
-      </TooltipProvider>
+      <SyncProvider>
+        <TooltipProvider>
+          <Toaster position="top-center" />
+          <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+            <AppRoutes />
+          </BrowserRouter>
+        </TooltipProvider>
+      </SyncProvider>
     </AppProvider>
   </QueryClientProvider>
 );

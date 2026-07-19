@@ -117,10 +117,9 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # App Store Connect rejected build 4 for missing
-          # NSPhotoLibraryUsageDescription (the permission-injection script
-          # was writing to the wrong path). Fixed and verified; bump to 5.
-          agvtool new-version -all 5
+          # Secure cloud backup & sync feature added; bump to 6 for the
+          # next App Store Connect upload.
+          agvtool new-version -all 6
 
       - name: Apply iOS signing
         script: |

@@ -940,6 +940,56 @@ function pickExpenseCategory(
   return "Other";
 }
 
+/* ----------------------------- response normalization ----------------------------- */
+
+/**
+ * Coerce whatever the model returned into the `{ documents: RawScanDoc[] }`
+ * shape the rest of the pipeline expects. The prompt asks for a nested
+ * `{ "documents": [...] }` object, but `google/gemini-3-flash` sometimes
+ * returns any of these instead:
+ *   - the requested `{ documents: [...] }` object
+ *   - a bare array `[{...}, {...}]`
+ *   - a single flat document object `{ kind, title, ... }` (no `documents` wrapper)
+ *   - `{ documents: { ... } }` (object instead of array)
+ * All of those are valid scans of a single document and must be accepted —
+ * rejecting them is what caused the "Couldn't parse the AI response" regression.
+ */
+function normalizeScanResponse(raw: unknown): RawScan | null {
+  if (!raw || typeof raw !== "object") return null;
+  // Shape 1: the requested `{ documents: [...] }` object.
+  if (Array.isArray((raw as RawScan).documents)) {
+    return raw as RawScan;
+  }
+  // Shape 2: a bare array of document objects.
+  if (Array.isArray(raw)) {
+    const docs = raw.filter(
+      (d): d is RawScanDoc => !!d && typeof d === "object" && !Array.isArray(d),
+    );
+    if (docs.length > 0) return { documents: docs };
+    return null;
+  }
+  // Shape 3: `documents` is a single object, not an array — wrap it.
+  const docsField = (raw as { documents?: unknown }).documents;
+  if (docsField && typeof docsField === "object" && !Array.isArray(docsField)) {
+    return { documents: [docsField as RawScanDoc] };
+  }
+  // Shape 4: a flat document object with no `documents` wrapper (recognized by
+  // the presence of at least one scan field).
+  const obj = raw as RawScanDoc;
+  if (
+    typeof obj.kind === "string" ||
+    typeof obj.title === "string" ||
+    typeof obj.summary === "string" ||
+    Array.isArray(obj.fields) ||
+    Array.isArray(obj.entities) ||
+    typeof obj.category === "string" ||
+    typeof obj.text === "string"
+  ) {
+    return { documents: [obj] };
+  }
+  return null;
+}
+
 /* ----------------------------- public: scanDocuments ----------------------------- */
 
 /**
@@ -982,13 +1032,15 @@ export async function scanDocuments(pages: string[]): Promise<ScanOutcome> {
 
   const raw = await chatComplete(messages, {
     temperature: 0.1,
-    maxTokens: 2400,
+    maxTokens: 3200,
   });
-  let parsed = safeJsonParse<RawScan>(raw);
+  let parsed = normalizeScanResponse(safeJsonParse<unknown>(raw));
 
   // Retry once with a stricter prompt if parsing failed.
   if (!parsed || !Array.isArray(parsed.documents) || parsed.documents.length === 0) {
-    console.warn("[ai] scan parse failed or empty, retrying with stricter prompt");
+    console.warn(
+      `[ai] scan parse failed or empty, retrying with stricter prompt. Raw (first 800 chars): ${raw.slice(0, 800)}`,
+    );
     const retryMessages = [
       {
         role: "system",
@@ -1004,9 +1056,9 @@ export async function scanDocuments(pages: string[]): Promise<ScanOutcome> {
     ];
     const retryRaw = await chatComplete(retryMessages, {
       temperature: 0,
-      maxTokens: 2400,
+      maxTokens: 3200,
     });
-    parsed = safeJsonParse<RawScan>(retryRaw);
+    parsed = normalizeScanResponse(safeJsonParse<unknown>(retryRaw));
   }
 
   if (!parsed || !Array.isArray(parsed.documents) || parsed.documents.length === 0) {
@@ -1090,6 +1142,9 @@ export async function askAboutScan(
   });
   const parsed = safeJsonParse<RawAsk>(raw);
   if (!parsed) {
+    console.warn(
+      `[ai] ask parse failed. Raw (first 600 chars): ${raw.slice(0, 600)}`,
+    );
     // Fall back to treating the raw text as the answer.
     return { answer: raw.trim(), actions: [] };
   }
@@ -1231,6 +1286,9 @@ export async function naturalLanguageSearch(
   });
   const parsed = safeJsonParse<RawSearch>(raw);
   if (!parsed) {
+    console.warn(
+      `[ai] search parse failed. Raw (first 600 chars): ${raw.slice(0, 600)}`,
+    );
     throw new Error("AI_PARSE_FAILED");
   }
   const answer =

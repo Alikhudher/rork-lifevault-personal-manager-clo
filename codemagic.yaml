@@ -186,9 +186,8 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Secure cloud backup & sync feature added; bump to 6 for the
-          # next App Store Connect upload.
-          agvtool new-version -all 6
+          # Bump to 7 for the next App Store Connect upload (previous was 6).
+          agvtool new-version -all 7
 
       - name: Apply iOS signing
         script: |

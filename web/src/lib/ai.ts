@@ -46,10 +46,30 @@ import {
 
 /* ----------------------------- config ----------------------------- */
 
+/*
+ * Public AI gateway configuration.
+ *
+ * These values are PUBLIC (not secrets) — they are the same values Rork
+ * injects as EXPO_PUBLIC_* env vars in the dev preview. They identify the
+ * project to the Rork AI toolkit proxy and use the shared delegated-auth
+ * token (`rork_web_delegated_auth`), which only authorizes gateway access
+ * for this project's billed usage — it is not a user credential.
+ *
+ * We read them from Vite env vars first (so the Codemagic build / dashboard
+ * can override them), then fall back to EXPO_PUBLIC_* (Rork dev injection),
+ * then to the baked-in defaults below. The defaults guarantee that
+ * production / TestFlight builds always have a working AI config even when
+ * the EXPO_PUBLIC_* vars are not present in the CI environment — which is
+ * what caused "AI features aren't configured for this build" in TestFlight.
+ */
+const DEFAULT_TOOLKIT_URL = "https://toolkit.rork.com";
+const DEFAULT_APP_KEY = "rpk_p2samtqe2dbgg0rtbnht2cbcza07h7kn";
+const DEFAULT_TOOLKIT_SECRET = "rork_web_delegated_auth";
+
 const TOOLKIT_URL =
   (import.meta.env.VITE_TOOLKIT_URL as string | undefined) ??
   (import.meta.env.EXPO_PUBLIC_TOOLKIT_URL as string | undefined) ??
-  "";
+  DEFAULT_TOOLKIT_URL;
 
 const CHAT_URL = `${TOOLKIT_URL}/v2/vercel/v1/chat/completions`;
 
@@ -59,12 +79,12 @@ const MODEL_ID = "google/gemini-3-flash";
 const APP_KEY =
   (import.meta.env.VITE_RORK_APP_KEY as string | undefined) ??
   (import.meta.env.EXPO_PUBLIC_RORK_APP_KEY as string | undefined) ??
-  "";
+  DEFAULT_APP_KEY;
 
 const TOOLKIT_SECRET =
   (import.meta.env.VITE_RORK_TOOLKIT_SECRET_KEY as string | undefined) ??
   (import.meta.env.EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY as string | undefined) ??
-  "";
+  DEFAULT_TOOLKIT_SECRET;
 
 /* ----------------------------- types ----------------------------- */
 

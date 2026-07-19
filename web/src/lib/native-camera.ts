@@ -163,16 +163,28 @@ export async function captureImage(
     const granted = await ensurePermission(source);
     if (!granted) return null;
 
+    // IMPORTANT: only specify `width`, NOT `height`. When both are set,
+    // Capacitor Camera CROPS the image to those exact dimensions — so
+    // passing width=height=1600 force-cropped every document photo to a
+    // square, cutting off the top/bottom of receipts, prescriptions, etc.
+    // Setting only `width` scales the longest edge down to `maxEdge` while
+    // preserving the full aspect ratio, so no part of the document is lost.
+    // `allowEditing: true` then presents the native iOS crop/adjust screen
+    // so the user can manually frame the document before analysis.
     const options: ImageOptions = {
       resultType: CameraResultType.DataUrl,
       source: source === "camera" ? CameraSource.Camera : CameraSource.Photos,
       quality: 92,
       correctOrientation: true,
       // `allowEditing` is only supported for Camera on iOS, not Photos.
+      // It shows the native iOS edit/crop screen so the user can manually
+      // adjust the frame before the image is returned — this is the
+      // "manual adjustment before analysis" step.
       allowEditing: source === "camera",
       saveToGallery: false,
-      // Width/height constrain the longest edge (aspect ratio preserved).
-      ...(maxEdge ? { width: maxEdge, height: maxEdge } : {}),
+      // Only constrain the longest edge; aspect ratio is preserved and no
+      // cropping is applied by the camera plugin.
+      ...(maxEdge ? { width: maxEdge } : {}),
     };
 
     try {

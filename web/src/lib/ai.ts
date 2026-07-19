@@ -1,35 +1,40 @@
 /**
- * LifeVault AI Assistant — service layer.
+ * LifeVault Universal AI Document Understanding Engine.
  *
- * Two capabilities backed by the Rork AI Gateway (Vercel AI Gateway proxy):
- *  - `scanDocument(imageDataUrl)` — vision LLM classifies a photo and extracts
- *    structured fields (title, dates, amount, merchant, etc.), then proposes
- *    follow-on actions the user can accept (add expense / calendar event /
- *    document / reminder).
- *  - `naturalLanguageSearch(query, vault)` — text LLM answers a natural-language
- *    question over the user's saved vault by searching the provided snapshot.
+ * Not an ID scanner. A true intelligent document assistant that can understand
+ * almost ANY document, image, or handwritten note the user uploads — and then
+ * extract structured data, classify it, summarise it, answer follow-up
+ * questions, and propose concrete follow-on actions (expense, calendar event,
+ * reminder, filed document).
  *
- * Model: `google/gemini-3-flash` (vision + reasoning + tool-use, ~$0.50/M input,
- * ~$3/M output, ~800ms p50). Verified via getModelUsage — endpoint
- * /v2/vercel/v1/chat/completions, accepts image input via OpenAI-style
- * content parts with `image_url`. Both scan and search use the same model for
- * consistency; the scan path sends an image part, the search path is text-only.
+ * Capabilities:
+ *  - Vision + reasoning via `google/gemini-3-flash` on the Vercel AI Gateway.
+ *  - Multilingual (English + Arabic + mixed) — instructed explicitly.
+ *  - Handwritten text reading.
+ *  - Multi-page: caller passes an array of page images; they're sent as
+ *    multiple image parts in one request.
+ *  - Multi-document: a single image may contain several documents (e.g. a
+ *    photo of two receipts); the model returns one result per detected doc.
+ *  - Entity extraction: dates, appointments, expiry/due dates, names,
+ *    addresses, emails, phones, IDs, reference numbers, money + currency,
+ *    medicines, legal clauses, education info, banking info, travel info.
+ *  - Image enhancement: caller pre-enhances via `enhanceForOCR` for poor
+ *    quality photos (grayscale + contrast stretch + unsharp mask).
+ *  - Smart summary + structured data + follow-on actions.
+ *  - Q&A: `askAboutScan` lets the user ask follow-up questions about a
+ *    previously scanned document, using the captured text + entities as
+ *    context so we don't re-send the image every time.
  *
- * Auth: we always send `Authorization: Bearer <EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY>`
- * plus the `x-rork-app-key` header. On the Rork web preview the runtime
- * overwrites the bearer with a short-lived delegated token before transport,
- * so setting it client-side is safe there; on native Capacitor iOS builds
- * (standalone IPA) there is no runtime injection, so the real secret must be
- * sent explicitly or the gateway returns 401. The secret is exposed as a
- * public env var by design (Rork public-env convention).
+ * Auth & transport: same as before — `Authorization: Bearer <TOOLKIT_SECRET>`
+ * + `x-rork-app-key` header, endpoint `/v2/vercel/v1/chat/completions`.
  */
 import {
+  APPOINTMENT_REMINDERS,
+  BILLING_FREQUENCIES,
   DOCUMENT_CATEGORIES,
   EXPENSE_CATEGORIES,
   PAYMENT_METHODS,
-  BILLING_FREQUENCIES,
   REMINDER_OPTIONS,
-  APPOINTMENT_REMINDERS,
   type Appointment,
   type DocumentCategory,
   type Expense,
@@ -39,65 +44,339 @@ import {
   type VaultDocument,
 } from "./types";
 
-/** Rork Toolkit base URL. Same for all calls. */
+/* ----------------------------- config ----------------------------- */
+
 const TOOLKIT_URL =
   (import.meta.env.VITE_TOOLKIT_URL as string | undefined) ??
   (import.meta.env.EXPO_PUBLIC_TOOLKIT_URL as string | undefined) ??
   "";
 
-/** Chat-completions endpoint on the Vercel AI Gateway proxy. */
 const CHAT_URL = `${TOOLKIT_URL}/v2/vercel/v1/chat/completions`;
 
-/** Model ID verified via listAvailableModels + getModelUsage. */
+/** Model verified via getModelUsage — vision + reasoning + multilingual. */
 const MODEL_ID = "google/gemini-3-flash";
 
-/** Public, non-secret app key for routing/quotas (exposed to client by design). */
 const APP_KEY =
   (import.meta.env.VITE_RORK_APP_KEY as string | undefined) ??
   (import.meta.env.EXPO_PUBLIC_RORK_APP_KEY as string | undefined) ??
   "";
 
-/**
- * Rork Toolkit secret key. Public env var (EXPO_PUBLIC_ prefix) — safe to read
- * client-side. Required on native Capacitor builds where the Rork web runtime
- * does not inject a delegated bearer. On the web preview the runtime overwrites
- * this value before transport, so it never leaks the real secret.
- */
 const TOOLKIT_SECRET =
   (import.meta.env.VITE_RORK_TOOLKIT_SECRET_KEY as string | undefined) ??
   (import.meta.env.EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY as string | undefined) ??
   "";
 
-/** ---------- Types ---------- */
+/* ----------------------------- types ----------------------------- */
 
+/**
+ * The universal document kind taxonomy. Open-ended by design — the model may
+ * return any of these, and we group them into broader filing categories via
+ * `kindToCategory`. `other` is the fallback for anything not on the list.
+ */
 export type DocKind =
+  | "government"
+  | "passport"
+  | "national_id"
+  | "driver_licence"
+  | "vehicle_registration"
+  | "immigration"
+  | "medical_report"
+  | "prescription"
+  | "lab_result"
+  | "vaccination"
+  | "insurance"
+  | "tax"
+  | "legal_contract"
+  | "court"
+  | "police"
+  | "bank_statement"
+  | "credit_card_statement"
+  | "utility_bill"
   | "receipt"
   | "invoice"
-  | "passport"
-  | "id"
-  | "driver_licence"
-  | "contract"
-  | "medical"
-  | "event"
-  | "ticket"
-  | "subscription"
-  | "bill"
+  | "payslip"
+  | "employment_contract"
+  | "school_document"
+  | "university_document"
+  | "certificate"
+  | "diploma"
+  | "student_id"
+  | "report_card"
+  | "handwritten_note"
+  | "meeting_note"
+  | "sticky_note"
+  | "shopping_list"
+  | "calendar"
+  | "appointment_card"
+  | "flight_ticket"
+  | "boarding_pass"
+  | "hotel_reservation"
+  | "event_ticket"
+  | "warranty"
+  | "product_manual"
+  | "business_card"
+  | "qr_code"
+  | "barcode"
+  | "screenshot"
+  | "printed_form"
+  | "filled_form"
+  | "pdf"
+  | "scanned_document"
   | "other";
 
 export const DOC_KIND_LABEL: Record<DocKind, string> = {
+  government: "Government document",
+  passport: "Passport",
+  national_id: "National ID",
+  driver_licence: "Driver licence",
+  vehicle_registration: "Vehicle registration",
+  immigration: "Immigration document",
+  medical_report: "Medical / Hospital report",
+  prescription: "Prescription",
+  lab_result: "Lab result",
+  vaccination: "Vaccination record",
+  insurance: "Insurance document",
+  tax: "Tax document",
+  legal_contract: "Legal contract",
+  court: "Court document",
+  police: "Police document",
+  bank_statement: "Bank statement",
+  credit_card_statement: "Credit card statement",
+  utility_bill: "Utility bill",
   receipt: "Receipt",
   invoice: "Invoice",
-  passport: "Passport",
-  id: "ID card",
-  driver_licence: "Driver licence",
-  contract: "Contract",
-  medical: "Medical document",
-  event: "Event / Appointment",
-  ticket: "Ticket",
-  subscription: "Subscription",
-  bill: "Bill",
+  payslip: "Payslip",
+  employment_contract: "Employment contract",
+  school_document: "School document",
+  university_document: "University document",
+  certificate: "Certificate",
+  diploma: "Diploma",
+  student_id: "Student ID",
+  report_card: "Report card",
+  handwritten_note: "Handwritten note",
+  meeting_note: "Meeting note",
+  sticky_note: "Sticky note",
+  shopping_list: "Shopping list",
+  calendar: "Calendar",
+  appointment_card: "Appointment card",
+  flight_ticket: "Flight ticket",
+  boarding_pass: "Boarding pass",
+  hotel_reservation: "Hotel reservation",
+  event_ticket: "Event ticket",
+  warranty: "Warranty document",
+  product_manual: "Product manual",
+  business_card: "Business card",
+  qr_code: "QR code",
+  barcode: "Barcode",
+  screenshot: "Screenshot",
+  printed_form: "Printed form",
+  filled_form: "Filled form",
+  pdf: "PDF document",
+  scanned_document: "Scanned document",
   other: "Document",
 };
+
+/** Maps a fine-grained DocKind into a LifeVault filing DocumentCategory. */
+function kindToCategory(kind: DocKind): DocumentCategory {
+  switch (kind) {
+    case "passport":
+    case "national_id":
+      return "ID";
+    case "driver_licence":
+      return "Driver Licence";
+    case "vehicle_registration":
+      return "Vehicle";
+    case "medical_report":
+    case "prescription":
+    case "lab_result":
+    case "vaccination":
+      return "Medical";
+    case "insurance":
+      return "Insurance";
+    case "tax":
+      return "Tax";
+    case "legal_contract":
+    case "court":
+    case "police":
+      return "Legal";
+    case "immigration":
+      return "Immigration";
+    case "bank_statement":
+    case "credit_card_statement":
+      return "Banking";
+    case "utility_bill":
+      return "Bill";
+    case "receipt":
+      return "Receipt";
+    case "invoice":
+      return "Invoice";
+    case "payslip":
+      return "Payslip";
+    case "employment_contract":
+      return "Employment";
+    case "school_document":
+    case "university_document":
+    case "report_card":
+    case "student_id":
+      return "Education";
+    case "certificate":
+    case "diploma":
+      return "Certificate";
+    case "warranty":
+      return "Warranty";
+    case "product_manual":
+      return "Manual";
+    case "flight_ticket":
+    case "boarding_pass":
+    case "hotel_reservation":
+      return "Travel";
+    case "event_ticket":
+    case "appointment_card":
+    case "calendar":
+      return "Event";
+    case "business_card":
+      return "Business Card";
+    case "handwritten_note":
+    case "meeting_note":
+    case "sticky_note":
+    case "shopping_list":
+      return "Note";
+    case "printed_form":
+    case "filled_form":
+      return "Form";
+    case "screenshot":
+      return "Screenshot";
+    case "qr_code":
+    case "barcode":
+    case "pdf":
+    case "scanned_document":
+    case "government":
+    case "other":
+    default:
+      return "Other";
+  }
+}
+
+/** Group label for chips in the UI — coarser than DocKind, friendlier. */
+export type DocGroup =
+  | "Identity"
+  | "Medical"
+  | "Money"
+  | "Legal"
+  | "Travel"
+  | "Work"
+  | "Education"
+  | "Notes"
+  | "Other";
+
+export const DOC_GROUP_LABEL: Record<DocGroup, string> = {
+  Identity: "Identity",
+  Medical: "Medical",
+  Money: "Money & Bills",
+  Legal: "Legal",
+  Travel: "Travel",
+  Work: "Work",
+  Education: "Education",
+  Notes: "Notes",
+  Other: "Other",
+};
+
+function kindToGroup(kind: DocKind): DocGroup {
+  switch (kind) {
+    case "passport":
+    case "national_id":
+    case "driver_licence":
+    case "vehicle_registration":
+    case "government":
+      return "Identity";
+    case "medical_report":
+    case "prescription":
+    case "lab_result":
+    case "vaccination":
+      return "Medical";
+    case "bank_statement":
+    case "credit_card_statement":
+    case "utility_bill":
+    case "receipt":
+    case "invoice":
+    case "payslip":
+      return "Money";
+    case "legal_contract":
+    case "court":
+    case "police":
+    case "tax":
+    case "immigration":
+      return "Legal";
+    case "flight_ticket":
+    case "boarding_pass":
+    case "hotel_reservation":
+    case "event_ticket":
+      return "Travel";
+    case "employment_contract":
+    case "business_card":
+      return "Work";
+    case "school_document":
+    case "university_document":
+    case "certificate":
+    case "diploma":
+    case "student_id":
+    case "report_card":
+      return "Education";
+    case "handwritten_note":
+    case "meeting_note":
+    case "sticky_note":
+    case "shopping_list":
+    case "calendar":
+    case "appointment_card":
+      return "Notes";
+    default:
+      return "Other";
+  }
+}
+
+/* ----------------------------- entities ----------------------------- */
+
+/**
+ * A typed entity extracted from the document. `type` lets the UI render
+ * entities as chips with appropriate affordances (e.g. tap a phone to call).
+ */
+export type EntityType =
+  | "date"
+  | "appointment"
+  | "expiry"
+  | "due"
+  | "reminder"
+  | "name"
+  | "address"
+  | "email"
+  | "phone"
+  | "id_number"
+  | "reference"
+  | "money"
+  | "medicine"
+  | "legal_clause"
+  | "education"
+  | "banking"
+  | "travel"
+  | "url"
+  | "other";
+
+export interface ExtractedEntity {
+  type: EntityType;
+  label: string;
+  /** Human-readable value (e.g. "A$ 1,234.56", "Dr. Sarah Lee"). */
+  value: string;
+  /** ISO date (yyyy-MM-dd) when the entity is date-like; otherwise null. */
+  isoDate?: string | null;
+  /** ISO time (HH:mm) when the entity is an appointment time; otherwise null. */
+  isoTime?: string | null;
+  /** Numeric amount when the entity is money; otherwise null. */
+  amount?: number | null;
+  /** Currency code (ISO 4217) when the entity is money; otherwise null. */
+  currency?: string | null;
+}
+
+/* ----------------------------- actions ----------------------------- */
 
 /** Suggested follow-on actions the user can accept with one tap. */
 export type SuggestedAction =
@@ -135,79 +414,48 @@ export type SuggestedAction =
       notes: string;
     };
 
+/* ----------------------------- scan result ----------------------------- */
+
 export interface ScanResult {
+  /** Stable id within a single scan (so multi-doc results can be tracked). */
+  id: string;
   kind: DocKind;
+  group: DocGroup;
   title: string;
   summary: string;
-  /** Free-form extracted fields the UI renders as a key/value list. */
+  /** Detected primary language(s), e.g. "en", "ar", "en+ar". */
+  language: string;
+  /** Confidence 0..1 — model's own self-assessment of recognition quality. */
+  confidence: number;
+  /** Free-form key/value pairs the UI renders as a detail list. */
   fields: { label: string; value: string }[];
+  /** Typed entities for chip rendering + smart affordances. */
+  entities: ExtractedEntity[];
   category: DocumentCategory;
   expiryDate: string | null;
+  issueDate: string | null;
+  /** Raw OCR'd/understood text, kept for follow-up Q&A. */
+  text: string;
   suggestedActions: SuggestedAction[];
 }
 
-/** ---------- Helpers ---------- */
-
-/**
- * Robustly extract a JSON object from a model response.
- *
- * Handles the common failure modes:
- *  1. Plain JSON → direct parse.
- *  2. Markdown-fenced JSON (```json ... ``` or ``` ... ```) → strip fences.
- *  3. JSON wrapped in prose ("Here is the result: {...}") → slice the first
- *     balanced `{...}` block using brace matching (not just first/last index,
- *     which breaks if prose contains stray braces).
- *  4. Trailing content after the JSON object → brace matching stops at the
- *     closing brace of the top-level object.
- *  5. JSON with trailing commas (some models add them) → strip them.
- *  6. Single-quoted strings (rare) → normalize to double quotes.
- *
- * Returns the parsed object or `null` if no valid JSON could be extracted.
- */
-function safeJsonParse<T>(raw: string): T | null {
-  if (!raw || !raw.trim()) return null;
-
-  // Attempt 1: direct parse.
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    // continue
-  }
-
-  // Attempt 2: strip markdown code fences.
-  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenceMatch) {
-    try {
-      return JSON.parse(fenceMatch[1].trim()) as T;
-    } catch {
-      // continue to brace matching
-    }
-  }
-
-  // Attempt 3: balanced brace matching — find the first complete {...} block.
-  const extracted = extractFirstJsonObject(raw);
-  if (extracted) {
-    try {
-      return JSON.parse(extracted) as T;
-    } catch {
-      // Attempt 4: fix common issues (trailing commas, single quotes).
-      const cleaned = cleanJsonString(extracted);
-      try {
-        return JSON.parse(cleaned) as T;
-      } catch {
-        // give up
-      }
-    }
-  }
-
-  return null;
+export interface ScanOutcome {
+  /** One or more documents detected across all supplied pages. */
+  documents: ScanResult[];
+  /** The image data URLs used (enhanced), for the UI to display. */
+  pages: string[];
 }
 
-/** Find the first balanced top-level JSON object in a string. */
-/**
- * Compact redacted summary of chat messages for diagnostic logging.
- * Reports text content length and image byte size — never raw base64.
- */
+/* ----------------------------- low-level chat ----------------------------- */
+
+interface ChatChoice {
+  message?: { content?: string };
+}
+interface ChatResponse {
+  choices?: ChatChoice[];
+}
+
+/** Compact redacted summary of chat messages for diagnostic logging. */
 function summarizeMessages(messages: unknown[]): string {
   try {
     return messages
@@ -215,9 +463,7 @@ function summarizeMessages(messages: unknown[]): string {
         const msg = m as { role?: string; content?: unknown };
         const role = msg.role ?? "?";
         const c = msg.content;
-        if (typeof c === "string") {
-          return `${role}:text(${c.length})`;
-        }
+        if (typeof c === "string") return `${role}:text(${c.length})`;
         if (Array.isArray(c)) {
           const parts = c
             .map((p) => {
@@ -243,67 +489,19 @@ function summarizeMessages(messages: unknown[]): string {
   }
 }
 
-function extractFirstJsonObject(s: string): string | null {
-  const start = s.indexOf("{");
-  if (start === -1) return null;
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  for (let i = start; i < s.length; i++) {
-    const ch = s[i];
-    if (inString) {
-      if (escape) {
-        escape = false;
-      } else if (ch === "\\") {
-        escape = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-    } else if (ch === '"') {
-      inString = true;
-    } else if (ch === "{") {
-      depth++;
-    } else if (ch === "}") {
-      depth--;
-      if (depth === 0) {
-        return s.slice(start, i + 1);
-      }
-    }
-  }
-  return null; // unbalanced — truncated output
-}
-
-/** Best-effort cleanup of common model JSON mistakes. */
-function cleanJsonString(s: string): string {
-  return s
-    // Remove trailing commas before } or ].
-    .replace(/,\s*([}\]])/g, "$1")
-    // Normalize single-quoted strings to double-quoted (naive but helps).
-    .replace(/'([^']*)'/g, '"$1"');
-}
-
-interface ChatChoice {
-  message?: { content?: string };
-}
-
-interface ChatResponse {
-  choices?: ChatChoice[];
-}
-
 /**
  * Low-level chat completion. Returns the assistant's text content.
  * Throws `AI_HTTP_ERROR` with status on non-2xx, `AI_EMPTY` on empty reply.
  *
- * Sends `response_format: { type: "json_object" }` when `json: true` to force
- * valid JSON output (supported by Gemini via the Vercel AI Gateway). This
- * eliminates the most common parse-failure cause (markdown fences / prose).
+ * NOTE: Do NOT send `response_format: { type: "json_object" }` for Gemini
+ * models on the Vercel AI Gateway — it returns HTTP 400 when combined with
+ * vision input. We rely on a strict system prompt + safeJsonParse.
  */
 async function chatComplete(
   messages: unknown[],
   options?: {
     temperature?: number;
     maxTokens?: number;
-    json?: boolean;
   },
 ): Promise<string> {
   if (!TOOLKIT_URL) {
@@ -313,27 +511,15 @@ async function chatComplete(
     "Content-Type": "application/json",
   };
   if (APP_KEY) headers["x-rork-app-key"] = APP_KEY;
-  // Always send the toolkit secret as a bearer. On native Capacitor builds this
-  // is the only auth path (no Rork runtime injection); on the web preview the
-  // runtime overwrites it with a delegated token before transport.
   if (TOOLKIT_SECRET) headers["Authorization"] = `Bearer ${TOOLKIT_SECRET}`;
 
   const body: Record<string, unknown> = {
     model: MODEL_ID,
     messages,
     temperature: options?.temperature ?? 0.2,
-    max_tokens: options?.maxTokens ?? 1500,
+    max_tokens: options?.maxTokens ?? 2200,
   };
-  // NOTE: Do NOT send `response_format: { type: "json_object" }` for Gemini
-  // models on the Vercel AI Gateway. Gemini does not reliably support OpenAI
-  // JSON mode, and combining it with vision (image_url) input causes HTTP 400.
-  // We rely on a strict system prompt + safeJsonParse (strips fences/prose)
-  // plus a retry path to obtain valid JSON instead.
-  if (options?.json && !MODEL_ID.startsWith("google/")) {
-    body.response_format = { type: "json_object" };
-  }
 
-  // Diagnostic summary of the request payload (no raw base64/images logged).
   const reqSummary = summarizeMessages(messages as unknown[]);
   console.info(
     `[ai] chatComplete -> ${CHAT_URL} | model=${MODEL_ID} | temp=${body.temperature} | max_tokens=${body.max_tokens} | msgs=${reqSummary}`,
@@ -368,247 +554,557 @@ async function chatComplete(
   return text;
 }
 
-/** ---------- Document scan ---------- */
+/* ----------------------------- JSON parsing ----------------------------- */
 
-interface RawScan {
+/**
+ * Robustly extract a JSON object (or array of objects) from a model response.
+ * Handles markdown fences, prose-wrapped JSON, trailing commas, single quotes.
+ */
+function safeJsonParse<T>(raw: string): T | null {
+  if (!raw || !raw.trim()) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    // continue
+  }
+  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch) {
+    try {
+      return JSON.parse(fenceMatch[1].trim()) as T;
+    } catch {
+      // continue
+    }
+  }
+  // Try object first, then array.
+  const obj = extractFirstJsonBlock(raw, "{", "}");
+  if (obj) {
+    try {
+      return JSON.parse(obj) as T;
+    } catch {
+      try {
+        return JSON.parse(cleanJsonString(obj)) as T;
+      } catch {
+        // continue
+      }
+    }
+  }
+  const arr = extractFirstJsonBlock(raw, "[", "]");
+  if (arr) {
+    try {
+      return JSON.parse(arr) as T;
+    } catch {
+      try {
+        return JSON.parse(cleanJsonString(arr)) as T;
+      } catch {
+        // give up
+      }
+    }
+  }
+  return null;
+}
+
+function extractFirstJsonBlock(s: string, open: string, close: string): string | null {
+  const start = s.indexOf(open);
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+    } else if (ch === '"') {
+      inString = true;
+    } else if (ch === open) {
+      depth++;
+    } else if (ch === close) {
+      depth--;
+      if (depth === 0) {
+        return s.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+function cleanJsonString(s: string): string {
+  return s
+    .replace(/,\s*([}\]])/g, "$1")
+    .replace(/'([^']*)'/g, '"$1"');
+}
+
+/* ----------------------------- scan prompt ----------------------------- */
+
+const SCAN_SYSTEM = `You are LifeVault's universal document understanding engine. You receive one or more photos from the user. Each photo may contain ONE or SEVERAL documents (e.g. two receipts in one photo, or multiple pages of one contract). Your job is to deeply understand every document present and return structured data.
+
+You can recognise almost ANY document, including but not limited to: government documents, medical records, hospital reports, prescriptions, lab results, vaccination records, insurance documents, tax documents, legal contracts, court documents, police documents, immigration documents, passports, national IDs, driver licences, vehicle registrations, bank statements, credit card statements, utility bills, receipts, invoices, payslips, employment contracts, school documents, university documents, certificates, diplomas, student IDs, report cards, handwritten notes, meeting notes, sticky notes, shopping lists, calendars, appointment cards, flight tickets, boarding passes, hotel reservations, event tickets, warranty documents, product manuals, business cards, QR codes, barcodes, screenshots, printed forms, filled forms, PDFs, and scanned paper documents.
+
+You must:
+1. Detect how many distinct documents are present across all images. Return ONE result per document. If a single image clearly contains multiple separate documents (e.g. two receipts side by side), return multiple results. If multiple images are pages of the SAME document, return ONE result with combined fields.
+2. Classify each document with the most specific "kind" from the allowed list below.
+3. Read printed text AND handwritten text with high accuracy. Treat Arabic handwriting, mixed Arabic/English, and multilingual documents as first-class — preserve the original language(s) and set "language" accordingly (e.g. "en", "ar", "en+ar").
+4. Understand the document's MEANING, not just the characters. Infer dates, appointments, reminders, expiry/due dates, names, addresses, emails, phones, ID/reference numbers, money + currency, medicines, legal clauses, education info, banking info, and travel info. Extract each as a typed entity.
+5. Produce a concise smart summary (1-3 sentences) describing what the document is and why it matters.
+6. Suggest follow-on actions ONLY when they genuinely make sense for the document kind:
+   - Any document with a payment amount -> suggest an expense.
+   - Appointment card / event ticket / flight / boarding pass / calendar / medical appointment -> suggest a calendar appointment.
+   - Any formal document (ID, passport, licence, insurance, contract, medical, warranty, certificate, subscription, bill) -> suggest saving as a document.
+   - Anything with an expiry/due date -> suggest a reminder.
+   - Bills -> suggest both an expense AND a document.
+7. Pick the closest filing "category" from the allowed enum.
+
+Return ONLY a JSON object (no markdown, no prose) with this exact shape:
+{
+  "documents": [
+    {
+      "kind": "<one of the kinds listed below>",
+      "title": "<short human title, max ~70 chars>",
+      "summary": "<1-3 sentence description>",
+      "language": "<language code(s)>",
+      "confidence": <number 0..1>,
+      "fields": [{"label": "...", "value": "..."}],
+      "entities": [
+        {"type": "<one of: date, appointment, expiry, due, reminder, name, address, email, phone, id_number, reference, money, medicine, legal_clause, education, banking, travel, url, other>", "label": "...", "value": "...", "isoDate": "yyyy-MM-dd" | null, "isoTime": "HH:mm" | null, "amount": number | null, "currency": "AUD|USD|EUR|..." | null}
+      ],
+      "category": "<one of: ${DOCUMENT_CATEGORIES.join(", ")}>",
+      "expiryDate": "yyyy-MM-dd" | null,
+      "issueDate": "yyyy-MM-dd" | null,
+      "date": "yyyy-MM-dd" | null,
+      "amount": number | null,
+      "merchant": "<name or empty string>",
+      "paymentMethod": "<one of: ${PAYMENT_METHODS.join(", ")}">,
+      "time": "HH:mm" | null,
+      "location": "<text or empty string>",
+      "reminderDays": <one of: ${REMINDER_OPTIONS.join(", ")}>
+      "text": "<the full OCR'd / understood text of the document, preserve line breaks, include handwritten content verbatim>"
+    }
+  ]
+}
+
+Allowed "kind" values: ${Object.keys(DOC_KIND_LABEL).join(", ")}.
+
+Rules:
+- Use ISO yyyy-MM-dd for all dates. Use null when not visible.
+- Money "amount" must be a plain JSON number (no symbols).
+- "category" must be one of the exact enum values listed.
+- "paymentMethod" must be one of the exact enum values, or "" if unknown.
+- Do NOT invent values that are not visible or reasonably inferable. Prefer null / empty string.
+- Keep "fields" to the 4-10 most useful key/value pairs.
+- "text" should be the readable content of the document — this is used for follow-up questions, so include all meaningful printed and handwritten text.
+- For handwritten notes, "text" preserves the exact writing; "summary" interprets it.
+- For QR/barcodes, decode the payload into "text" and "entities" if possible.
+- Confidence reflects how clearly the document was read (1.0 = perfect, 0.3 = barely legible).`;
+
+/* ----------------------------- raw -> ScanResult ----------------------------- */
+
+interface RawEntity {
+  type?: EntityType;
+  label?: string;
+  value?: string;
+  isoDate?: string | null;
+  isoTime?: string | null;
+  amount?: number | null;
+  currency?: string | null;
+}
+
+interface RawScanDoc {
   kind?: DocKind;
   title?: string;
   summary?: string;
+  language?: string;
+  confidence?: number;
   fields?: { label?: string; value?: string }[];
+  entities?: RawEntity[];
   category?: DocumentCategory;
   expiryDate?: string | null;
-  amount?: number | null;
+  issueDate?: string | null;
   date?: string | null;
+  amount?: number | null;
   merchant?: string;
   paymentMethod?: PaymentMethod;
-  issueDate?: string | null;
-  reminderDays?: (typeof REMINDER_OPTIONS)[number];
-  time?: string;
+  time?: string | null;
   location?: string;
+  reminderDays?: (typeof REMINDER_OPTIONS)[number];
+  text?: string;
 }
 
-const SCAN_SYSTEM = `You are LifeVault's document scanner. You receive one photo from the user and must:
-1. Classify it as exactly one of: receipt, invoice, passport, id, driver_licence, contract, medical, event, ticket, subscription, bill, other.
-2. Extract the most relevant structured fields (e.g. title, date, amount, merchant, expiry date, issue date, location, time, name on document, document number, policy number, event name).
-3. Pick the closest LifeVault document category for filing.
-4. Build suggested follow-on actions the user may accept with one tap, ONLY when the detected kind makes them relevant:
-   - receipt / invoice / bill  -> suggest an expense (and a document if it has an expiry or is a formal record)
-   - event                      -> suggest a calendar appointment
-   - passport / id / driver_licence / contract / medical / subscription -> suggest a document; if it has an expiry date, ALSO suggest a reminder
-   - ticket                     -> suggest a calendar appointment (event date) AND a document (the ticket itself)
-
-Return ONLY a JSON object with this shape (no markdown, no prose):
-{
-  "kind": "<one of the kinds above>",
-  "title": "<short human title, max ~60 chars>",
-  "summary": "<1-2 sentence description of what this is>",
-  "fields": [{"label": "Merchant", "value": "Coles"}, ...],
-  "category": "<one of: ${DOCUMENT_CATEGORIES.join(", ")}>",
-  "expiryDate": "yyyy-MM-dd" | null,
-  "issueDate": "yyyy-MM-dd" | null,
-  "date": "yyyy-MM-dd" | null,
-  "amount": number | null,
-  "merchant": "<name or empty string>",
-  "paymentMethod": "<one of: ${PAYMENT_METHODS.join(", ")}">,
-  "time": "HH:mm" | null,
-  "location": "<text or empty string>",
-  "reminderDays": <one of: ${REMINDER_OPTIONS.join(", ")}>
+interface RawScan {
+  documents?: RawScanDoc[];
 }
 
-Rules:
-- Use ISO yyyy-MM-dd for all dates. If a date is not visible, use null.
-- Numbers must be plain JSON numbers (no currency symbols).
-- "category" must be one of the exact enum values listed.
-- "paymentMethod" must be one of the exact enum values, or omit if unknown.
-- Do not invent values that are not visible in the image. Prefer null / empty string.
-- Keep "fields" to the 4-8 most useful key/value pairs.`;
+function coerceKind(k: string | undefined): DocKind {
+  if (k && (Object.keys(DOC_KIND_LABEL) as string[]).includes(k)) {
+    return k as DocKind;
+  }
+  return "other";
+}
 
-/** Maps a raw scan into structured ScanResult + suggested actions. */
-function buildScanResult(raw: RawScan): ScanResult {
-  const kind: DocKind = raw.kind ?? "other";
-  const category: DocumentCategory =
-    raw.category && DOCUMENT_CATEGORIES.includes(raw.category)
-      ? raw.category
-      : "Other";
+function coerceCategory(c: string | undefined, fallback: DocumentCategory): DocumentCategory {
+  if (c && DOCUMENT_CATEGORIES.includes(c as DocumentCategory)) {
+    return c as DocumentCategory;
+  }
+  return fallback;
+}
+
+function coercePaymentMethod(p: string | undefined): PaymentMethod {
+  if (p && PAYMENT_METHODS.includes(p as PaymentMethod)) {
+    return p as PaymentMethod;
+  }
+  return "Debit Card";
+}
+
+function coerceReminderDays(r: number | undefined): (typeof REMINDER_OPTIONS)[number] {
+  if (r !== undefined && (REMINDER_OPTIONS as readonly number[]).includes(r)) {
+    return r as (typeof REMINDER_OPTIONS)[number];
+  }
+  return 30;
+}
+
+/** Maps a raw scan document into a structured ScanResult + suggested actions. */
+function buildScanResult(raw: RawScanDoc, index: number): ScanResult {
+  const kind = coerceKind(raw.kind);
+  const fallbackCategory = kindToCategory(kind);
+  const category = coerceCategory(raw.category, fallbackCategory);
   const expiryDate = normalizeDate(raw.expiryDate);
   const issueDate = normalizeDate(raw.issueDate);
   const date = normalizeDate(raw.date);
   const amount =
     typeof raw.amount === "number" && isFinite(raw.amount) ? raw.amount : null;
   const merchant = (raw.merchant ?? "").trim();
-  const paymentMethod =
-    raw.paymentMethod && PAYMENT_METHODS.includes(raw.paymentMethod)
-      ? raw.paymentMethod
-      : "Debit Card";
-  const reminderDays =
-    raw.reminderDays && REMINDER_OPTIONS.includes(raw.reminderDays)
-      ? raw.reminderDays
-      : 30;
+  const paymentMethod = coercePaymentMethod(raw.paymentMethod);
+  const reminderDays = coerceReminderDays(raw.reminderDays);
   const time = normalizeTime(raw.time) ?? "09:00";
   const location = (raw.location ?? "").trim();
+  const language = (raw.language ?? "en").trim() || "en";
+  const confidence =
+    typeof raw.confidence === "number" && isFinite(raw.confidence)
+      ? Math.max(0, Math.min(1, raw.confidence))
+      : 0.7;
+  const title = (raw.title ?? DOC_KIND_LABEL[kind]).trim();
+  const summary = (raw.summary ?? "").trim();
+  const text = (raw.text ?? "").trim();
 
   const fields: { label: string; value: string }[] = (raw.fields ?? [])
     .filter(
       (f): f is { label: string; value: string } =>
         typeof f.label === "string" && typeof f.value === "string",
     )
-    .slice(0, 8);
+    .slice(0, 10);
+
+  const entities: ExtractedEntity[] = (raw.entities ?? [])
+    .filter((e) => e && typeof e.value === "string" && e.value.trim())
+    .map((e) => ({
+      type: e.type ?? "other",
+      label: (e.label ?? "").trim() || (e.type ?? "other"),
+      value: (e.value ?? "").trim(),
+      isoDate: normalizeDate(e.isoDate) ?? null,
+      isoTime: normalizeTime(e.isoTime) ?? null,
+      amount:
+        typeof e.amount === "number" && isFinite(e.amount) ? e.amount : null,
+      currency: (e.currency ?? "").trim() || null,
+    }))
+    .slice(0, 24);
 
   const suggestedActions: SuggestedAction[] = [];
 
-  // Receipt / invoice / bill -> expense.
-  if (
-    (kind === "receipt" || kind === "invoice" || kind === "bill") &&
-    amount !== null
-  ) {
+  // 1. Expense — when there's a payment amount.
+  if (amount !== null && amount > 0) {
     suggestedActions.push({
       kind: "expense",
       amount,
       date: date ?? todayISO(),
-      category: pickExpenseCategory(kind, merchant),
-      merchant: merchant || "Unknown merchant",
-      notes: raw.title ?? "",
+      category: pickExpenseCategory(kind, merchant, entities),
+      merchant: merchant || title || "Unknown",
+      notes: summary,
       paymentMethod,
     });
   }
 
-  // Event / ticket -> appointment.
-  if (kind === "event" || kind === "ticket") {
-    suggestedActions.push({
-      kind: "appointment",
-      title: raw.title ?? "Event",
-      date: date ?? todayISO(),
-      time,
-      location,
-      notes: raw.summary ?? "",
-      reminder: "1 day before",
-    });
+  // 2. Calendar appointment — when the document represents a dated event.
+  const isEventLike =
+    kind === "appointment_card" ||
+    kind === "event_ticket" ||
+    kind === "flight_ticket" ||
+    kind === "boarding_pass" ||
+    kind === "hotel_reservation" ||
+    kind === "calendar";
+  // Medical appointments: appointment cards or reports with a next-visit date.
+  const hasAppointmentEntity = entities.some(
+    (e) => e.type === "appointment" && (e.isoDate || e.isoTime),
+  );
+  if (isEventLike || (hasAppointmentEntity && (date || expiryDate))) {
+    // Prefer an appointment entity's date/time when available.
+    const appt = entities.find((e) => e.type === "appointment");
+    const apptDate = appt?.isoDate ?? date ?? null;
+    const apptTime = appt?.isoTime ?? time;
+    if (apptDate) {
+      suggestedActions.push({
+        kind: "appointment",
+        title,
+        date: apptDate,
+        time: apptTime,
+        location,
+        notes: summary,
+        reminder: pickAppointmentReminder(kind),
+      });
+    }
   }
 
-  // Important documents -> save in Documents.
-  if (
-    kind === "passport" ||
-    kind === "id" ||
-    kind === "driver_licence" ||
-    kind === "contract" ||
-    kind === "medical" ||
-    kind === "subscription" ||
-    kind === "ticket" ||
-    kind === "bill"
-  ) {
+  // 3. Save as document — for formal / important documents.
+  const isFormalDoc =
+    kind !== "receipt" &&
+    kind !== "handwritten_note" &&
+    kind !== "sticky_note" &&
+    kind !== "shopping_list" &&
+    kind !== "qr_code" &&
+    kind !== "barcode" &&
+    kind !== "screenshot";
+  if (isFormalDoc) {
     suggestedActions.push({
       kind: "document",
-      name: raw.title ?? DOC_KIND_LABEL[kind],
+      name: title,
       category,
       issueDate,
       expiryDate,
-      notes: raw.summary ?? "",
+      notes: summary,
       reminderDays,
     });
   }
 
-  // Expiry -> reminder.
-  if (expiryDate) {
+  // 4. Reminder — anything with an expiry or due date.
+  const dueEntity = entities.find((e) => e.type === "due" || e.type === "expiry" || e.type === "reminder");
+  const reminderDate = dueEntity?.isoDate ?? expiryDate;
+  if (reminderDate) {
     suggestedActions.push({
       kind: "reminder",
-      title: `${raw.title ?? "Document"} expires ${expiryDate}`,
-      date: expiryDate,
-      notes: raw.summary ?? "",
+      title: `${title} — ${dueEntity?.type === "due" ? "due" : "expires"} ${reminderDate}`,
+      date: reminderDate,
+      notes: summary,
     });
   }
 
   return {
+    id: `scan_${index}_${Math.random().toString(36).slice(2, 8)}`,
     kind,
-    title: raw.title ?? DOC_KIND_LABEL[kind],
-    summary: raw.summary ?? "",
+    group: kindToGroup(kind),
+    title,
+    summary,
+    language,
+    confidence,
     fields,
+    entities,
     category,
     expiryDate,
+    issueDate,
+    text,
     suggestedActions,
   };
+}
+
+function pickAppointmentReminder(kind: DocKind): string {
+  if (kind === "flight_ticket" || kind === "boarding_pass") return "1 day before";
+  if (kind === "medical_report" || kind === "appointment_card" || kind === "vaccination") {
+    return "1 day before";
+  }
+  // Default: pick a sensible reminder from the APPOINTMENT_REMINDERS list.
+  return APPOINTMENT_REMINDERS.includes("1 day before") ? "1 day before" : APPOINTMENT_REMINDERS[0];
 }
 
 function pickExpenseCategory(
   kind: DocKind,
   merchant: string,
+  entities: ExtractedEntity[],
 ): ExpenseCategory {
   const m = merchant.toLowerCase();
   if (/electric|gas|water|internet|phone|energy|utility|nbn|optus|telstra|vodafone|agl|origin/.test(m))
     return "Bills";
   if (/fuel|shell|bp|caltex|7-eleven|ampol|exxon|mobil/.test(m)) return "Fuel";
-  if (/woolworths|coles|iga|aldi|costco|supermarket|grocery/.test(m))
-    return "Food";
+  if (/woolworths|coles|iga|aldi|costco|supermarket|grocery/.test(m)) return "Food";
   if (/uber|lyft|taxi|train|bus|transport|opal|myki/.test(m)) return "Transport";
   if (/pharmacy|chemist|medical|clinic|dental|hospital/.test(m)) return "Health";
   if (/netflix|spotify|disney|stan|youtube|prime/.test(m)) return "Entertainment";
-  if (kind === "bill") return "Bills";
-  if (kind === "invoice") return "Other";
+  // Hint from entities (e.g. a medicine entity → Health).
+  if (entities.some((e) => e.type === "medicine")) return "Health";
+  if (kind === "utility_bill") return "Bills";
+  if (kind === "receipt" || kind === "invoice") return "Other";
+  if (kind === "payslip") return "Other";
+  if (kind === "medical_report" || kind === "prescription" || kind === "lab_result" || kind === "vaccination") {
+    return "Health";
+  }
   return "Other";
 }
 
-/** ---------- Public: scanDocument ---------- */
+/* ----------------------------- public: scanDocuments ----------------------------- */
 
-export async function scanDocument(imageDataUrl: string): Promise<ScanResult> {
-  // Inline the image as an OpenAI-style image_url content part. The Vercel AI
-  // Gateway accepts data URLs for vision models. We resize first to stay
-  // under the 4.5MB body limit (see resize-for-ai.ts).
-  const { resizeForAI } = await import("./resize-for-ai");
-  const { base64 } = await resizeForAI(imageDataUrl, 3_000_000);
-  const dataUrl = `data:image/jpeg;base64,${base64}`;
+/**
+ * Scan one or more document photos and return a universal understanding
+ * result. Each page is enhanced for OCR before being sent to the model.
+ *
+ * @param pages Array of image data URLs (one per captured page/photo).
+ */
+export async function scanDocuments(pages: string[]): Promise<ScanOutcome> {
+  if (pages.length === 0) {
+    throw new Error("AI_NO_PAGES");
+  }
+  const { enhanceForOCR } = await import("./enhance-image");
+  // Enhance each page in parallel; enhancement falls back to the original
+  // image on any internal error, so this never throws.
+  const enhanced = await Promise.all(
+    pages.map((p) => enhanceForOCR(p, 3_000_000).catch(() => ({ dataUrl: p, base64: "", mimeType: "image/jpeg" as const }))),
+  );
+  const imageParts = enhanced.map((e) => ({
+    type: "image_url" as const,
+    image_url: { url: e.dataUrl },
+  }));
 
   const messages = [
     { role: "system", content: SCAN_SYSTEM },
     {
       role: "user",
       content: [
-        { type: "text", text: "Scan this image and return the JSON object." },
-        { type: "image_url", image_url: { url: dataUrl } },
+        {
+          type: "text",
+          text:
+            pages.length === 1
+              ? "Analyse this document and return the JSON object."
+              : `Analyse these ${pages.length} pages and return the JSON object. Treat them as related pages of one document unless they are clearly different documents.`,
+        },
+        ...imageParts,
       ],
     },
   ];
 
-  // Higher token limit to avoid truncation on detailed docs. JSON mode is
-  // intentionally NOT used for Gemini (it returns 400 when combined with
-  // vision input); safeJsonParse + the retry path below handle non-JSON output.
   const raw = await chatComplete(messages, {
     temperature: 0.1,
-    maxTokens: 2000,
-    json: true,
+    maxTokens: 2400,
   });
   let parsed = safeJsonParse<RawScan>(raw);
 
-  // If the first attempt fails to parse, retry once with a stricter prompt
-  // that explicitly demands pure JSON (no fences, no prose). This catches
-  // the rare case where JSON mode isn't honored by the upstream provider.
-  if (!parsed) {
-    console.warn("[ai] scan parse failed, retrying with stricter prompt");
+  // Retry once with a stricter prompt if parsing failed.
+  if (!parsed || !Array.isArray(parsed.documents) || parsed.documents.length === 0) {
+    console.warn("[ai] scan parse failed or empty, retrying with stricter prompt");
     const retryMessages = [
       {
         role: "system",
-        content: `${SCAN_SYSTEM}\n\nIMPORTANT: Respond with ONLY a raw JSON object. No markdown, no code fences, no explanation — just the JSON object starting with { and ending with }.`,
+        content: `${SCAN_SYSTEM}\n\nIMPORTANT: Respond with ONLY a raw JSON object. No markdown, no code fences, no explanation — just the JSON object starting with { and ending with }. The "documents" array must contain at least one entry.`,
       },
       {
         role: "user",
         content: [
           { type: "text", text: "Return only the JSON object now." },
-          { type: "image_url", image_url: { url: dataUrl } },
+          ...imageParts,
         ],
       },
     ];
     const retryRaw = await chatComplete(retryMessages, {
       temperature: 0,
-      maxTokens: 2000,
+      maxTokens: 2400,
     });
     parsed = safeJsonParse<RawScan>(retryRaw);
   }
 
-  if (!parsed) {
+  if (!parsed || !Array.isArray(parsed.documents) || parsed.documents.length === 0) {
     throw new Error("AI_PARSE_FAILED");
   }
-  return buildScanResult(parsed);
+
+  const documents = parsed.documents.map((d, i) => buildScanResult(d, i));
+  return {
+    documents,
+    pages: enhanced.map((e) => e.dataUrl),
+  };
 }
 
-/** ---------- Natural-language search ---------- */
+/** Backwards-compatible single-page entry point. */
+export async function scanDocument(imageDataUrl: string): Promise<ScanResult> {
+  const outcome = await scanDocuments([imageDataUrl]);
+  return outcome.documents[0];
+}
+
+/* ----------------------------- public: askAboutScan ----------------------------- */
+
+export interface AskContext {
+  /** The document's understood text (from ScanResult.text). */
+  text: string;
+  /** Its summary + kind + entities, as concise context. */
+  kind: DocKind;
+  title: string;
+  summary: string;
+  entities: ExtractedEntity[];
+}
+
+const ASK_SYSTEM = `You are LifeVault's document assistant. The user has scanned a document and is asking a follow-up question about it. You receive the document's understood text, a summary, and extracted entities as context.
+
+Answer clearly and concisely in the SAME LANGUAGE the user asks in (English or Arabic). If the answer is not in the document, say so plainly — do not invent information. When the answer references a specific value (a date, an amount, a name), quote it exactly.
+
+Respond with a JSON object only (no markdown, no prose):
+{
+  "answer": "<1-4 sentence direct answer>",
+  "actions": [
+    // Optional: suggested follow-on actions if the question reveals a new
+    // appointment, expense, reminder, or document that should be filed.
+    // Same action shapes as the scan engine. Omit "actions" if none apply.
+  ]
+}`;
+
+interface RawAsk {
+  answer?: string;
+  actions?: SuggestedAction[];
+}
+
+/**
+ * Answer a follow-up question about a previously scanned document.
+ * Uses the captured text + entities as context so we don't re-send the image.
+ */
+export async function askAboutScan(
+  question: string,
+  ctx: AskContext,
+): Promise<{ answer: string; actions: SuggestedAction[] }> {
+  const entityLines = ctx.entities
+    .map((e) => `- ${e.label}: ${e.value}${e.isoDate ? ` (${e.isoDate})` : ""}`)
+    .join("\n");
+  const context = [
+    `DOCUMENT KIND: ${ctx.kind}`,
+    `TITLE: ${ctx.title}`,
+    `SUMMARY: ${ctx.summary}`,
+    `ENTITIES:\n${entityLines || "(none)"}`,
+    `TEXT:\n${ctx.text || "(no text captured)"}`,
+  ].join("\n\n");
+
+  const messages = [
+    { role: "system", content: ASK_SYSTEM },
+    {
+      role: "user",
+      content: `DOCUMENT CONTEXT:\n${context}\n\nQUESTION:\n${question}`,
+    },
+  ];
+
+  const raw = await chatComplete(messages, {
+    temperature: 0.2,
+    maxTokens: 900,
+  });
+  const parsed = safeJsonParse<RawAsk>(raw);
+  if (!parsed) {
+    // Fall back to treating the raw text as the answer.
+    return { answer: raw.trim(), actions: [] };
+  }
+  const answer = (parsed.answer ?? "").trim() || "I couldn't find that in the document.";
+  const actions = Array.isArray(parsed.actions) ? parsed.actions.filter(isValidAction) : [];
+  return { answer, actions };
+}
+
+function isValidAction(a: unknown): a is SuggestedAction {
+  if (!a || typeof a !== "object") return false;
+  const kind = (a as { kind?: string }).kind;
+  return kind === "expense" || kind === "appointment" || kind === "document" || kind === "reminder";
+}
+
+/* ----------------------------- natural-language search ----------------------------- */
 
 export interface VaultSnapshot {
   documents: VaultDocument[];
@@ -620,16 +1116,12 @@ export interface VaultSnapshot {
 export interface SearchMatch {
   type: "document" | "expense" | "subscription" | "appointment";
   id: string;
-  /** Short human label for the result row. */
   label: string;
-  /** Secondary line (date, amount, status, etc.). */
   sub: string;
 }
 
 export interface SearchResults {
-  /** Short natural-language answer to the user's question. */
   answer: string;
-  /** Matching items from the vault, ranked by relevance. */
   matches: SearchMatch[];
 }
 
@@ -662,30 +1154,24 @@ function vaultToContext(v: VaultSnapshot): string {
   return lines.join("\n");
 }
 
-const SEARCH_SYSTEM = `You are LifeVault's natural-language search assistant. The user asks a question about their own saved data; you receive a snapshot of their vault as context.
+const SEARCH_SYSTEM = `You are LifeVault's natural-language search assistant. The user asks a question about their own saved data; you receive a snapshot of their vault as context. Answer in the user's language (English or Arabic).
 
-Answer in two parts, as JSON only (no markdown, no prose):
+Return JSON only (no markdown, no prose):
 {
-  "answer": "<1-3 sentence direct answer to the question, referencing concrete items from the vault. If nothing matches, say so plainly.>",
+  "answer": "<1-3 sentence direct answer referencing concrete items. If nothing matches, say so plainly.>",
   "matchIds": ["<id1>", "<id2>", ...]
 }
 
 Rules:
-- "matchIds" must be the IDs of the items most relevant to the question, ranked most-relevant-first. Maximum 12.
-- Only include IDs that actually appear in the context.
-- If the user asks "when does X expire?" and X is in the vault, put the expiry date in "answer" and X's id in "matchIds".
-- If the user asks for "all X" (e.g. all electricity bills), include every matching item.
-- Never invent IDs or items not in the context.`;
+- "matchIds" must be IDs that actually appear in the context, ranked most-relevant-first. Max 12.
+- Never invent IDs.`;
 
 interface RawSearch {
   answer?: string;
   matchIds?: string[];
 }
 
-function buildSearchMatches(
-  matchIds: string[],
-  vault: VaultSnapshot,
-): SearchMatch[] {
+function buildSearchMatches(matchIds: string[], vault: VaultSnapshot): SearchMatch[] {
   const byId = new Map<string, SearchMatch>();
   for (const d of vault.documents) {
     byId.set(d.id, {
@@ -742,7 +1228,6 @@ export async function naturalLanguageSearch(
   const raw = await chatComplete(messages, {
     temperature: 0.2,
     maxTokens: 800,
-    json: true,
   });
   const parsed = safeJsonParse<RawSearch>(raw);
   if (!parsed) {
@@ -754,13 +1239,12 @@ export async function naturalLanguageSearch(
   return { answer, matches };
 }
 
-/** ---------- Date utilities ---------- */
+/* ----------------------------- date utilities ----------------------------- */
 
 function normalizeDate(s: string | null | undefined): string | null {
   if (!s) return null;
   const trimmed = s.trim();
   if (!trimmed) return null;
-  // Accept yyyy-MM-dd directly.
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
   const d = new Date(trimmed);
   if (isFinite(d.getTime())) {
@@ -791,7 +1275,8 @@ function todayISO(): string {
   ).padStart(2, "0")}`;
 }
 
-/** Re-exported for the UI to render kind labels. */
-export { DOC_KIND_LABEL as SCAN_KIND_LABEL };
+/* ----------------------------- re-exports ----------------------------- */
+
+export { DOC_KIND_LABEL as SCAN_KIND_LABEL, DOC_GROUP_LABEL as SCAN_GROUP_LABEL };
 export type { DocumentCategory, ExpenseCategory };
 export { DOCUMENT_CATEGORIES, EXPENSE_CATEGORIES, BILLING_FREQUENCIES, APPOINTMENT_REMINDERS };

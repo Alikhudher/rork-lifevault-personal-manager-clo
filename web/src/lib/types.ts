@@ -1,12 +1,34 @@
+/**
+ * Universal document taxonomy. Covers every category the AI engine can
+ * classify an uploaded document into — from government IDs to handwritten
+ * sticky notes. Order matters: most-common-first for picker display.
+ */
 export type DocumentCategory =
   | "ID"
   | "Passport"
   | "Driver Licence"
+  | "Vehicle"
+  | "Medical"
   | "Insurance"
+  | "Tax"
+  | "Legal"
+  | "Immigration"
+  | "Banking"
+  | "Bill"
+  | "Receipt"
+  | "Invoice"
+  | "Payslip"
   | "Employment"
   | "Education"
+  | "Certificate"
   | "Warranty"
-  | "Vehicle"
+  | "Manual"
+  | "Travel"
+  | "Event"
+  | "Business Card"
+  | "Note"
+  | "Form"
+  | "Screenshot"
   | "Home"
   | "Other";
 
@@ -14,11 +36,28 @@ export const DOCUMENT_CATEGORIES: DocumentCategory[] = [
   "ID",
   "Passport",
   "Driver Licence",
+  "Vehicle",
+  "Medical",
   "Insurance",
+  "Tax",
+  "Legal",
+  "Immigration",
+  "Banking",
+  "Bill",
+  "Receipt",
+  "Invoice",
+  "Payslip",
   "Employment",
   "Education",
+  "Certificate",
   "Warranty",
-  "Vehicle",
+  "Manual",
+  "Travel",
+  "Event",
+  "Business Card",
+  "Note",
+  "Form",
+  "Screenshot",
   "Home",
   "Other",
 ];

@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
@@ -6,11 +6,23 @@ import {
   CalendarPlus,
   Camera,
   ChevronRight,
+  Clock,
   FileText,
+  Hash,
+  Image as ImageIcon,
+  Languages,
   Loader2,
+  Mail,
+  MapPin,
+  MessageCircleQuestion,
+  Phone,
+  Plus,
   Receipt,
   Search as SearchIcon,
+  ShieldCheck,
   Sparkles,
+  Trash2,
+  User,
   Wand2,
   X,
 } from "lucide-react";
@@ -21,9 +33,16 @@ import { Input } from "@/components/ui/input";
 import { useApp } from "@/context/AppContext";
 import { formatCurrency } from "@/lib/format";
 import {
+  askAboutScan,
   naturalLanguageSearch,
-  scanDocument,
+  scanDocuments,
+  SCAN_GROUP_LABEL,
   SCAN_KIND_LABEL,
+  type AskContext,
+  type DocGroup,
+  type ExtractedEntity,
+  type EntityType,
+  type ScanOutcome,
   type ScanResult,
   type SearchResults,
   type SuggestedAction,
@@ -38,13 +57,20 @@ import { cn } from "@/lib/utils";
 
 type Tab = "scan" | "search";
 
-const SCAN_SUGGESTED_PROMPTS = [
+const SEARCH_SUGGESTED_PROMPTS = [
   "Show my passport.",
   "Find all electricity bills.",
   "Show receipts from last month.",
   "When does my driver's licence expire?",
   "What subscriptions am I paying for?",
   "How much did I spend on food this month?",
+];
+
+const FOLLOWUP_PROMPTS = [
+  "What is this document for?",
+  "When does it expire?",
+  "Summarise the key points",
+  "What should I do next?",
 ];
 
 /* ------------------------- helpers ------------------------- */
@@ -54,6 +80,7 @@ function userFacingError(err: unknown): string {
   if (message === "AI_NOT_CONFIGURED") {
     return "AI features aren't configured for this build.";
   }
+  if (message === "AI_NO_PAGES") return "Capture at least one page first.";
   if (message.startsWith("AI_HTTP_")) {
     const code = message.replace(/^AI_HTTP_/, "").split(":")[0];
     if (code === "401" || code === "403")
@@ -70,28 +97,89 @@ function userFacingError(err: unknown): string {
   return "Something went wrong. Please try again.";
 }
 
+const GROUP_ICON: Record<DocGroup, typeof Sparkles> = {
+  Identity: ShieldCheck,
+  Medical: ShieldCheck,
+  Money: Receipt,
+  Legal: FileText,
+  Travel: CalendarPlus,
+  Work: FileText,
+  Education: FileText,
+  Notes: FileText,
+  Other: FileText,
+};
 
-/* ------------------------- Scan panel ------------------------- */
+const GROUP_TONE: Record<DocGroup, string> = {
+  Identity: "from-indigo-500/20 to-indigo-500/5 text-indigo-600 dark:text-indigo-300",
+  Medical: "from-rose-500/20 to-rose-500/5 text-rose-600 dark:text-rose-300",
+  Money: "from-emerald-500/20 to-emerald-500/5 text-emerald-600 dark:text-emerald-300",
+  Legal: "from-red-500/20 to-red-500/5 text-red-600 dark:text-red-300",
+  Travel: "from-sky-500/20 to-sky-500/5 text-sky-600 dark:text-sky-300",
+  Work: "from-amber-500/20 to-amber-500/5 text-amber-600 dark:text-amber-300",
+  Education: "from-violet-500/20 to-violet-500/5 text-violet-600 dark:text-violet-300",
+  Notes: "from-yellow-500/20 to-yellow-500/5 text-yellow-600 dark:text-yellow-300",
+  Other: "from-slate-500/20 to-slate-500/5 text-slate-600 dark:text-slate-300",
+};
+
+const ENTITY_META: Record<EntityType, { icon: typeof Hash; tone: string; label: string }> = {
+  date: { icon: Clock, tone: "bg-sky-500/12 text-sky-600 dark:text-sky-400", label: "Date" },
+  appointment: { icon: CalendarPlus, tone: "bg-info/12 text-info", label: "Appointment" },
+  expiry: { icon: BellRing, tone: "bg-amber-500/12 text-amber-600 dark:text-amber-400", label: "Expiry" },
+  due: { icon: BellRing, tone: "bg-amber-500/12 text-amber-600 dark:text-amber-400", label: "Due" },
+  reminder: { icon: BellRing, tone: "bg-amber-500/12 text-amber-600 dark:text-amber-400", label: "Reminder" },
+  name: { icon: User, tone: "bg-violet-500/12 text-violet-600 dark:text-violet-400", label: "Name" },
+  address: { icon: MapPin, tone: "bg-teal-500/12 text-teal-600 dark:text-teal-400", label: "Address" },
+  email: { icon: Mail, tone: "bg-blue-500/12 text-blue-600 dark:text-blue-400", label: "Email" },
+  phone: { icon: Phone, tone: "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400", label: "Phone" },
+  id_number: { icon: Hash, tone: "bg-indigo-500/12 text-indigo-600 dark:text-indigo-400", label: "ID" },
+  reference: { icon: Hash, tone: "bg-slate-500/12 text-slate-600 dark:text-slate-400", label: "Reference" },
+  money: { icon: Receipt, tone: "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400", label: "Amount" },
+  medicine: { icon: ShieldCheck, tone: "bg-rose-500/12 text-rose-600 dark:text-rose-400", label: "Medicine" },
+  legal_clause: { icon: FileText, tone: "bg-red-500/12 text-red-600 dark:text-red-400", label: "Clause" },
+  education: { icon: FileText, tone: "bg-violet-500/12 text-violet-600 dark:text-violet-400", label: "Education" },
+  banking: { icon: Receipt, tone: "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400", label: "Banking" },
+  travel: { icon: CalendarPlus, tone: "bg-sky-500/12 text-sky-600 dark:text-sky-400", label: "Travel" },
+  url: { icon: Hash, tone: "bg-slate-500/12 text-slate-600 dark:text-slate-400", label: "Link" },
+  other: { icon: Hash, tone: "bg-slate-500/12 text-slate-600 dark:text-slate-400", label: "Detail" },
+};
+
+/* ------------------------- Scan capture panel ------------------------- */
 
 interface ScanPanelProps {
-  onScanComplete: (r: ScanResult) => void;
+  pages: string[];
+  setPages: (pages: string[]) => void;
+  onScanComplete: (outcome: ScanOutcome) => void;
 }
 
-function ScanPanel({ onScanComplete }: ScanPanelProps) {
-  const [image, setImage] = useState<string | null>(null);
+function ScanPanel({ pages, setPages, onScanComplete }: ScanPanelProps) {
   const [loading, setLoading] = useState<boolean>(false);
+  const [analyzed, setAnalyzed] = useState<boolean>(false);
 
   const handleCapture = useCallback(
     async () => {
-      // 1600px max edge preserves enough detail for OCR / field extraction
-      // while keeping the data URL well under the AI gateway body limit.
       const dataUrl = await captureImage("camera", 1600);
       if (!dataUrl) return;
-      setImage(dataUrl);
+      setPages([...pages, dataUrl]);
+      setAnalyzed(false);
+    },
+    [pages, setPages],
+  );
+
+  const handleRemovePage = (idx: number) => {
+    const next = pages.filter((_, i) => i !== idx);
+    setPages(next);
+    setAnalyzed(false);
+  };
+
+  const handleAnalyze = useCallback(
+    async () => {
+      if (pages.length === 0) return;
       setLoading(true);
+      setAnalyzed(false);
       try {
-        const result = await scanDocument(dataUrl);
-        onScanComplete(result);
+        const outcome = await scanDocuments(pages);
+        onScanComplete(outcome);
+        setAnalyzed(true);
       } catch (err) {
         const msg = userFacingError(err);
         if (msg) toast.error(msg);
@@ -99,12 +187,12 @@ function ScanPanel({ onScanComplete }: ScanPanelProps) {
         setLoading(false);
       }
     },
-    [onScanComplete],
+    [pages, onScanComplete],
   );
 
   return (
     <div className="space-y-5 px-4 pt-4">
-      {/* Hero capture card */}
+      {/* Hero card */}
       <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[hsl(219,60%,15%)] via-[hsl(218,57%,20%)] to-[hsl(215,55%,30%)] p-6 text-white shadow-xl shadow-primary/20">
         <div className="absolute -right-12 -top-16 h-44 w-44 rounded-full bg-white/5" aria-hidden />
         <div className="absolute -bottom-20 -left-10 h-48 w-48 rounded-full bg-info/15 blur-2xl" aria-hidden />
@@ -113,44 +201,54 @@ function ScanPanel({ onScanComplete }: ScanPanelProps) {
             <Sparkles className="h-6 w-6" />
           </div>
           <h2 className="mt-4 text-[22px] font-extrabold tracking-tight">
-            Scan a document
+            Universal document AI
           </h2>
           <p className="mt-1 text-[14px] leading-relaxed text-white/70">
-            Point your camera at a receipt, ID, passport, contract, or any
-            document. LifeVault will detect what it is and pull out the
-            important details for you.
+            Point your camera at any document — a receipt, prescription, handwritten
+            note, contract, ID, or boarding pass. LifeVault reads, understands, and
+            organises it for you. English & Arabic supported.
           </p>
 
-          {/* Preview / actions */}
-          <div className="mt-5">
-            {image ? (
-              <div className="relative overflow-hidden rounded-2xl ring-1 ring-white/15">
-                <img
-                  src={image}
-                  alt="Captured document"
-                  className="max-h-[260px] w-full object-cover"
-                />
-                {loading && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-                    <div className="flex flex-col items-center gap-2">
-                      <Loader2 className="h-7 w-7 animate-spin text-white" />
-                      <p className="text-[13px] font-semibold text-white/90">
-                        Analyzing…
-                      </p>
-                    </div>
-                  </div>
-                )}
-                {!loading && (
+          {/* Page thumbnails */}
+          {pages.length > 0 && (
+            <div className="mt-5 flex gap-2.5 overflow-x-auto scrollbar-none pb-1">
+              {pages.map((p, i) => (
+                <div
+                  key={`${i}-${p.slice(0, 20)}`}
+                  className="relative shrink-0 overflow-hidden rounded-xl ring-1 ring-white/15"
+                >
+                  <img
+                    src={p}
+                    alt={`Page ${i + 1}`}
+                    className="h-20 w-16 object-cover"
+                  />
                   <button
-                    onClick={() => setImage(null)}
-                    className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur"
-                    aria-label="Clear photo"
+                    onClick={() => handleRemovePage(i)}
+                    className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white"
+                    aria-label={`Remove page ${i + 1}`}
                   >
-                    <X className="h-4 w-4" />
+                    <X className="h-3 w-3" />
                   </button>
-                )}
-              </div>
-            ) : (
+                  <span className="absolute bottom-0 left-0 right-0 bg-black/55 py-0.5 text-center text-[10px] font-bold text-white">
+                    {i + 1}
+                  </span>
+                </div>
+              ))}
+              {/* Add page tile */}
+              <button
+                onClick={() => void handleCapture()}
+                className="flex h-20 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-white/25 bg-white/5 text-white/70 transition-colors hover:bg-white/10"
+                aria-label="Add another page"
+              >
+                <Plus className="h-5 w-5" />
+                <span className="text-[9px] font-bold uppercase tracking-wide">Page</span>
+              </button>
+            </div>
+          )}
+
+          {/* Actions */}
+          <div className="mt-5 space-y-2.5">
+            {pages.length === 0 ? (
               <button
                 onClick={() => void handleCapture()}
                 className="flex w-full items-center justify-center gap-2 rounded-2xl bg-white/10 px-4 py-5 text-center ring-1 ring-white/15 transition-all active:scale-[0.98] hover:bg-white/15"
@@ -158,30 +256,72 @@ function ScanPanel({ onScanComplete }: ScanPanelProps) {
                 <Camera className="h-6 w-6" />
                 <span className="text-[15px] font-bold">Take photo</span>
               </button>
+            ) : (
+              <div className="flex gap-2.5">
+                <button
+                  onClick={() => void handleCapture()}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-white/10 px-4 py-3.5 text-center text-[14px] font-bold ring-1 ring-white/15 transition-all active:scale-[0.98] hover:bg-white/15"
+                >
+                  <Camera className="h-5 w-5" />
+                  <span>Add page</span>
+                </button>
+                <button
+                  onClick={() => void handleAnalyze()}
+                  disabled={loading || analyzed}
+                  className="flex flex-[1.4] items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3.5 text-center text-[14px] font-extrabold text-[hsl(218,57%,21%)] shadow-lg transition-all active:scale-[0.98] disabled:opacity-60"
+                >
+                  {loading ? (
+                    <>
+                      <Loader2 className="h-5 w-5 animate-spin" /> Analyzing…
+                    </>
+                  ) : (
+                    <>
+                      <Wand2 className="h-5 w-5" /> Analyze {pages.length > 1 ? `${pages.length} pages` : "document"}
+                    </>
+                  )}
+                </button>
+              </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* Tips */}
+      {/* Capabilities */}
       <div className="rounded-2xl bg-card p-4 shadow-sm ring-1 ring-border">
-        <p className="text-[13px] font-bold">Works great with</p>
+        <p className="text-[13px] font-bold">Understands almost anything</p>
         <div className="mt-3 flex flex-wrap gap-2">
-          {Object.entries(SCAN_KIND_LABEL).map(([key, label]) => (
+          {[
+            "Passports & IDs",
+            "Medical & prescriptions",
+            "Receipts & invoices",
+            "Bank statements",
+            "Bills & utilities",
+            "Contracts & legal",
+            "Handwritten notes",
+            "Tickets & boarding passes",
+            "Business cards",
+            "QR & barcodes",
+            "Screenshots",
+            "Forms",
+          ].map((label) => (
             <span
-              key={key}
+              key={label}
               className="rounded-full bg-secondary px-3 py-1.5 text-[12px] font-semibold text-secondary-foreground"
             >
               {label}
             </span>
           ))}
         </div>
+        <div className="mt-3 flex items-center gap-2 rounded-xl bg-info/8 px-3 py-2 text-[12px] text-info">
+          <Languages className="h-3.5 w-3.5" />
+          <span>English, Arabic & multilingual documents supported.</span>
+        </div>
       </div>
     </div>
   );
 }
 
-/* ------------------------- Scan result sheet ------------------------- */
+/* ------------------------- Suggested action row ------------------------- */
 
 const ACTION_META: Record<
   SuggestedAction["kind"],
@@ -209,6 +349,287 @@ const ACTION_META: Record<
   },
 };
 
+function describeAction(action: SuggestedAction): string {
+  switch (action.kind) {
+    case "expense":
+      return `${action.merchant} · ${action.amount != null ? formatCurrency(action.amount, "AUD") : "—"}`;
+    case "appointment":
+      return `${action.date ?? "—"} · ${action.time}${action.location ? ` · ${action.location}` : ""}`;
+    case "document":
+      return `${action.category}${action.expiryDate ? ` · expires ${action.expiryDate}` : ""}`;
+    case "reminder":
+      return `Remind on ${action.date}`;
+  }
+}
+
+/* ------------------------- Entity chip ------------------------- */
+
+function EntityChip({ entity }: { entity: ExtractedEntity }) {
+  const meta = ENTITY_META[entity.type] ?? ENTITY_META.other;
+  const Icon = meta.icon;
+  return (
+    <div className="flex items-center gap-2 rounded-xl bg-secondary/60 px-2.5 py-1.5 ring-1 ring-border/60">
+      <span className={cn("flex h-6 w-6 items-center justify-center rounded-lg", meta.tone)}>
+        <Icon className="h-3.5 w-3.5" />
+      </span>
+      <div className="min-w-0">
+        <p className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+          {meta.label}
+        </p>
+        <p className="truncate text-[12.5px] font-bold">{entity.value}</p>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------- Follow-up Q&A ------------------------- */
+
+interface FollowUpProps {
+  result: ScanResult;
+}
+
+interface QaItem {
+  question: string;
+  answer: string;
+  actions: SuggestedAction[];
+  loading?: boolean;
+}
+
+function FollowUpQa({ result }: FollowUpProps) {
+  const ctxRef = useRef<AskContext>({
+    text: result.text,
+    kind: result.kind,
+    title: result.title,
+    summary: result.summary,
+    entities: result.entities,
+  });
+  // Keep context fresh if the result changes.
+  ctxRef.current = {
+    text: result.text,
+    kind: result.kind,
+    title: result.title,
+    summary: result.summary,
+    entities: result.entities,
+  };
+
+  const [history, setHistory] = useState<QaItem[]>([]);
+  const [input, setInput] = useState<string>("");
+  const [pending, setPending] = useState<boolean>(false);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    // Reset history when the result id changes.
+    setHistory([]);
+    setInput("");
+  }, [result.id]);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [history, pending]);
+
+  const ask = useCallback(async (q: string) => {
+    const trimmed = q.trim();
+    if (!trimmed || pending) return;
+    setInput("");
+    setPending(true);
+    setHistory((h) => [...h, { question: trimmed, answer: "", actions: [], loading: true }]);
+    try {
+      const res = await askAboutScan(trimmed, ctxRef.current);
+      setHistory((h) =>
+        h.map((item, i) =>
+          i === h.length - 1
+            ? { ...item, answer: res.answer, actions: res.actions, loading: false }
+            : item,
+        ),
+      );
+    } catch (err) {
+      const msg = userFacingError(err);
+      if (msg) toast.error(msg);
+      setHistory((h) =>
+        h.map((item, i) =>
+          i === h.length - 1
+            ? { ...item, answer: "I couldn't answer that. Please try again.", loading: false }
+            : item,
+        ),
+      );
+    } finally {
+      setPending(false);
+    }
+  }, [pending]);
+
+  return (
+    <div className="rounded-2xl bg-card p-4 shadow-sm ring-1 ring-border">
+      <div className="flex items-center gap-2">
+        <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-info/12 text-info">
+          <MessageCircleQuestion className="h-4 w-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[14px] font-extrabold">Ask about this document</p>
+          <p className="truncate text-[12px] text-muted-foreground">
+            Follow-up questions answered from what the AI read.
+          </p>
+        </div>
+      </div>
+
+      {/* Conversation */}
+      {history.length > 0 && (
+        <div
+          ref={scrollRef}
+          className="mt-3 max-h-[220px] space-y-2.5 overflow-y-auto scrollbar-none"
+        >
+          {history.map((item, i) => (
+            <div key={i} className="space-y-1.5">
+              <div className="flex justify-end">
+                <p className="max-w-[80%] rounded-2xl rounded-br-md bg-primary px-3 py-2 text-[13px] font-semibold text-primary-foreground">
+                  {item.question}
+                </p>
+              </div>
+              <div className="flex justify-start">
+                <div className="max-w-[88%] rounded-2xl rounded-bl-md bg-secondary px-3 py-2">
+                  {item.loading ? (
+                    <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
+                    </div>
+                  ) : (
+                    <p className="whitespace-pre-wrap text-[13px] leading-relaxed">
+                      {item.answer}
+                    </p>
+                  )}
+                  {!item.loading && item.actions.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {item.actions.map((a, j) => (
+                        <ActionInline key={`qa-${i}-${j}`} action={a} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Suggested prompts */}
+      {history.length === 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {FOLLOWUP_PROMPTS.map((p) => (
+            <button
+              key={p}
+              onClick={() => void ask(p)}
+              className="rounded-full border border-border bg-secondary/40 px-3 py-1.5 text-[12px] font-semibold transition-all active:scale-95 hover:border-info/40 hover:text-info"
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Input */}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void ask(input);
+        }}
+        className="mt-3 flex items-center gap-2"
+      >
+        <Input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Ask a question…"
+          className="h-11 rounded-xl bg-secondary/40 text-[14px]"
+        />
+        <Button
+          type="submit"
+          disabled={pending || !input.trim()}
+          size="icon"
+          className="h-11 w-11 shrink-0 rounded-xl"
+          aria-label="Ask"
+        >
+          {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+        </Button>
+      </form>
+    </div>
+  );
+}
+
+/** Inline action chip rendered in Q&A replies (one-tap add). */
+function ActionInline({ action }: { action: SuggestedAction }) {
+  const { addDocument, addExpense, addAppointment } = useApp();
+  const meta = ACTION_META[action.kind];
+  const Icon = meta.icon;
+  const handle = () => {
+    try {
+      if (action.kind === "expense") {
+        const expense: Omit<Expense, "id"> = {
+          amount: action.amount ?? 0,
+          date: new Date(`${action.date ?? new Date().toISOString().slice(0, 10)}T${new Date().toISOString().slice(11, 16)}`).toISOString(),
+          category: action.category,
+          merchant: action.merchant,
+          notes: action.notes,
+          paymentMethod: action.paymentMethod,
+        };
+        addExpense(expense);
+        toast.success("Expense added");
+      } else if (action.kind === "appointment") {
+        const apt: Omit<Appointment, "id"> = {
+          title: action.title,
+          date: action.date ?? new Date().toISOString().slice(0, 10),
+          time: action.time,
+          location: action.location,
+          notes: action.notes,
+          reminder: action.reminder,
+        };
+        addAppointment(apt);
+        toast.success("Appointment added");
+      } else if (action.kind === "document") {
+        const doc: Omit<VaultDocument, "id" | "createdAt"> = {
+          name: action.name,
+          category: action.category,
+          issueDate: action.issueDate,
+          expiryDate: action.expiryDate,
+          notes: action.notes,
+          reminderDays: action.reminderDays,
+          fileName: null,
+          fileKind: "image",
+        };
+        addDocument(doc);
+        toast.success("Document saved");
+      } else if (action.kind === "reminder") {
+        const doc: Omit<VaultDocument, "id" | "createdAt"> = {
+          name: action.title,
+          category: "Other",
+          issueDate: null,
+          expiryDate: action.date,
+          notes: action.notes,
+          reminderDays: 30,
+          fileName: null,
+          fileKind: "image",
+        };
+        addDocument(doc);
+        toast.success("Reminder created");
+      }
+    } catch {
+      toast.error("Could not save. Please try again.");
+    }
+  };
+  return (
+    <button
+      onClick={handle}
+      className={cn(
+        "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11.5px] font-bold transition-transform active:scale-95",
+        meta.color,
+      )}
+    >
+      <Icon className="h-3 w-3" />
+      {meta.label}
+    </button>
+  );
+}
+
+/* ------------------------- Scan result card ------------------------- */
+
 function ScanResultCard({
   result,
   onClose,
@@ -219,6 +640,10 @@ function ScanResultCard({
   const navigate = useNavigate();
   const { addDocument, addExpense, addAppointment } = useApp();
   const [accepted, setAccepted] = useState<Set<string>>(new Set());
+  const [showText, setShowText] = useState<boolean>(false);
+
+  const GroupIcon = GROUP_ICON[result.group];
+  const confidencePct = Math.round(result.confidence * 100);
 
   const handleAccept = useCallback(
     (action: SuggestedAction, key: string) => {
@@ -259,9 +684,6 @@ function ScanResultCard({
           addDocument(doc);
           toast.success("Document saved");
         } else if (action.kind === "reminder") {
-          // Save as a document with the expiry date so it surfaces in
-          // notifications + reminders, since LifeVault has no standalone
-          // reminder type.
           const doc: Omit<VaultDocument, "id" | "createdAt"> = {
             name: action.title,
             category: "Other",
@@ -276,7 +698,7 @@ function ScanResultCard({
           toast.success("Reminder created");
         }
         setAccepted((s) => new Set(s).add(key));
-      } catch (err) {
+      } catch {
         toast.error("Could not save. Please try again.");
       }
     },
@@ -295,33 +717,54 @@ function ScanResultCard({
 
   return (
     <div className="animate-fade-in space-y-4 px-4 pt-4">
-      {/* Header */}
+      {/* Header card */}
       <div className="overflow-hidden rounded-3xl bg-card shadow-sm ring-1 ring-border">
-        <div className="flex items-start gap-3 border-b border-border/70 p-4">
-          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary dark:text-foreground">
-            <Wand2 className="h-5 w-5" />
+        <div
+          className={cn(
+            "flex items-start gap-3 border-b border-border/70 bg-gradient-to-br p-4",
+            GROUP_TONE[result.group],
+          )}
+        >
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/70 dark:bg-white/10">
+            <GroupIcon className="h-6 w-6" />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
-              {SCAN_KIND_LABEL[result.kind]}
-            </p>
-            <h3 className="truncate text-[17px] font-extrabold tracking-tight">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="rounded-md bg-white/70 px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-wide text-foreground/80 dark:bg-white/10 dark:text-foreground">
+                {SCAN_GROUP_LABEL[result.group]}
+              </span>
+              {result.language && (
+                <span className="flex items-center gap-1 rounded-md bg-white/70 px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-wide text-foreground/80 dark:bg-white/10 dark:text-foreground">
+                  <Languages className="h-2.5 w-2.5" /> {result.language}
+                </span>
+              )}
+              <span className="rounded-md bg-white/70 px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-wide text-foreground/80 dark:bg-white/10 dark:text-foreground">
+                {confidencePct}% confident
+              </span>
+            </div>
+            <h3 className="mt-1.5 truncate text-[17px] font-extrabold tracking-tight text-foreground">
               {result.title}
             </h3>
-            {result.summary && (
-              <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
-                {result.summary}
-              </p>
-            )}
+            <p className="text-[11.5px] font-semibold text-foreground/60">
+              {SCAN_KIND_LABEL[result.kind]}
+            </p>
           </div>
           <button
             onClick={onClose}
-            className="-mr-1 -mt-1 flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary"
+            className="-mr-1 -mt-1 flex h-9 w-9 items-center justify-center rounded-full text-foreground/70 hover:bg-white/40 dark:hover:bg-white/10"
             aria-label="Dismiss"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
+
+        {result.summary && (
+          <div className="border-b border-border/70 p-4">
+            <p className="text-[13.5px] leading-relaxed text-foreground/90">
+              {result.summary}
+            </p>
+          </div>
+        )}
 
         {/* Extracted fields */}
         {result.fields.length > 0 && (
@@ -342,6 +785,49 @@ function ScanResultCard({
           </dl>
         )}
       </div>
+
+      {/* Entity chips */}
+      {result.entities.length > 0 && (
+        <div className="space-y-2.5">
+          <p className="px-1 text-[13px] font-bold text-muted-foreground">
+            Detected details
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            {result.entities.map((e, i) => (
+              <EntityChip key={`ent-${i}`} entity={e} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Follow-up Q&A */}
+      <FollowUpQa result={result} />
+
+      {/* Captured text (collapsible) */}
+      {result.text && (
+        <div className="rounded-2xl bg-card p-3.5 shadow-sm ring-1 ring-border">
+          <button
+            onClick={() => setShowText((v) => !v)}
+            className="flex w-full items-center justify-between"
+          >
+            <span className="flex items-center gap-2 text-[13px] font-bold">
+              <FileText className="h-4 w-4 text-muted-foreground" />
+              Captured text
+            </span>
+            <ChevronRight
+              className={cn(
+                "h-4 w-4 text-muted-foreground transition-transform",
+                showText && "rotate-90",
+              )}
+            />
+          </button>
+          {showText && (
+            <pre className="mt-3 max-h-[220px] overflow-y-auto whitespace-pre-wrap rounded-xl bg-secondary/50 p-3 text-[12px] leading-relaxed text-foreground/80 scrollbar-none">
+              {result.text}
+            </pre>
+          )}
+        </div>
+      )}
 
       {/* Suggested actions */}
       {result.suggestedActions.length > 0 && (
@@ -403,17 +889,88 @@ function ScanResultCard({
   );
 }
 
-function describeAction(action: SuggestedAction): string {
-  switch (action.kind) {
-    case "expense":
-      return `${action.merchant} · ${action.amount != null ? formatCurrency(action.amount, "AUD") : "—"}`;
-    case "appointment":
-      return `${action.date ?? "—"} · ${action.time}${action.location ? ` · ${action.location}` : ""}`;
-    case "document":
-      return `${action.category}${action.expiryDate ? ` · expires ${action.expiryDate}` : ""}`;
-    case "reminder":
-      return `Remind on ${action.date}`;
+/* ------------------------- Multi-doc result list ------------------------- */
+
+interface ScanResultsProps {
+  outcome: ScanOutcome;
+  onReset: () => void;
+}
+
+function ScanResultsView({ outcome, onReset }: ScanResultsProps) {
+  const [activeIdx, setActiveIdx] = useState<number>(0);
+
+  // If the user scans again and gets a single doc, default to it.
+  useEffect(() => {
+    setActiveIdx(0);
+  }, [outcome]);
+
+  const active = outcome.documents[activeIdx] ?? outcome.documents[0];
+  if (!active) {
+    return (
+      <div className="space-y-4 px-4 pt-4">
+        <div className="rounded-2xl bg-card p-6 text-center shadow-sm ring-1 ring-border">
+          <p className="text-[14px] font-bold">No documents detected</p>
+          <p className="mt-1 text-[13px] text-muted-foreground">
+            Try a clearer photo or better lighting.
+          </p>
+          <Button onClick={onReset} className="mt-4 rounded-xl">
+            Scan again
+          </Button>
+        </div>
+      </div>
+    );
   }
+
+  return (
+    <div className="space-y-3 px-4 pt-4">
+      {/* Multi-doc switcher (only when >1) */}
+      {outcome.documents.length > 1 && (
+        <div className="flex gap-2 overflow-x-auto scrollbar-none">
+          {outcome.documents.map((d, i) => {
+            const Icon = GROUP_ICON[d.group];
+            const isActive = i === activeIdx;
+            return (
+              <button
+                key={d.id}
+                onClick={() => setActiveIdx(i)}
+                className={cn(
+                  "flex shrink-0 items-center gap-2 rounded-2xl px-3 py-2 text-left ring-1 transition-all",
+                  isActive
+                    ? "bg-primary text-primary-foreground ring-primary"
+                    : "bg-card text-foreground ring-border",
+                )}
+              >
+                <Icon className="h-4 w-4" />
+                <span className="max-w-[140px] truncate text-[13px] font-bold">
+                  {d.title}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Page thumbnails */}
+      {outcome.pages.length > 0 && (
+        <div className="flex gap-2 overflow-x-auto scrollbar-none">
+          {outcome.pages.map((p, i) => (
+            <div
+              key={`page-${i}`}
+              className="shrink-0 overflow-hidden rounded-xl ring-1 ring-border"
+            >
+              <img src={p} alt={`Page ${i + 1}`} className="h-14 w-12 object-cover" />
+            </div>
+          ))}
+        </div>
+      )}
+
+      <ScanResultCard
+        key={active.id}
+        result={active}
+        onClose={onReset}
+      />
+    </div>
+  );
 }
 
 /* ------------------------- Search panel ------------------------- */
@@ -512,7 +1069,7 @@ function SearchPanel() {
             Try asking
           </p>
           <div className="flex flex-wrap gap-2">
-            {SCAN_SUGGESTED_PROMPTS.map((p) => (
+            {SEARCH_SUGGESTED_PROMPTS.map((p) => (
               <button
                 key={p}
                 onClick={() => {
@@ -615,13 +1172,22 @@ function MatchIcon({ type }: { type: SearchHit["type"] }) {
 
 export default function AIAssistant() {
   const [tab, setTab] = useState<Tab>("scan");
-  const [scanResult, setScanResult] = useState<ScanResult | null>(null);
+  const [pages, setPages] = useState<string[]>([]);
+  const [outcome, setOutcome] = useState<ScanOutcome | null>(null);
+
+  const handleReset = useCallback(() => {
+    setOutcome(null);
+    setPages([]);
+  }, []);
+
+  // Keep the active scan tab visible when a result is set.
+  const showResults = tab === "scan" && outcome && outcome.documents.length > 0;
 
   return (
     <div className="animate-fade-in">
       <PageHeader
         title="AI Assistant"
-        subtitle="Scan & search your vault"
+        subtitle="Understands any document"
       />
 
       {/* Tab switcher */}
@@ -654,13 +1220,14 @@ export default function AIAssistant() {
 
       {/* Panels */}
       {tab === "scan" ? (
-        scanResult ? (
-          <ScanResultCard
-            result={scanResult}
-            onClose={() => setScanResult(null)}
-          />
+        showResults ? (
+          <ScanResultsView outcome={outcome} onReset={handleReset} />
         ) : (
-          <ScanPanel onScanComplete={setScanResult} />
+          <ScanPanel
+            pages={pages}
+            setPages={setPages}
+            onScanComplete={setOutcome}
+          />
         )
       ) : (
         <SearchPanel />

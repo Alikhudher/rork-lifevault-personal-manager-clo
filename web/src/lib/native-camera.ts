@@ -153,38 +153,46 @@ function classifyCameraError(
  * On web, falls back to a hidden file input (`capture` for camera).
  *
  * @param source  "camera" to take a new photo, "photos" to pick from the library.
- * @param maxEdge Optional max edge (px) for the captured image (native only).
+ * @param maxEdge  Kept for API compatibility but no longer applied here. The
+ *                  native Capacitor resizer crops tall documents even when
+ *                  only `width` is set, so we return the full-resolution
+ *                  photo and let `enhanceForOCR` scale it down on a canvas
+ *                  (aspect-ratio preserved, no content lost).
  */
 export async function captureImage(
   source: CaptureSource,
-  maxEdge?: number,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _maxEdge?: number,
 ): Promise<string | null> {
   if (isNativePlatform()) {
     const granted = await ensurePermission(source);
     if (!granted) return null;
 
-    // IMPORTANT: only specify `width`, NOT `height`. When both are set,
-    // Capacitor Camera CROPS the image to those exact dimensions — so
-    // passing width=height=1600 force-cropped every document photo to a
-    // square, cutting off the top/bottom of receipts, prescriptions, etc.
-    // Setting only `width` scales the longest edge down to `maxEdge` while
-    // preserving the full aspect ratio, so no part of the document is lost.
-    // `allowEditing: true` then presents the native iOS crop/adjust screen
-    // so the user can manually frame the document before analysis.
+    // CRITICAL: do NOT pass `width` or `height` to getPhoto. Even passing
+    // only `width` triggers Capacitor's native resizer, which on iOS crops
+    // the image to that exact pixel width instead of scaling the longest
+    // edge — this cut off the top/bottom of receipts, prescriptions, and
+    // other tall documents. The AIAssistant scanner reported "document
+    // cropped too aggressively / parts cut off" because of this.
+    //
+    // We instead return the FULL-resolution photo and let `enhanceForOCR`
+    // (in enhance-image.ts) scale it down on a canvas while preserving the
+    // aspect ratio — that path never crops content.
+    //
+    // `allowEditing: true` presents the native iOS edit/crop screen so the
+    // user can manually frame the document before analysis. This is the
+    // "manual adjustment before analysis" step: the user is in control of
+    // any cropping, not the plugin.
     const options: ImageOptions = {
       resultType: CameraResultType.DataUrl,
       source: source === "camera" ? CameraSource.Camera : CameraSource.Photos,
-      quality: 92,
+      quality: 94,
       correctOrientation: true,
       // `allowEditing` is only supported for Camera on iOS, not Photos.
-      // It shows the native iOS edit/crop screen so the user can manually
-      // adjust the frame before the image is returned — this is the
-      // "manual adjustment before analysis" step.
       allowEditing: source === "camera",
       saveToGallery: false,
-      // Only constrain the longest edge; aspect ratio is preserved and no
-      // cropping is applied by the camera plugin.
-      ...(maxEdge ? { width: maxEdge } : {}),
+      // No width/height — full photo returned, aspect ratio preserved.
+      // Resizing happens later in enhanceForOCR (canvas-based, no cropping).
     };
 
     try {

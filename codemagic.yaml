@@ -52,18 +52,19 @@ workflows:
       - name: Verify required environment variables
         script: |
           set -e
-          # The web app reads Supabase credentials via Vite env vars:
-          #   VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
-          # These MUST be present at build time so Vite inlines them into
-          # the bundle (import.meta.env.VITE_*). Add them in the Codemagic
-          # dashboard under "Environment variables" (encrypted), inside a
-          # variable group named "Default" (or add your group name to the
-          # environment.groups list above).
-          echo "--- Resolving Supabase env vars from Codemagic environment ---"
-          # Use printenv to read straight from the process environment that
-          # Codemagic populated after importing the variable group(s). This
-          # avoids shell-expansion quirks and shows exactly what the build
-          # sees.
+          # The web app reads credentials via Vite env vars (VITE_* prefix):
+          #   Supabase:  VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY  (REQUIRED)
+          #   AI gateway: VITE_TOOLKIT_URL, VITE_RORK_APP_KEY,
+          #               VITE_RORK_TOOLKIT_SECRET_KEY              (recommended)
+          #
+          # Supabase vars MUST be present (cloud backup is broken without them).
+          # AI vars are PUBLIC values with safe baked-in fallbacks — the build
+          # will still succeed if they're missing, but we strongly recommend
+          # adding them to the dashboard so the production bundle has explicit
+          # values inlined via import.meta.env.
+          echo "--- Resolving env vars from Codemagic environment ---"
+
+          # --- Supabase (REQUIRED — fail build if missing) ---
           URL_VAL="$(printenv VITE_SUPABASE_URL || true)"
           KEY_VAL="$(printenv VITE_SUPABASE_ANON_KEY || true)"
           echo "VITE_SUPABASE_URL      : ${URL_VAL:+present (len ${#URL_VAL})}${URL_VAL:-MISSING}"
@@ -80,12 +81,30 @@ workflows:
             echo "     your group name)."
             echo "  3. Confirm the group is shared with this app/workflow."
             echo "  4. Re-run the build. Dashboard edits take effect on the next build."
-            echo ""
-            echo "If you intentionally want a build WITHOUT cloud backup, remove"
-            echo "this verification step and the vars: block in codemagic.yaml."
             exit 1
           fi
           echo "OK: Both Supabase env vars are present in the build environment."
+
+          # --- AI gateway (recommended — warn if missing, do NOT fail) ---
+          # These are PUBLIC values (not secrets). They identify this project
+          # to the Rork AI toolkit proxy. If not set in the dashboard, the
+          # build script falls back to EXPO_PUBLIC_* and then to hardcoded
+          # public defaults, so AI always works in production.
+          TK_URL="$(printenv VITE_TOOLKIT_URL || true)"
+          APP_KEY="$(printenv VITE_RORK_APP_KEY || true)"
+          TK_SECRET="$(printenv VITE_RORK_TOOLKIT_SECRET_KEY || true)"
+          echo ""
+          echo "VITE_TOOLKIT_URL             : ${TK_URL:+present}${TK_URL:-missing (will use fallback)}"
+          echo "VITE_RORK_APP_KEY            : ${APP_KEY:+present}${APP_KEY:-missing (will use fallback)}"
+          echo "VITE_RORK_TOOLKIT_SECRET_KEY : ${TK_SECRET:+present}${TK_SECRET:-missing (will use fallback)}"
+          if [ -z "$TK_URL" ] || [ -z "$APP_KEY" ] || [ -z "$TK_SECRET" ]; then
+            echo "WARNING: Some AI env vars are not set in the dashboard."
+            echo "  The build will fall back to EXPO_PUBLIC_* or public defaults."
+            echo "  To make the values explicit, add them in Codemagic dashboard →"
+            echo "  Environment variables (encrypted), inside the \"Default\" group."
+          else
+            echo "OK: All AI env vars are present in the build environment."
+          fi
 
       - name: Install dependencies
         script: |
@@ -99,17 +118,20 @@ workflows:
         script: |
           set -e
           cd web
-          # Vite inlines VITE_* vars from process.env at build time, so the
-          # Supabase vars imported via the Codemagic variable group are picked
-          # up automatically. We ALSO write them into web/.env so any local
-          # tooling that reads .env (and Vite's own .env loader) sees them,
-          # and so the build is reproducible regardless of how Vite resolves
-          # its env precedence.
+          # Vite inlines VITE_* vars from process.env at build time AND from
+          # web/.env. We write both Supabase and AI-gateway vars into .env so
+          # they are guaranteed to be inlined into the production bundle via
+          # import.meta.env, regardless of how Vite resolves env precedence.
+          #
+          # AI gateway vars use a 3-level fallback chain:
+          #   1. VITE_TOOLKIT_URL (explicit dashboard override)
+          #   2. EXPO_PUBLIC_TOOLKIT_URL (Rork dev injection)
+          #   3. Hardcoded public default (safe — these are PUBLIC values)
+          # This guarantees AI ALWAYS works in production/TestFlight.
+          touch .env
+
+          # --- Supabase (required for cloud backup) ---
           if [ -n "$VITE_SUPABASE_URL" ] && [ -n "$VITE_SUPABASE_ANON_KEY" ]; then
-            # Rewrite the two Supabase lines (idempotent) — remove any stale
-            # entries first, then append fresh values. This guarantees the
-            # file always reflects the current dashboard values.
-            touch .env
             sed -i '' '/^VITE_SUPABASE_URL=/d; /^VITE_SUPABASE_ANON_KEY=/d' .env || true
             echo "VITE_SUPABASE_URL=$VITE_SUPABASE_URL" >> .env
             echo "VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY" >> .env
@@ -117,6 +139,23 @@ workflows:
           else
             echo "WARNING: Supabase vars empty; building without cloud backup."
           fi
+
+          # --- AI gateway (required for AI document analysis) ---
+          # Resolve each var with fallback chain: VITE_* → EXPO_PUBLIC_* → default.
+          RESOLVED_TK_URL="${VITE_TOOLKIT_URL:-${EXPO_PUBLIC_TOOLKIT_URL:-https://toolkit.rork.com}}"
+          RESOLVED_APP_KEY="${VITE_RORK_APP_KEY:-${EXPO_PUBLIC_RORK_APP_KEY:-rpk_p2samtqe2dbgg0rtbnht2cbcza07h7kn}}"
+          RESOLVED_TK_SECRET="${VITE_RORK_TOOLKIT_SECRET_KEY:-${EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY:-rork_web_delegated_auth}}"
+
+          # Remove stale entries then append fresh resolved values.
+          sed -i '' '/^VITE_TOOLKIT_URL=/d; /^VITE_RORK_APP_KEY=/d; /^VITE_RORK_TOOLKIT_SECRET_KEY=/d' .env || true
+          echo "VITE_TOOLKIT_URL=$RESOLVED_TK_URL" >> .env
+          echo "VITE_RORK_APP_KEY=$RESOLVED_APP_KEY" >> .env
+          echo "VITE_RORK_TOOLKIT_SECRET_KEY=$RESOLVED_TK_SECRET" >> .env
+          echo "Wrote AI gateway vars to web/.env (resolved with fallback chain)"
+          echo "  VITE_TOOLKIT_URL             = ${RESOLVED_TK_URL}"
+          echo "  VITE_RORK_APP_KEY            = present (len ${#RESOLVED_APP_KEY})"
+          echo "  VITE_RORK_TOOLKIT_SECRET_KEY = present (len ${#RESOLVED_TK_SECRET})"
+
           bun run build
 
       - name: Create and sync iOS project
@@ -186,8 +225,8 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Bump to 8 for the next App Store Connect upload (previous was 7).
-          agvtool new-version -all 8
+          # Bump to 9 for the next App Store Connect upload (previous was 8).
+          agvtool new-version -all 9
 
       - name: Apply iOS signing
         script: |

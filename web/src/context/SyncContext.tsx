@@ -270,22 +270,27 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     const result = await backupAll(records, (done, total) => {
       setProgress(total > 0 ? Math.round((done / total) * 100) : 100);
     });
-    if (result.ok && !result.disabled) {
-      setStatus("idle");
-      setProgress(100);
-      setLastError(null);
-      await refreshMetadata();
-      toast.success(`Backed up ${result.uploaded} records to the cloud`);
-      return true;
+    // SyncOutcome is a discriminated union on `ok` + `disabled`. Narrow
+    // with explicit literal comparisons so TS tracks each branch.
+    if (result.ok === false) {
+      const errorMsg = result.error;
+      setLastError(errorMsg);
+      setStatus("error");
+      toast.error(errorMsg);
+      return false;
     }
-    if (result.disabled) {
+    if (result.ok === true && result.disabled === true) {
       setStatus("disabled");
       return false;
     }
-    setLastError(result.error);
-    setStatus("error");
-    toast.error(result.error);
-    return false;
+    // result.ok === true && result.disabled === false
+    const uploaded = result.uploaded;
+    setStatus("idle");
+    setProgress(100);
+    setLastError(null);
+    await refreshMetadata();
+    toast.success(`Backed up ${uploaded} records to the cloud`);
+    return true;
   }, [buildCurrentRecords, refreshMetadata]);
 
   const restoreNow = useCallback(async (): Promise<RestoreResult> => {

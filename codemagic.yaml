@@ -9,24 +9,23 @@ workflows:
 
     environment:
       # Variables added in the Codemagic dashboard ("Environment variables"
-      # → encrypted) live inside named variable groups. They are NOT injected
-      # into build scripts automatically — the workflow must list the group(s)
+      # -> encrypted) live inside named variable groups. They are NOT injected
+      # into build scripts automatically -- the workflow must list the group(s)
       # here so Codemagic exports them into every script step.
       #
-      # "Default" is the group Codemagic creates by default. If you stored the
-      # Supabase vars in a differently-named group, add that name to this list.
+      # "Default" and "Default1" are the groups Codemagic creates by default.
+      # If you stored the Supabase vars in a differently-named group, add that
+      # name to this list. Do NOT redeclare the vars below with empty values --
+      # Codemagic's validator rejects empty-string entries and the group import
+      # already exports them into the build environment.
       groups:
         - Default
+        - Default1
       ios_signing:
         distribution_type: app_store
         bundle_identifier: com.aliomer.lifevault
       node: latest
       xcode: latest
-      # Declare the vars so Codemagic surfaces them clearly in build logs and
-      # fails fast with a readable message if the group import is missing.
-      vars:
-        VITE_SUPABASE_URL: ""
-        VITE_SUPABASE_ANON_KEY: ""
 
     scripts:
       - name: Install Bun

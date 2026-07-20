@@ -320,6 +320,52 @@ test("resetAccountPassword replaces the password after email verification", asyn
   expect(res.ok).toBe(true);
 });
 
+test("in-app resetAccountPassword keeps the user signed in and revokes other device sessions", async () => {
+  // Seed an install with an extra (non-demo) device session.
+  localStorage.setItem(
+    "lifevault-state-v1",
+    JSON.stringify({
+      onboarded: true,
+      user: null,
+      lastEmail: null,
+      accounts: [],
+      sessions: [
+        { id: "ses_this_device", device: "iPhone", location: "This device", app: "LifeVault", lastActive: new Date().toISOString(), current: true },
+        { id: "ses_other_real", device: "iPad", location: "Sydney", app: "LifeVault", lastActive: new Date().toISOString() },
+      ],
+    }),
+  );
+  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await signUpTestUser(result);
+  expect(result.current.sessions).toHaveLength(2);
+
+  // Change Password → Forgot password? recovery while signed in.
+  let ok = false;
+  await act(async () => {
+    ok = await result.current.resetAccountPassword(TEST_EMAIL, "recovered123");
+  });
+  expect(ok).toBe(true);
+
+  // NEVER logged out during in-app recovery; other devices are revoked.
+  expect(result.current.user?.email).toBe(TEST_EMAIL);
+  expect(result.current.sessions).toHaveLength(1);
+  expect(result.current.sessions[0].current).toBe(true);
+
+  // Old password is dead; the new one signs in.
+  await act(async () => {
+    result.current.signOut();
+  });
+  let res: AuthResult = { ok: true, error: null };
+  await act(async () => {
+    res = await result.current.signIn(TEST_EMAIL, TEST_PASSWORD);
+  });
+  expect(res.ok).toBe(false);
+  await act(async () => {
+    res = await result.current.signIn(TEST_EMAIL, "recovered123");
+  });
+  expect(res.ok).toBe(true);
+});
+
 test("legacy plaintext account still signs in and is upgraded to a hash", async () => {
   localStorage.setItem(
     "lifevault-state-v1",

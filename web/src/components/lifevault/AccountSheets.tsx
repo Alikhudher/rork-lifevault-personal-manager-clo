@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Check,
@@ -11,6 +11,7 @@ import {
   Loader2,
   Mail,
   Monitor,
+  ShieldCheck,
   Smartphone,
   Star,
   Tablet,
@@ -47,9 +48,11 @@ import { FormSheet, Field } from "@/components/lifevault/FormSheet";
 import { PhotoPicker } from "@/components/lifevault/PhotoPicker";
 import { accountHasPassword, useApp } from "@/context/AppContext";
 import {
+  alignCloudPasswordAfterReset,
   finishVerifiedSession,
   requestEmailCode,
   verifyEmailCode,
+  type VerifiedEmailSession,
 } from "@/lib/account-recovery";
 import type { DeviceSession } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -501,6 +504,11 @@ function passwordStrength(pw: string): { score: number; label: string; color: st
   return { score, label: labels[score], color: colors[score] };
 }
 
+type ChangePasswordStep = "form" | "recoverEmail" | "recoverCode" | "recoverPassword";
+
+/** Instagram's link blue — used for the "Forgot password?" action. */
+const LINK_BLUE_CLASS = "text-[#0095F6]";
+
 export function ChangePasswordSheet({
   open,
   onOpenChange,
@@ -508,7 +516,8 @@ export function ChangePasswordSheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { user, accounts, changePassword } = useApp();
+  const { user, accounts, changePassword, resetAccountPassword } = useApp();
+  const [step, setStep] = useState<ChangePasswordStep>("form");
   const [current, setCurrent] = useState<string>("");
   const [next, setNext] = useState<string>("");
   const [confirm, setConfirm] = useState<string>("");
@@ -517,8 +526,20 @@ export function ChangePasswordSheet({
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
+  // In-app recovery ("Forgot password?") — Instagram-style: verify the
+  // registered email with a real 6-digit code, set a new password, and
+  // return to the Account screen WITHOUT ever logging out.
+  const [recoveryEmail, setRecoveryEmail] = useState<string>("");
+  const [code, setCode] = useState<string>("");
+  const [resetPw, setResetPw] = useState<string>("");
+  const [resetConfirm, setResetConfirm] = useState<string>("");
+  const [showResetPw, setShowResetPw] = useState<boolean>(false);
+  const [resendIn, setResendIn] = useState<number>(0);
+  const verifiedRef = useRef<VerifiedEmailSession | null>(null);
+
   useEffect(() => {
     if (open) {
+      setStep("form");
       setCurrent("");
       setNext("");
       setConfirm("");
@@ -526,10 +547,29 @@ export function ChangePasswordSheet({
       setShowNext(false);
       setSaving(false);
       setError(null);
+      setRecoveryEmail(user?.email ?? "");
+      setCode("");
+      setResetPw("");
+      setResetConfirm("");
+      setShowResetPw(false);
+      setResendIn(0);
+    } else {
+      // Sheet dismissed mid-recovery — discard any verified email session.
+      const session = verifiedRef.current;
+      verifiedRef.current = null;
+      if (session) void finishVerifiedSession(session);
     }
-  }, [open]);
+  }, [open, user?.email]);
+
+  // Resend countdown ticker.
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const t = window.setTimeout(() => setResendIn((s) => s - 1), 1000);
+    return () => window.clearTimeout(t);
+  }, [resendIn]);
 
   const strength = useMemo(() => passwordStrength(next), [next]);
+  const resetStrength = useMemo(() => passwordStrength(resetPw), [resetPw]);
   /** Registry-based: true when the signed-in account has a stored credential. */
   const hasPassword = useMemo(() => {
     const account = accounts.find(
@@ -541,6 +581,9 @@ export function ChangePasswordSheet({
     (hasPassword ? current.length > 0 : true) &&
     next.length >= 6 &&
     next === confirm;
+
+  const accountEmail = (user?.email ?? "").toLowerCase();
+  const normalizedRecoveryEmail = recoveryEmail.trim().toLowerCase();
 
   const handleSubmit = async () => {
     if (saving) return;
@@ -576,97 +619,447 @@ export function ChangePasswordSheet({
     }
   };
 
+  /** Recovery step 1 — email a real 6-digit code to the registered address. */
+  const sendRecoveryCode = async (isResend: boolean) => {
+    if (saving) return;
+    setError(null);
+    if (!EMAIL_REGEX.test(normalizedRecoveryEmail)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    // Security: while signed in, the reset code may only go to THIS
+    // account's registered email — never an arbitrary address.
+    if (normalizedRecoveryEmail !== accountEmail) {
+      setError(`For your security, the code can only be sent to this account's email (${user?.email ?? ""}).`);
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await requestEmailCode(normalizedRecoveryEmail);
+      if (result.ok === false) {
+        setError(result.error);
+        toast.error(result.error);
+        return;
+      }
+      setCode("");
+      setResendIn(60);
+      setStep("recoverCode");
+      toast.success(isResend ? "A new code is on its way" : "Verification code sent", {
+        description: `Check ${normalizedRecoveryEmail} (and Spam) for a 6-digit code.`,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /** Recovery step 2 — the code is checked SERVER-side, never guessed locally. */
+  const verifyRecoveryCode = async () => {
+    if (saving) return;
+    setError(null);
+    if (code.length !== 6) {
+      setError("Enter the 6-digit code from the email.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await verifyEmailCode(normalizedRecoveryEmail, code);
+      if (result.ok === false) {
+        setError(result.error);
+        setCode("");
+        return;
+      }
+      verifiedRef.current = result.session;
+      setStep("recoverPassword");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /** Recovery step 3 — set the new password; the user stays signed in. */
+  const saveRecoveredPassword = async () => {
+    if (saving) return;
+    setError(null);
+    if (resetPw.length < 6) {
+      setError("New password must be at least 6 characters.");
+      return;
+    }
+    if (resetPw !== resetConfirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const ok = await resetAccountPassword(normalizedRecoveryEmail, resetPw);
+      if (!ok) {
+        setError("Couldn't update the password for this account. Please try again.");
+        return;
+      }
+      // Keep the cloud identity usable (only when it has no encrypted
+      // backup — an existing backup password is never touched).
+      const session = verifiedRef.current;
+      verifiedRef.current = null;
+      if (session) {
+        await alignCloudPasswordAfterReset(session, resetPw);
+        await finishVerifiedSession(session);
+      }
+      toast.success("Password updated", {
+        description: "You're still signed in on this device — all other devices were signed out.",
+      });
+      onOpenChange(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const errorBox = error ? (
+    <div className="flex items-start gap-2 rounded-xl bg-destructive/10 p-3 ring-1 ring-destructive/25" role="alert">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+      <p className="text-[12.5px] font-semibold leading-relaxed text-destructive">{error}</p>
+    </div>
+  ) : null;
+
+  const title =
+    step === "form"
+      ? "Change password"
+      : step === "recoverEmail"
+        ? "Reset your password"
+        : step === "recoverCode"
+          ? "Enter the code"
+          : "Create new password";
+  const description =
+    step === "form"
+      ? hasPassword
+        ? "Enter your current password to set a new one."
+        : "Set a password for your account."
+      : step === "recoverEmail"
+        ? "Forgot your current password? Verify your email to set a new one — no logout needed."
+        : step === "recoverCode"
+          ? `We sent a 6-digit code to ${normalizedRecoveryEmail}.`
+          : "Email verified. Choose a new password for your account.";
+
   return (
-    <FormSheet
-      open={open}
-      onOpenChange={onOpenChange}
-      title="Change password"
-      description={hasPassword ? "Enter your current password to set a new one." : "Set a password for your account."}
-    >
-      <div className="space-y-5">
-        {hasPassword && (
-          <Field label="Current password">
+    <FormSheet open={open} onOpenChange={onOpenChange} title={title} description={description}>
+      {step === "form" && (
+        <div className="space-y-5">
+          {hasPassword && (
+            <Field label="Current password">
+              <PasswordInput
+                value={current}
+                onChange={setCurrent}
+                show={showCurrent}
+                onToggle={() => setShowCurrent((v) => !v)}
+                placeholder="••••••••"
+                autoComplete="current-password"
+              />
+            </Field>
+          )}
+
+          <Field label="New password">
             <PasswordInput
-              value={current}
-              onChange={setCurrent}
-              show={showCurrent}
-              onToggle={() => setShowCurrent((v) => !v)}
-              placeholder="••••••••"
-              autoComplete="current-password"
+              value={next}
+              onChange={setNext}
+              show={showNext}
+              onToggle={() => setShowNext((v) => !v)}
+              placeholder="At least 6 characters"
+              autoComplete="new-password"
             />
-          </Field>
-        )}
-
-        <Field label="New password">
-          <PasswordInput
-            value={next}
-            onChange={setNext}
-            show={showNext}
-            onToggle={() => setShowNext((v) => !v)}
-            placeholder="At least 6 characters"
-            autoComplete="new-password"
-          />
-          {next.length > 0 && (
-            <div className="mt-2 space-y-1.5">
-              <div className="flex gap-1">
-                {[0, 1, 2, 3].map((i) => (
-                  <span
-                    key={i}
-                    className={cn(
-                      "h-1.5 flex-1 rounded-full transition-colors",
-                      i < strength.score ? strength.color : "bg-muted",
-                    )}
-                  />
-                ))}
+            {next.length > 0 && (
+              <div className="mt-2 space-y-1.5">
+                <div className="flex gap-1">
+                  {[0, 1, 2, 3].map((i) => (
+                    <span
+                      key={i}
+                      className={cn(
+                        "h-1.5 flex-1 rounded-full transition-colors",
+                        i < strength.score ? strength.color : "bg-muted",
+                      )}
+                    />
+                  ))}
+                </div>
+                <p className="text-[12px] font-bold text-muted-foreground">{strength.label}</p>
               </div>
-              <p className="text-[12px] font-bold text-muted-foreground">{strength.label}</p>
-            </div>
-          )}
-        </Field>
+            )}
+          </Field>
 
-        <Field label="Confirm new password">
-          <PasswordInput
-            value={confirm}
-            onChange={setConfirm}
-            show={showNext}
-            onToggle={() => setShowNext((v) => !v)}
-            placeholder="Re-enter new password"
-            autoComplete="new-password"
-          />
-          {confirm.length > 0 && next === confirm && (
-            <p className="flex items-center gap-1 text-[12px] font-bold text-success">
-              <Check className="h-3.5 w-3.5" /> Passwords match
+          <Field label="Confirm new password">
+            <PasswordInput
+              value={confirm}
+              onChange={setConfirm}
+              show={showNext}
+              onToggle={() => setShowNext((v) => !v)}
+              placeholder="Re-enter new password"
+              autoComplete="new-password"
+            />
+            {confirm.length > 0 && next === confirm && (
+              <p className="flex items-center gap-1 text-[12px] font-bold text-success">
+                <Check className="h-3.5 w-3.5" /> Passwords match
+              </p>
+            )}
+          </Field>
+
+          {/* Instagram-style recovery entry point — blue link under the
+              password fields, above the primary button. */}
+          {hasPassword && (
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setRecoveryEmail(user?.email ?? "");
+                setStep("recoverEmail");
+              }}
+              className={cn(
+                "!mt-3.5 block text-[14px] font-semibold transition-opacity active:opacity-60",
+                LINK_BLUE_CLASS,
+              )}
+            >
+              Forgot password?
+            </button>
+          )}
+
+          {errorBox}
+
+          <Button
+            type="button"
+            size="lg"
+            disabled={!canSave || saving}
+            onClick={() => void handleSubmit()}
+            className="h-[52px] w-full rounded-2xl text-[15px] font-bold shadow-lg shadow-primary/25 transition-transform active:scale-[0.98]"
+          >
+            {saving ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" /> Updating…
+              </>
+            ) : (
+              "Update password"
+            )}
+          </Button>
+
+          <p className="text-center text-[12px] leading-relaxed text-muted-foreground">
+            Changing your password keeps you signed in on this device and signs out all other devices.
+          </p>
+        </div>
+      )}
+
+      {step === "recoverEmail" && (
+        <div className="space-y-5">
+          <div className="flex flex-col items-center gap-1.5 pb-1 text-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#0095F6]/10 text-[#0095F6]">
+              <KeyRound className="h-6 w-6" />
+            </span>
+            <p className="max-w-[300px] text-[13px] leading-relaxed text-muted-foreground">
+              We&apos;ll email you a 6-digit verification code so you can set a new password. You
+              stay signed in the whole time.
             </p>
-          )}
-        </Field>
-
-        {error && (
-          <div className="flex items-start gap-2 rounded-xl bg-destructive/10 p-3 ring-1 ring-destructive/25" role="alert">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
-            <p className="text-[12.5px] font-semibold leading-relaxed text-destructive">{error}</p>
           </div>
-        )}
 
-        <Button
-          type="button"
-          size="lg"
-          disabled={!canSave || saving}
-          onClick={() => void handleSubmit()}
-          className="h-[52px] w-full rounded-2xl text-[15px] font-bold shadow-lg shadow-primary/25 transition-transform active:scale-[0.98]"
-        >
-          {saving ? (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin" /> Updating…
-            </>
-          ) : (
-            "Update password"
-          )}
-        </Button>
+          <Field label="Email">
+            <div className="relative">
+              <Input
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={recoveryEmail}
+                onChange={(e) => setRecoveryEmail(e.target.value)}
+                className="h-12 rounded-xl pr-10"
+                disabled={saving}
+              />
+              <Mail className="pointer-events-none absolute right-3 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-muted-foreground" />
+            </div>
+          </Field>
 
-        <p className="text-center text-[12px] leading-relaxed text-muted-foreground">
-          Changing your password keeps you signed in on this device and signs out all other devices.
-        </p>
-      </div>
+          {errorBox}
+
+          <div className="flex gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              onClick={() => {
+                setStep("form");
+                setError(null);
+              }}
+              disabled={saving}
+              className="h-[52px] flex-1 rounded-2xl text-[15px] font-bold"
+            >
+              Back
+            </Button>
+            <Button
+              type="button"
+              size="lg"
+              onClick={() => void sendRecoveryCode(false)}
+              disabled={saving}
+              className="h-[52px] flex-1 rounded-2xl text-[15px] font-bold shadow-lg shadow-primary/25 transition-transform active:scale-[0.98]"
+            >
+              {saving ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Sending…
+                </>
+              ) : (
+                "Send Code"
+              )}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step === "recoverCode" && (
+        <div className="space-y-5">
+          <div className="flex flex-col items-center gap-1.5 pb-1 text-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-info/12 text-info">
+              <Mail className="h-6 w-6" />
+            </span>
+            <p className="max-w-[300px] text-[13px] leading-relaxed text-muted-foreground">
+              Enter the code we sent to{" "}
+              <span className="font-bold text-foreground">{normalizedRecoveryEmail}</span>
+            </p>
+          </div>
+
+          <div className="flex justify-center">
+            <InputOTP maxLength={6} value={code} onChange={setCode} containerClassName="gap-1.5" disabled={saving}>
+              <InputOTPGroup>
+                <InputOTPSlot index={0} className="h-12 w-12 rounded-lg text-[16px] font-bold" />
+                <InputOTPSlot index={1} className="h-12 w-12 rounded-lg text-[16px] font-bold" />
+                <InputOTPSlot index={2} className="h-12 w-12 rounded-lg text-[16px] font-bold" />
+              </InputOTPGroup>
+              <InputOTPSeparator />
+              <InputOTPGroup>
+                <InputOTPSlot index={3} className="h-12 w-12 rounded-lg text-[16px] font-bold" />
+                <InputOTPSlot index={4} className="h-12 w-12 rounded-lg text-[16px] font-bold" />
+                <InputOTPSlot index={5} className="h-12 w-12 rounded-lg text-[16px] font-bold" />
+              </InputOTPGroup>
+            </InputOTP>
+          </div>
+
+          <div className="flex items-center justify-center gap-1.5 text-[13px]">
+            {resendIn > 0 ? (
+              <span className="text-muted-foreground">Resend code in {resendIn}s</span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void sendRecoveryCode(true)}
+                disabled={saving}
+                className={cn("font-bold", LINK_BLUE_CLASS)}
+              >
+                Resend code
+              </button>
+            )}
+          </div>
+
+          {errorBox}
+
+          <div className="flex gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              onClick={() => {
+                setStep("recoverEmail");
+                setError(null);
+                setCode("");
+              }}
+              disabled={saving}
+              className="h-[52px] flex-1 rounded-2xl text-[15px] font-bold"
+            >
+              Back
+            </Button>
+            <Button
+              type="button"
+              size="lg"
+              onClick={() => void verifyRecoveryCode()}
+              disabled={saving || code.length !== 6}
+              className="h-[52px] flex-1 rounded-2xl text-[15px] font-bold shadow-lg shadow-primary/25 transition-transform active:scale-[0.98]"
+            >
+              {saving ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Verifying…
+                </>
+              ) : (
+                "Verify Code"
+              )}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step === "recoverPassword" && (
+        <div className="space-y-5">
+          <div className="flex flex-col items-center gap-1.5 pb-1 text-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-success/12 text-success">
+              <ShieldCheck className="h-6 w-6" />
+            </span>
+            <p className="max-w-[300px] text-[13px] leading-relaxed text-muted-foreground">
+              Email verified. Choose a new password for{" "}
+              <span className="font-bold text-foreground">{normalizedRecoveryEmail}</span>
+            </p>
+          </div>
+
+          <Field label="New password">
+            <PasswordInput
+              value={resetPw}
+              onChange={setResetPw}
+              show={showResetPw}
+              onToggle={() => setShowResetPw((v) => !v)}
+              placeholder="At least 6 characters"
+              autoComplete="new-password"
+            />
+            {resetPw.length > 0 && (
+              <div className="mt-2 space-y-1.5">
+                <div className="flex gap-1">
+                  {[0, 1, 2, 3].map((i) => (
+                    <span
+                      key={i}
+                      className={cn(
+                        "h-1.5 flex-1 rounded-full transition-colors",
+                        i < resetStrength.score ? resetStrength.color : "bg-muted",
+                      )}
+                    />
+                  ))}
+                </div>
+                <p className="text-[12px] font-bold text-muted-foreground">{resetStrength.label}</p>
+              </div>
+            )}
+          </Field>
+
+          <Field label="Confirm new password">
+            <PasswordInput
+              value={resetConfirm}
+              onChange={setResetConfirm}
+              show={showResetPw}
+              onToggle={() => setShowResetPw((v) => !v)}
+              placeholder="Re-enter new password"
+              autoComplete="new-password"
+            />
+            {resetConfirm.length > 0 && resetPw === resetConfirm && (
+              <p className="flex items-center gap-1 text-[12px] font-bold text-success">
+                <Check className="h-3.5 w-3.5" /> Passwords match
+              </p>
+            )}
+          </Field>
+
+          {errorBox}
+
+          <Button
+            type="button"
+            size="lg"
+            onClick={() => void saveRecoveredPassword()}
+            disabled={saving || resetPw.length < 6 || resetPw !== resetConfirm}
+            className="h-[52px] w-full rounded-2xl text-[15px] font-bold shadow-lg shadow-primary/25 transition-transform active:scale-[0.98]"
+          >
+            {saving ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" /> Saving…
+              </>
+            ) : (
+              "Reset Password"
+            )}
+          </Button>
+
+          <p className="text-center text-[12px] leading-relaxed text-muted-foreground">
+            You&apos;ll stay signed in on this device — all other devices will be signed out.
+          </p>
+        </div>
+      )}
     </FormSheet>
   );
 }
@@ -1002,6 +1395,7 @@ const WHATS_NEW: { version: string; date: string; changes: string[] }[] = [
     version: "1.1",
     date: "Jul 2026",
     changes: [
+      "Forgot your password? Reset it right inside Change Password with an emailed code — no logout needed.",
       "Full password reset by email — verify with a 6-digit code, then set a new password.",
       "Passwords are now stored only as salted hashes, never in plain text.",
       "Current password is verified before any sensitive change — wrong passwords are always rejected.",

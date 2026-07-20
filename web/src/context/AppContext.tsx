@@ -91,8 +91,11 @@ interface AppContextValue extends PersistedState {
   verifyAccountPassword: (password: string) => Promise<boolean>;
   /**
    * Set a new password for an account after its email ownership has
-   * been verified (Forgot Password flow). Never call without a
-   * completed email verification.
+   * been verified (Forgot Password flow — from the sign-in screen or
+   * in-app via Change Password → Forgot password?). Never call
+   * without a completed email verification. The user is NEVER signed
+   * out here; when the reset affects the signed-in account, every
+   * OTHER device session is revoked (same policy as changePassword).
    */
   resetAccountPassword: (email: string, newPassword: string) => Promise<boolean>;
   revokeSession: (id: string) => void;
@@ -518,11 +521,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const rec = await hashPassword(newPassword);
     const changedAt = Date.now();
     const s = stateRef.current;
+    // In-app recovery (Change Password → Forgot password?): the user
+    // stays signed in on THIS device and — like changePassword — every
+    // other device session is revoked so the new password is required
+    // elsewhere. Resets from the signed-out auth screen leave sessions
+    // untouched.
+    const affectsSignedInUser = (s.user?.email ?? "").toLowerCase() === normalized;
     const nextState: PersistedState = {
       ...s,
       accounts: s.accounts.map((a) =>
         a.email.toLowerCase() === normalized ? withCredentials(a, rec.hash, rec.salt, changedAt) : a,
       ),
+      sessions: affectsSignedInUser ? s.sessions.filter((session) => session.current) : s.sessions,
     };
     stateRef.current = nextState;
     setState(nextState);

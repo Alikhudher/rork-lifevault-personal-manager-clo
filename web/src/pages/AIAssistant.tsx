@@ -33,6 +33,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useApp } from "@/context/AppContext";
+import { useI18n } from "@/context/I18nContext";
 import { formatCurrency } from "@/lib/format";
 import {
   askAboutScan,
@@ -158,6 +159,7 @@ interface ScanPanelProps {
 }
 
 function ScanPanel({ pages, setPages, onScanComplete }: ScanPanelProps) {
+  const { t } = useI18n();
   const [loading, setLoading] = useState<boolean>(false);
   const [analyzed, setAnalyzed] = useState<boolean>(false);
 
@@ -260,7 +262,7 @@ function ScanPanel({ pages, setPages, onScanComplete }: ScanPanelProps) {
                 className="flex w-full items-center justify-center gap-2 rounded-2xl bg-white/10 px-4 py-5 text-center ring-1 ring-white/15 transition-all active:scale-[0.98] hover:bg-white/15"
               >
                 <Camera className="h-6 w-6" />
-                <span className="text-[15px] font-bold">Take photo</span>
+                <span className="text-[15px] font-bold">{t("assistant.takePhoto")}</span>
               </button>
             ) : (
               <div className="flex gap-2.5">
@@ -269,7 +271,7 @@ function ScanPanel({ pages, setPages, onScanComplete }: ScanPanelProps) {
                   className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-white/10 px-4 py-3.5 text-center text-[14px] font-bold ring-1 ring-white/15 transition-all active:scale-[0.98] hover:bg-white/15"
                 >
                   <Camera className="h-5 w-5" />
-                  <span>Add page</span>
+                  <span>{t("assistant.addPage")}</span>
                 </button>
                 <button
                   onClick={() => void handleAnalyze()}
@@ -278,11 +280,14 @@ function ScanPanel({ pages, setPages, onScanComplete }: ScanPanelProps) {
                 >
                   {loading ? (
                     <>
-                      <Loader2 className="h-5 w-5 animate-spin" /> Analyzing…
+                      <Loader2 className="h-5 w-5 animate-spin" /> {t("assistant.analyzing")}
                     </>
                   ) : (
                     <>
-                      <Wand2 className="h-5 w-5" /> Analyze {pages.length > 1 ? `${pages.length} pages` : "document"}
+                      <Wand2 className="h-5 w-5" />{" "}
+                      {pages.length > 1
+                        ? t("assistant.analyzePages", { count: pages.length })
+                        : t("assistant.analyzeDoc")}
                     </>
                   )}
                 </button>
@@ -651,6 +656,7 @@ function ScanResultCard({
 }) {
   const navigate = useNavigate();
   const { addDocument, addExpense, addAppointment } = useApp();
+  const { t } = useI18n();
   const [accepted, setAccepted] = useState<Set<string>>(new Set());
   const [showText, setShowText] = useState<boolean>(false);
   const [saveOpen, setSaveOpen] = useState<boolean>(false);
@@ -778,7 +784,7 @@ function ScanResultCard({
   const handleSaveToVault = useCallback(() => {
     const name = saveName.trim();
     if (!name) {
-      toast.error("Enter a document name");
+      toast.error(t("review.nameRequired"));
       return;
     }
     // Keep only fields that still carry content after the user's review, and
@@ -804,10 +810,10 @@ function ScanResultCard({
     addDocument(doc);
     setSavedDocId("saved");
     setSaveOpen(false);
-    toast.success(`Saved to ${saveCategory}`, {
-      description: `"${name}" is now in your vault.`,
+    toast.success(t("review.savedTo", { category: t(`documentCategories.${saveCategory}`) }), {
+      description: t("review.savedDesc", { name }),
     });
-  }, [saveName, saveCategory, saveNotes, saveReminderDays, saveIssueDate, saveExpiryDate, draftFields, addDocument]);
+  }, [saveName, saveCategory, saveNotes, saveReminderDays, saveIssueDate, saveExpiryDate, draftFields, addDocument, t]);
 
   return (
     <div className="animate-fade-in space-y-4 px-4 pt-4">
@@ -983,7 +989,7 @@ function ScanResultCard({
       {/* Save to vault — AI suggests a file name + folder, user confirms/edits */}
       <div className="space-y-2.5">
         <p className="px-1 text-[13px] font-bold text-muted-foreground">
-          Save to your vault
+          {t("review.saveToVault")}
         </p>
         <div className="rounded-2xl bg-card p-4 shadow-sm ring-1 ring-border">
           {/* AI suggestion preview */}
@@ -998,15 +1004,15 @@ function ScanResultCard({
             </span>
             <div className="min-w-0 flex-1">
               <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
-                AI suggestion
+                {t("review.aiSuggestion")}
               </p>
               <p className="truncate text-[14.5px] font-extrabold text-foreground">
                 {result.title}
               </p>
               <p className="mt-0.5 flex items-center gap-1 text-[12.5px] font-semibold text-muted-foreground">
                 <Check className="h-3.5 w-3.5 text-success" />
-                {result.category}
-                {result.expiryDate && ` · expires ${result.expiryDate}`}
+                {t(`documentCategories.${result.category}`)}
+                {result.expiryDate && ` · ${t("review.expires", { date: result.expiryDate })}`}
               </p>
             </div>
           </div>
@@ -1018,11 +1024,12 @@ function ScanResultCard({
           >
             {savedDocId ? (
               <>
-                <Check className="mr-1.5 h-4 w-4" /> Saved to {saveCategory}
+                <Check className="mr-1.5 h-4 w-4" />{" "}
+                {t("review.savedTo", { category: t(`documentCategories.${saveCategory}`) })}
               </>
             ) : (
               <>
-                <FileText className="mr-1.5 h-4 w-4" /> Review & save
+                <FileText className="mr-1.5 h-4 w-4" /> {t("review.reviewAndSave")}
               </>
             )}
           </Button>
@@ -1031,7 +1038,7 @@ function ScanResultCard({
               onClick={() => navigate("/documents")}
               className="mt-2 flex w-full items-center justify-center gap-1 text-[12.5px] font-bold text-primary dark:text-foreground"
             >
-              View in Documents <ArrowRight className="h-3.5 w-3.5" />
+              {t("review.viewInDocuments")} <ArrowRight className="h-3.5 w-3.5 rtl:rotate-180" />
             </button>
           )}
         </div>
@@ -1042,8 +1049,8 @@ function ScanResultCard({
       <FormSheet
         open={saveOpen}
         onOpenChange={setSaveOpen}
-        title="Review & save"
-        description="Check what the AI extracted. Edit, add or remove anything before saving."
+        title={t("review.title")}
+        description={t("review.description")}
       >
         <div className="space-y-4">
           {/* AI suggestion banner */}
@@ -1058,38 +1065,38 @@ function ScanResultCard({
             </span>
             <div className="min-w-0 flex-1">
               <p className="text-[11px] font-bold uppercase tracking-wide text-info">
-                AI suggestion
+                {t("review.aiSuggestion")}
               </p>
               <p className="truncate text-[14px] font-extrabold">
                 {result.title}
               </p>
               <p className="mt-0.5 flex items-center gap-1 text-[12.5px] font-semibold text-muted-foreground">
                 <Check className="h-3.5 w-3.5 text-success" />
-                {result.category}
+                {t(`documentCategories.${result.category}`)}
               </p>
             </div>
           </div>
 
-          <Field label="Document name">
+          <Field label={t("review.docName")}>
             <Input
               value={saveName}
               onChange={(e) => setSaveName(e.target.value)}
-              placeholder="e.g. Driver Licence"
+              placeholder={t("review.docNamePh")}
               className="h-12 rounded-xl"
             />
           </Field>
 
-          <Field label="Save to folder" hint="Pick the category that best fits this document.">
+          <Field label={t("review.folder")} hint={t("review.folderHint")}>
             <ChipPicker
               options={DOCUMENT_CATEGORIES}
               value={saveCategory}
               onChange={(cat) => setSaveCategory(cat)}
-              render={(cat) => cat}
+              render={(cat) => t(`documentCategories.${cat}`)}
             />
           </Field>
 
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Issue date">
+            <Field label={t("review.issueDate")}>
               <Input
                 type="date"
                 value={saveIssueDate}
@@ -1097,7 +1104,7 @@ function ScanResultCard({
                 className="h-12 rounded-xl"
               />
             </Field>
-            <Field label="Expiry date">
+            <Field label={t("review.expiryDate")}>
               <Input
                 type="date"
                 value={saveExpiryDate}
@@ -1109,13 +1116,13 @@ function ScanResultCard({
 
           {/* Extracted fields — fully editable: fix, remove, or add */}
           <Field
-            label="Extracted details"
-            hint="Fix anything the AI misread, remove wrong values, or add missing details."
+            label={t("review.details")}
+            hint={t("review.detailsHint")}
           >
             <div className="space-y-2">
               {draftFields.length === 0 && (
                 <p className="rounded-xl bg-secondary/50 px-3.5 py-3 text-[12.5px] text-muted-foreground">
-                  No details extracted. Add any you want to keep.
+                  {t("review.noDetails")}
                 </p>
               )}
               {draftFields.map((f, i) => (
@@ -1123,14 +1130,14 @@ function ScanResultCard({
                   <Input
                     value={f.label}
                     onChange={(e) => updateField(i, "label", e.target.value)}
-                    placeholder="Label"
+                    placeholder={t("review.labelPh")}
                     aria-label={`Detail ${i + 1} label`}
                     className="h-11 w-[38%] shrink-0 rounded-xl bg-secondary/40 font-semibold"
                   />
                   <Input
                     value={f.value}
                     onChange={(e) => updateField(i, "value", e.target.value)}
-                    placeholder="Value"
+                    placeholder={t("review.valuePh")}
                     aria-label={`Detail ${i + 1} value`}
                     className="h-11 min-w-0 flex-1 rounded-xl"
                   />
@@ -1149,25 +1156,25 @@ function ScanResultCard({
                 onClick={addField}
                 className="flex w-full items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-border bg-secondary/30 py-2.5 text-[13px] font-bold text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
               >
-                <Plus className="h-4 w-4" /> Add field
+                <Plus className="h-4 w-4" /> {t("review.addField")}
               </button>
             </div>
           </Field>
 
-          <Field label="Remind me before expiry">
+          <Field label={t("review.remind")}>
             <ChipPicker
               options={REMINDER_OPTIONS}
               value={saveReminderDays}
               onChange={(days) => setSaveReminderDays(days)}
-              render={(days) => `${days} days`}
+              render={(days) => t("common.daysCount", { count: days })}
             />
           </Field>
 
-          <Field label="Notes">
+          <Field label={t("common.notes")}>
             <Textarea
               value={saveNotes}
               onChange={(e) => setSaveNotes(e.target.value)}
-              placeholder="AI summary or extra details…"
+              placeholder={t("review.notesPh")}
               className="min-h-[88px] rounded-xl"
             />
           </Field>
@@ -1176,7 +1183,8 @@ function ScanResultCard({
             onClick={handleSaveToVault}
             className="h-[52px] w-full rounded-2xl text-[15px] font-extrabold shadow-lg shadow-primary/25 transition-transform active:scale-[0.98]"
           >
-            <FileText className="mr-1.5 h-4 w-4" /> Save to {saveCategory}
+            <FileText className="mr-1.5 h-4 w-4" />{" "}
+            {t("review.saveTo", { category: t(`documentCategories.${saveCategory}`) })}
           </Button>
         </div>
       </FormSheet>
@@ -1478,6 +1486,7 @@ function MatchIcon({ type }: { type: SearchHit["type"] }) {
 /* ------------------------- Page ------------------------- */
 
 export default function AIAssistant() {
+  const { t } = useI18n();
   const [tab, setTab] = useState<Tab>("scan");
   const [pages, setPages] = useState<string[]>([]);
   const [outcome, setOutcome] = useState<ScanOutcome | null>(null);
@@ -1493,8 +1502,8 @@ export default function AIAssistant() {
   return (
     <div className="animate-fade-in">
       <PageHeader
-        title="AI Assistant"
-        subtitle="Understands any document"
+        title={t("assistant.title")}
+        subtitle={t("assistant.subtitle")}
       />
 
       {/* Tab switcher */}
@@ -1509,7 +1518,7 @@ export default function AIAssistant() {
                 : "text-muted-foreground",
             )}
           >
-            <Camera className="h-4 w-4" /> Scan
+            <Camera className="h-4 w-4" /> {t("assistant.scanTab")}
           </button>
           <button
             onClick={() => setTab("search")}
@@ -1520,7 +1529,7 @@ export default function AIAssistant() {
                 : "text-muted-foreground",
             )}
           >
-            <SearchIcon className="h-4 w-4" /> Search
+            <SearchIcon className="h-4 w-4" /> {t("assistant.searchTab")}
           </button>
         </div>
       </div>

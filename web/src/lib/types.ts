@@ -233,6 +233,8 @@ export interface Settings {
   /** Legacy biometric toggle (kept for backwards compat). Real config lives in SecuritySettings. */
   biometric: boolean;
   monthlyBudget: number;
+  /** App display language code (validated against the i18n registry). */
+  language: string;
   notifications: NotificationPrefs;
 }
 

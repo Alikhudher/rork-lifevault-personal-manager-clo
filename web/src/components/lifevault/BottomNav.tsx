@@ -1,16 +1,18 @@
 import { NavLink } from "react-router-dom";
 import { CalendarDays, FileText, House, User, Wallet } from "lucide-react";
+import { useI18n } from "@/context/I18nContext";
 import { cn } from "@/lib/utils";
 
 const TABS = [
-  { to: "/", label: "Home", icon: House },
-  { to: "/documents", label: "Documents", icon: FileText },
-  { to: "/expenses", label: "Expenses", icon: Wallet },
-  { to: "/calendar", label: "Calendar", icon: CalendarDays },
-  { to: "/profile", label: "Profile", icon: User },
-];
+  { to: "/", key: "tabs.home", icon: House },
+  { to: "/documents", key: "tabs.documents", icon: FileText },
+  { to: "/expenses", key: "tabs.expenses", icon: Wallet },
+  { to: "/calendar", key: "tabs.calendar", icon: CalendarDays },
+  { to: "/profile", key: "tabs.profile", icon: User },
+] as const;
 
 export function BottomNav() {
+  const { t } = useI18n();
   return (
     <nav className="fixed inset-x-0 bottom-0 z-40">
       <div className="mx-auto w-full max-w-md border-t border-border bg-card/90 backdrop-blur-xl pb-safe">
@@ -37,7 +39,7 @@ export function BottomNav() {
                   >
                     <tab.icon className="h-[19px] w-[19px]" strokeWidth={isActive ? 2.4 : 2} />
                   </span>
-                  {tab.label}
+                  {t(tab.key)}
                 </>
               )}
             </NavLink>

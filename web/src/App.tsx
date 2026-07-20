@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppProvider, useApp } from "@/context/AppContext";
+import { I18nProvider } from "@/context/I18nContext";
 import { SyncProvider } from "@/context/SyncContext";
 import { AppShell, PublicShell } from "@/components/lifevault/AppShell";
 
@@ -93,14 +94,16 @@ const AppRoutes = () => (
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <AppProvider>
-      <SyncProvider>
-        <TooltipProvider>
-          <Toaster position="top-center" />
-          <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-            <AppRoutes />
-          </BrowserRouter>
-        </TooltipProvider>
-      </SyncProvider>
+      <I18nProvider>
+        <SyncProvider>
+          <TooltipProvider>
+            <Toaster position="top-center" />
+            <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+              <AppRoutes />
+            </BrowserRouter>
+          </TooltipProvider>
+        </SyncProvider>
+      </I18nProvider>
     </AppProvider>
   </QueryClientProvider>
 );

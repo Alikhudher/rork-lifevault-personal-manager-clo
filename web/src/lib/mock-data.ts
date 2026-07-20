@@ -24,6 +24,7 @@ export const DEFAULT_SETTINGS: Settings = {
   darkMode: false,
   biometric: false,
   monthlyBudget: 3800,
+  language: "en",
   notifications: {
     documents: true,
     subscriptions: true,

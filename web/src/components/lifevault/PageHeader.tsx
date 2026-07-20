@@ -26,9 +26,9 @@ export function PageHeader({ title, subtitle, back, actions, className }: PageHe
             type="button"
             onClick={() => navigate(-1)}
             aria-label="Go back"
-            className="-ml-1 flex h-10 w-10 items-center justify-center rounded-full text-foreground transition-colors hover:bg-secondary active:scale-95"
+            className="-ms-1 flex h-10 w-10 items-center justify-center rounded-full text-foreground transition-colors hover:bg-secondary active:scale-95"
           >
-            <ChevronLeft className="h-5 w-5" />
+            <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
           </button>
         )}
         <div className="min-w-0 flex-1">

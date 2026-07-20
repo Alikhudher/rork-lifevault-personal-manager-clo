@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { isSameMonth, parseISO } from "date-fns";
 import {
   Bell,
   Bug,
@@ -12,9 +13,9 @@ import {
   HelpCircle,
   Info,
   KeyRound,
+  Languages,
   LifeBuoy,
   LogOut,
-  Mail,
   MessageSquarePlus,
   Moon,
   PiggyBank,
@@ -50,7 +51,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { PageHeader, SectionTitle } from "@/components/lifevault/PageHeader";
-import { FormSheet } from "@/components/lifevault/FormSheet";
+import { Field, FormSheet } from "@/components/lifevault/FormSheet";
 import {
   ActiveSessionsSheet,
   ChangePasswordSheet,
@@ -62,85 +63,14 @@ import {
   WhatsNewSheet,
 } from "@/components/lifevault/AccountSheets";
 import { useApp } from "@/context/AppContext";
-import { initials } from "@/lib/format";
+import { useI18n } from "@/context/I18nContext";
+import { formatCurrency, initials } from "@/lib/format";
+import { isLanguageCode, LANGUAGES } from "@/lib/i18n";
+import { dismissKeyboard, subscribeKeyboard } from "@/lib/keyboard";
 import { CURRENCIES } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const APP_VERSION = "1.0.0";
-
-/**
- * Budget input with currency prefix rendered outside the editable field and
- * leading-zero-replacement behavior (typing 5 over an initial 0 yields 5, not 05).
- */
-function BudgetInput({
-  value,
-  currency,
-  onChange,
-}: {
-  value: number;
-  currency: string;
-  onChange: (next: number) => void;
-}) {
-  const symbol = CURRENCY_SYMBOLS[currency] ?? "";
-  const [draft, setDraft] = useState<string>(() => (value ? String(value) : ""));
-  const hasFocusRef = useRef<boolean>(false);
-
-  useEffect(() => {
-    if (!hasFocusRef.current) {
-      setDraft(value ? String(value) : "");
-    }
-  }, [value]);
-
-  const commit = (next: number) => onChange(Math.max(0, Number.isFinite(next) ? next : 0));
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const raw = e.target.value;
-    let cleaned = raw.replace(/[^0-9.]/g, "");
-    const firstDot = cleaned.indexOf(".");
-    if (firstDot !== -1) {
-      cleaned = `${cleaned.slice(0, firstDot + 1)}${cleaned.slice(firstDot + 1).replace(/\./g, "")}`;
-    }
-    if (cleaned === "") {
-      setDraft("");
-      commit(0);
-      return;
-    }
-    // Replace a lone leading zero before a new digit: "0" + "5" -> "5"
-    if (/^0\d/.test(cleaned)) {
-      cleaned = cleaned.replace(/^0+/, "");
-    }
-    setDraft(cleaned);
-    commit(Number(cleaned) || 0);
-  };
-
-  const handleFocus = () => {
-    hasFocusRef.current = true;
-  };
-
-  const handleBlur = (e: React.ChangeEvent<HTMLInputElement>) => {
-    hasFocusRef.current = false;
-    const n = Number(e.target.value) || 0;
-    setDraft(n ? String(n) : "");
-    commit(n);
-  };
-
-  return (
-    <div className="flex h-9 w-[124px] items-center gap-1.5 rounded-lg bg-secondary/60 px-2.5">
-      <span className="shrink-0 select-none text-[13px] font-bold text-muted-foreground">{symbol}</span>
-      <Input
-        type="text"
-        inputMode="decimal"
-        value={draft}
-        onChange={handleChange}
-        onFocus={handleFocus}
-        onBlur={handleBlur}
-        placeholder="0"
-        className="h-9 min-w-0 flex-1 border-0 bg-transparent px-0 text-right text-[13px] font-bold tabular shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
-        aria-label="Monthly budget"
-      />
-    </div>
-  );
-}
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
   AUD: "A$",
@@ -150,6 +80,177 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   NZD: "NZ$",
   CAD: "C$",
 };
+
+const QUICK_BUDGET_AMOUNTS = [1000, 2000, 3000, 5000];
+
+/**
+ * Monthly budget editor.
+ *
+ * - Large 28px amount field: iOS only auto-zooms inputs below 16px, so the
+ *   viewport never jumps when the field is focused.
+ * - An iOS-style "Done" accessory bar is pinned directly above the numeric
+ *   keyboard (the sheet footer rides on top of the keyboard) so editing can
+ *   always be finished.
+ * - Done and Save both write straight to settings, so the Home dashboard
+ *   progress bar updates instantly — no restart needed.
+ */
+function BudgetSheet({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { settings, expenses, updateSettings } = useApp();
+  const { t } = useI18n();
+  const [draft, setDraft] = useState<string>("");
+  const [keyboardOpen, setKeyboardOpen] = useState<boolean>(false);
+
+  const symbol = CURRENCY_SYMBOLS[settings.currency] ?? settings.currency;
+
+  // Re-seed the draft each time the sheet opens.
+  useEffect(() => {
+    if (open) {
+      setDraft(settings.monthlyBudget > 0 ? String(settings.monthlyBudget) : "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      setKeyboardOpen(false);
+      return;
+    }
+    return subscribeKeyboard((state) => setKeyboardOpen(state.inset > 0));
+  }, [open]);
+
+  const spentThisMonth = useMemo(() => {
+    const now = new Date();
+    return expenses
+      .filter((e) => isSameMonth(parseISO(e.date), now))
+      .reduce((sum, e) => sum + e.amount, 0);
+  }, [expenses]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    let cleaned = e.target.value.replace(/[^0-9.]/g, "");
+    const firstDot = cleaned.indexOf(".");
+    if (firstDot !== -1) {
+      cleaned = `${cleaned.slice(0, firstDot + 1)}${cleaned.slice(firstDot + 1).replace(/\./g, "")}`;
+    }
+    // Replace a lone leading zero before a new digit: "0" + "5" -> "5".
+    if (/^0\d/.test(cleaned)) cleaned = cleaned.replace(/^0+/, "");
+    setDraft(cleaned);
+  };
+
+  /** Persist the draft — Home reads the same context state and refreshes immediately. */
+  const commit = () => {
+    const n = Number.parseFloat(draft);
+    const amount = Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : 0;
+    updateSettings({ monthlyBudget: amount });
+  };
+
+  // "Done" saves the value and dismisses the keyboard, keeping the sheet
+  // open so the user can review before closing.
+  const handleDone = () => {
+    commit();
+    dismissKeyboard();
+  };
+
+  const handleSave = () => {
+    commit();
+    dismissKeyboard();
+    onOpenChange(false);
+    toast.success(t("budget.saved"), { description: t("budget.savedDesc") });
+  };
+
+  return (
+    <FormSheet
+      open={open}
+      onOpenChange={onOpenChange}
+      title={t("budget.title")}
+      description={t("budget.description")}
+      footer={
+        keyboardOpen ? (
+          <div className="flex items-center justify-between gap-3">
+            <span className="min-w-0 truncate text-[12.5px] font-semibold text-muted-foreground">
+              {t("budget.doneHint")}
+            </span>
+            <Button
+              type="button"
+              onClick={handleDone}
+              className="h-10 shrink-0 rounded-xl px-6 text-[14px] font-extrabold"
+            >
+              {t("common.done")}
+            </Button>
+          </div>
+        ) : (
+          <Button
+            onClick={handleSave}
+            className="h-12 w-full rounded-xl text-[15px] font-bold shadow-md shadow-primary/20"
+          >
+            {t("budget.save")}
+          </Button>
+        )
+      }
+    >
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          handleSave();
+        }}
+      >
+        <Field label={t("budget.amountLabel", { currency: settings.currency })}>
+          <div className="flex items-center gap-2.5 rounded-2xl bg-secondary/50 px-4 ring-1 ring-border focus-within:ring-2 focus-within:ring-ring">
+            <span className="shrink-0 select-none text-[20px] font-extrabold text-muted-foreground">
+              {symbol}
+            </span>
+            <Input
+              type="text"
+              inputMode="decimal"
+              autoComplete="off"
+              enterKeyHint="done"
+              value={draft}
+              onChange={handleChange}
+              placeholder="0"
+              aria-label={t("budget.amountLabel", { currency: settings.currency })}
+              className="h-16 min-w-0 flex-1 border-0 bg-transparent px-0 font-extrabold tabular shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+              style={{ fontSize: "28px" }}
+            />
+          </div>
+        </Field>
+
+        <div>
+          <p className="text-[12px] font-bold uppercase tracking-wide text-muted-foreground">
+            {t("budget.quickAmounts")}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {QUICK_BUDGET_AMOUNTS.map((amount) => (
+              <button
+                key={amount}
+                type="button"
+                onClick={() => setDraft(String(amount))}
+                className={cn(
+                  "rounded-full border px-3.5 py-1.5 text-[13px] font-bold transition-all active:scale-95",
+                  draft === String(amount)
+                    ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                    : "border-border bg-card text-muted-foreground hover:border-primary/40 hover:text-foreground",
+                )}
+              >
+                {formatCurrency(amount, settings.currency, true)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-xl bg-info/8 px-3.5 py-2.5 text-[12.5px] font-semibold text-info">
+          {t("budget.spentSoFar", { amount: formatCurrency(spentThisMonth, settings.currency) })}
+        </div>
+        <p className="text-[12px] text-muted-foreground">{t("budget.noBudgetHint")}</p>
+      </form>
+    </FormSheet>
+  );
+}
 
 type SheetKind =
   | "edit"
@@ -188,11 +289,11 @@ function SettingRow({
       <span className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl", bubble)}>
         <Icon className="h-[18px] w-[18px]" strokeWidth={2.2} />
       </span>
-      <span className="min-w-0 flex-1 text-left">
+      <span className="min-w-0 flex-1 text-start">
         <span className={cn("block text-[14px] font-bold", danger && "text-destructive")}>{title}</span>
         {subtitle && <span className="block text-[12px] text-muted-foreground">{subtitle}</span>}
       </span>
-      {right ?? (onClick ? <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" /> : null)}
+      {right ?? (onClick ? <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground rtl:rotate-180" /> : null)}
     </>
   );
   const className = cn(
@@ -228,10 +329,12 @@ export default function Profile() {
     appointments,
     sessions,
   } = useApp();
+  const { t, language, setLanguage } = useI18n();
   const navigate = useNavigate();
   const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
   const [legalDoc, setLegalDoc] = useState<"privacy" | "terms" | null>(null);
   const [sheet, setSheet] = useState<SheetKind>(null);
+  const [budgetOpen, setBudgetOpen] = useState<boolean>(false);
 
   const openSheet = (kind: Exclude<SheetKind, null>) => setSheet(kind);
   const closeSheet = () => setSheet(null);
@@ -245,7 +348,7 @@ export default function Profile() {
     a.download = "lifevault-export.json";
     a.click();
     URL.revokeObjectURL(url);
-    toast.success("Your data has been exported");
+    toast.success(t("profile.exported"));
   };
 
   const handleShare = async () => {
@@ -267,16 +370,16 @@ export default function Profile() {
   return (
     <div className="animate-fade-in">
       <PageHeader
-        title="Profile"
-        subtitle="Account & settings"
+        title={t("profile.title")}
+        subtitle={t("profile.subtitle")}
         actions={
           <button
             type="button"
             onClick={() => openSheet("edit")}
-            aria-label="Edit profile"
+            aria-label={t("profile.editAction")}
             className="flex h-10 items-center gap-1.5 rounded-full bg-secondary/70 px-3.5 text-[13px] font-bold text-secondary-foreground transition-colors hover:bg-secondary active:scale-95"
           >
-            <UserCog className="h-4 w-4" /> Edit
+            <UserCog className="h-4 w-4" /> {t("profile.editAction")}
           </button>
         }
       />
@@ -323,24 +426,27 @@ export default function Profile() {
               <p className="truncate text-[13px] text-white/65">{user?.email}</p>
               <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                 <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-0.5 text-[11px] font-bold">
-                  <Shield className="h-3 w-3" /> Vault secured
+                  <Shield className="h-3 w-3" /> {t("profile.vaultSecured")}
                 </span>
                 {user?.emailVerified && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-success/25 px-2.5 py-0.5 text-[11px] font-bold text-white">
-                    <ShieldCheck className="h-3 w-3" /> Verified
+                    <ShieldCheck className="h-3 w-3" /> {t("profile.verified")}
                   </span>
                 )}
               </div>
             </div>
           </div>
           <div className="relative mt-4 grid grid-cols-3 gap-2 border-t border-white/10 pt-4">
-            <Stat label="Documents" value={documents.length} />
-            <Stat label="Sessions" value={activeSessionsCount} />
+            <Stat label={t("profile.statDocuments")} value={documents.length} />
+            <Stat label={t("profile.statSessions")} value={activeSessionsCount} />
             <Stat
-              label="Member since"
+              label={t("profile.statMemberSince")}
               value={
                 user?.createdAt
-                  ? new Date(user.createdAt).toLocaleDateString("en-AU", { month: "short", year: "2-digit" })
+                  ? new Date(user.createdAt).toLocaleDateString(language === "ar" ? "ar" : "en-AU", {
+                      month: "short",
+                      year: "2-digit",
+                    })
                   : "—"
               }
             />
@@ -350,33 +456,37 @@ export default function Profile() {
 
       {/* Account */}
       <section className="px-4 pt-6">
-        <SectionTitle>Account</SectionTitle>
+        <SectionTitle>{t("profile.sectionAccount")}</SectionTitle>
         <SettingsCard>
           <SettingRow
             icon={KeyRound}
             bubble="bg-warning/12 text-warning"
-            title="Change password"
+            title={t("profile.changePassword")}
             onClick={() => openSheet("password")}
           />
           <SettingRow
             icon={Cloud}
             bubble="bg-sky-500/12 text-sky-600 dark:text-sky-400"
-            title="Backup & Sync"
-            subtitle="Secure encrypted cloud backup"
+            title={t("profile.backupSync")}
+            subtitle={t("profile.backupSyncSub")}
             onClick={() => navigate("/backup")}
           />
           <SettingRow
             icon={Shield}
             bubble="bg-info/12 text-info"
-            title="Security"
-            subtitle="Face ID, PIN, auto-lock & privacy"
+            title={t("profile.security")}
+            subtitle={t("profile.securitySub")}
             onClick={() => navigate("/security")}
           />
           <SettingRow
             icon={Smartphone}
             bubble="bg-violet-500/12 text-violet-600 dark:text-violet-400"
-            title="Active sessions"
-            subtitle={`${activeSessionsCount} device${activeSessionsCount === 1 ? "" : "s"} signed in`}
+            title={t("profile.activeSessions")}
+            subtitle={
+              activeSessionsCount === 1
+                ? t("profile.deviceOne")
+                : t("profile.devicesMany", { count: activeSessionsCount })
+            }
             onClick={() => openSheet("sessions")}
             isLast
           />
@@ -385,31 +495,31 @@ export default function Profile() {
 
       {/* Support */}
       <section className="px-4 pt-6">
-        <SectionTitle>Support</SectionTitle>
+        <SectionTitle>{t("profile.sectionSupport")}</SectionTitle>
         <SettingsCard>
           <SettingRow
             icon={LifeBuoy}
             bubble="bg-success/12 text-success"
-            title="Contact support"
-            subtitle="We reply within 24 hours"
+            title={t("profile.contactSupport")}
+            subtitle={t("profile.contactSupportSub")}
             onClick={() => openSheet("contact")}
           />
           <SettingRow
             icon={Bug}
             bubble="bg-destructive/12 text-destructive"
-            title="Report a bug"
+            title={t("profile.reportBug")}
             onClick={() => openSheet("bug")}
           />
           <SettingRow
             icon={MessageSquarePlus}
             bubble="bg-indigo-500/12 text-indigo-600 dark:text-indigo-400"
-            title="Request a feature"
+            title={t("profile.requestFeature")}
             onClick={() => openSheet("feature")}
           />
           <SettingRow
             icon={HelpCircle}
             bubble="bg-sky-500/12 text-sky-600 dark:text-sky-400"
-            title="FAQ"
+            title={t("profile.faq")}
             onClick={() => openSheet("faq")}
             isLast
           />
@@ -418,30 +528,30 @@ export default function Profile() {
 
       {/* App */}
       <section className="px-4 pt-6">
-        <SectionTitle>App</SectionTitle>
+        <SectionTitle>{t("profile.sectionApp")}</SectionTitle>
         <SettingsCard>
           <SettingRow
             icon={Info}
             bubble="bg-muted text-muted-foreground"
-            title="App version"
+            title={t("profile.appVersion")}
             right={<span className="text-[13px] font-bold text-muted-foreground">v{APP_VERSION}</span>}
           />
           <SettingRow
             icon={Sparkles}
             bubble="bg-warning/12 text-warning"
-            title="What's new"
+            title={t("profile.whatsNew")}
             onClick={() => openSheet("whatsNew")}
           />
           <SettingRow
             icon={Star}
             bubble="bg-amber-500/12 text-amber-600 dark:text-amber-400"
-            title="Rate the app"
+            title={t("profile.rateApp")}
             onClick={() => openSheet("rate")}
           />
           <SettingRow
             icon={Share2}
             bubble="bg-info/12 text-info"
-            title="Share the app"
+            title={t("profile.shareApp")}
             onClick={handleShare}
             isLast
           />
@@ -450,13 +560,41 @@ export default function Profile() {
 
       {/* Preferences */}
       <section className="px-4 pt-6">
-        <SectionTitle>Preferences</SectionTitle>
+        <SectionTitle>{t("profile.sectionPreferences")}</SectionTitle>
         <SettingsCard>
+          <SettingRow
+            icon={Languages}
+            bubble="bg-teal-500/12 text-teal-600 dark:text-teal-400"
+            title={t("profile.language")}
+            subtitle={t("profile.languageSub")}
+            right={
+              <Select
+                value={language}
+                onValueChange={(value) => {
+                  if (isLanguageCode(value)) setLanguage(value);
+                }}
+              >
+                <SelectTrigger
+                  className="h-9 w-[124px] rounded-lg text-[13px] font-bold"
+                  aria-label={t("profile.language")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {LANGUAGES.map((lang) => (
+                    <SelectItem key={lang.code} value={lang.code}>
+                      {lang.nativeName}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            }
+          />
           <SettingRow
             icon={CircleDollarSign}
             bubble="bg-success/12 text-success"
-            title="Currency"
-            subtitle="Used across the app"
+            title={t("profile.currency")}
+            subtitle={t("profile.currencySub")}
             right={
               <Select value={settings.currency} onValueChange={(currency) => updateSettings({ currency })}>
                 <SelectTrigger className="h-9 w-[104px] rounded-lg text-[13px] font-bold">
@@ -475,25 +613,25 @@ export default function Profile() {
           <SettingRow
             icon={PiggyBank}
             bubble="bg-violet-500/12 text-violet-600 dark:text-violet-400"
-            title="Monthly budget"
-            subtitle={`Currently ${settings.currency}`}
+            title={t("profile.monthlyBudget")}
+            subtitle={t("profile.monthlyBudgetSub")}
+            onClick={() => setBudgetOpen(true)}
             right={
-              <BudgetInput
-                value={settings.monthlyBudget}
-                currency={settings.currency}
-                onChange={(monthlyBudget) => updateSettings({ monthlyBudget })}
-              />
+              <span className="flex shrink-0 items-center gap-1 text-[13px] font-bold text-muted-foreground">
+                <span className="tabular">{formatCurrency(settings.monthlyBudget, settings.currency, true)}</span>
+                <ChevronRight className="h-4 w-4 rtl:rotate-180" />
+              </span>
             }
           />
           <SettingRow
             icon={Moon}
             bubble="bg-indigo-500/12 text-indigo-600 dark:text-indigo-400"
-            title="Dark mode"
+            title={t("profile.darkMode")}
             right={
               <Switch
                 checked={settings.darkMode}
                 onCheckedChange={(darkMode) => updateSettings({ darkMode })}
-                aria-label="Toggle dark mode"
+                aria-label={t("profile.darkMode")}
               />
             }
             isLast
@@ -503,27 +641,27 @@ export default function Profile() {
 
       {/* Notifications & data */}
       <section className="px-4 pt-6">
-        <SectionTitle>Notifications & data</SectionTitle>
+        <SectionTitle>{t("profile.sectionNotifData")}</SectionTitle>
         <SettingsCard>
           <SettingRow
             icon={Bell}
             bubble="bg-warning/12 text-warning"
-            title="Notification settings"
-            subtitle="Choose which reminders you get"
+            title={t("profile.notifSettings")}
+            subtitle={t("profile.notifSettingsSub")}
             onClick={() => navigate("/notifications/settings")}
           />
           <SettingRow
             icon={Calendar}
             bubble="bg-info/12 text-info"
-            title="Notification centre"
-            subtitle="View all recent reminders"
+            title={t("profile.notifCentre")}
+            subtitle={t("profile.notifCentreSub")}
             onClick={() => navigate("/notifications")}
           />
           <SettingRow
             icon={Download}
             bubble="bg-sky-500/12 text-sky-600 dark:text-sky-400"
-            title="Export my data"
-            subtitle="Download everything as JSON"
+            title={t("profile.exportData")}
+            subtitle={t("profile.exportDataSub")}
             onClick={handleExport}
             isLast
           />
@@ -532,18 +670,18 @@ export default function Profile() {
 
       {/* Legal */}
       <section className="px-4 pt-6">
-        <SectionTitle>Legal</SectionTitle>
+        <SectionTitle>{t("profile.sectionLegal")}</SectionTitle>
         <SettingsCard>
           <SettingRow
             icon={Shield}
             bubble="bg-slate-500/12 text-slate-600 dark:text-slate-400"
-            title="Privacy policy"
+            title={t("profile.privacyPolicy")}
             onClick={() => setLegalDoc("privacy")}
           />
           <SettingRow
             icon={FileText}
             bubble="bg-slate-500/12 text-slate-600 dark:text-slate-400"
-            title="Terms & conditions"
+            title={t("profile.terms")}
             onClick={() => setLegalDoc("terms")}
             isLast
           />
@@ -552,30 +690,30 @@ export default function Profile() {
 
       {/* Account actions */}
       <section className="px-4 pt-6">
-        <SectionTitle>Account actions</SectionTitle>
+        <SectionTitle>{t("profile.sectionActions")}</SectionTitle>
         <SettingsCard>
           <SettingRow
             icon={LogOut}
             bubble="bg-muted text-muted-foreground"
-            title="Log out"
+            title={t("profile.logOut")}
             onClick={() => {
               signOut();
-              toast.success("Signed out");
+              toast.success(t("profile.signedOut"));
               navigate("/signin");
             }}
           />
           <SettingRow
             icon={Trash2}
             bubble="bg-destructive/12 text-destructive"
-            title="Delete account"
-            subtitle="Permanently erase all data"
+            title={t("profile.deleteAccount")}
+            subtitle={t("profile.deleteAccountSub")}
             danger
             onClick={() => setConfirmDelete(true)}
             isLast
           />
         </SettingsCard>
         <p className="pb-6 pt-6 text-center text-[12px] text-muted-foreground">
-          LifeVault v{APP_VERSION} · Made with care
+          {t("profile.footer", { version: APP_VERSION })}
         </p>
       </section>
 
@@ -591,28 +729,26 @@ export default function Profile() {
       <WhatsNewSheet open={sheet === "whatsNew"} onOpenChange={closeSheet} />
       <RateAppSheet open={sheet === "rate"} onOpenChange={closeSheet} />
       <ShareAppSheet open={sheet === "share"} onOpenChange={closeSheet} />
+      <BudgetSheet open={budgetOpen} onOpenChange={setBudgetOpen} />
 
       {/* Delete confirm */}
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <AlertDialogContent className="mx-auto max-w-[340px] rounded-2xl">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete your account?</AlertDialogTitle>
-            <AlertDialogDescription>
-              All documents, expenses, subscriptions and appointments will be permanently erased. This cannot be
-              undone.
-            </AlertDialogDescription>
+            <AlertDialogTitle>{t("profile.deleteTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("profile.deleteDesc")}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="rounded-xl">Keep account</AlertDialogCancel>
+            <AlertDialogCancel className="rounded-xl">{t("profile.keepAccount")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
                 deleteAccount();
-                toast.success("Account deleted");
+                toast.success(t("profile.accountDeleted"));
                 navigate("/onboarding");
               }}
               className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete forever
+              {t("profile.deleteForever")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -622,32 +758,20 @@ export default function Profile() {
       <FormSheet
         open={legalDoc !== null}
         onOpenChange={(open) => !open && setLegalDoc(null)}
-        title={legalDoc === "privacy" ? "Privacy Policy" : "Terms & Conditions"}
-        description="Last updated July 2026"
+        title={legalDoc === "privacy" ? t("profile.privacyPolicy") : t("profile.terms")}
+        description={t("profile.legalUpdated")}
       >
         <div className="space-y-4 text-[13px] leading-relaxed text-muted-foreground">
           {legalDoc === "privacy" ? (
             <>
-              <p>
-                LifeVault stores your documents, expenses and appointments locally on your device. We never sell
-                your personal information or share it with third parties.
-              </p>
-              <p>
-                Data you export belongs entirely to you. Biometric authentication is handled by your device and
-                never leaves it.
-              </p>
-              <p>You may delete your account and all associated data at any time from Settings.</p>
+              <p>{t("profile.privacyP1")}</p>
+              <p>{t("profile.privacyP2")}</p>
+              <p>{t("profile.privacyP3")}</p>
             </>
           ) : (
             <>
-              <p>
-                By using LifeVault you agree to use the app for personal, lawful purposes. LifeVault provides
-                reminders as a convenience and is not responsible for missed renewals or expired documents.
-              </p>
-              <p>
-                The app is provided "as is" without warranty of any kind. Always verify important dates with the
-                issuing authority.
-              </p>
+              <p>{t("profile.termsP1")}</p>
+              <p>{t("profile.termsP2")}</p>
             </>
           )}
         </div>

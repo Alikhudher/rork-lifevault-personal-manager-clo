@@ -15,7 +15,9 @@ export default {
     },
     extend: {
       fontFamily: {
-        sans: ["Manrope", "system-ui", "-apple-system", "sans-serif"],
+        // Cairo covers Arabic glyphs (Manrope has none), so RTL text renders
+        // with a matching weight range instead of the browser default.
+        sans: ["Manrope", "Cairo", "system-ui", "-apple-system", "sans-serif"],
       },
       colors: {
         border: "hsl(var(--border))",

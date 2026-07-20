@@ -20,7 +20,8 @@ import { PageHeader, SectionTitle } from "@/components/lifevault/PageHeader";
 import { ChipPicker, Field, FormSheet } from "@/components/lifevault/FormSheet";
 import { CategoryBubble, EXPENSE_META, PAYMENT_META } from "@/components/lifevault/category-meta";
 import { useApp } from "@/context/AppContext";
-import { formatCurrency, formatTime12, relativeDayLabel } from "@/lib/format";
+import { useI18n } from "@/context/I18nContext";
+import { formatCurrency, formatTime12 } from "@/lib/format";
 import {
   EXPENSE_CATEGORIES,
   PAYMENT_METHODS,
@@ -67,6 +68,7 @@ function emptyForm(): ExpenseFormState {
 
 export default function Expenses() {
   const { expenses, settings, addExpense, updateExpense, deleteExpense } = useApp();
+  const { t, fmtDate, relativeDay } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const [sheetOpen, setSheetOpen] = useState<boolean>(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -103,7 +105,11 @@ export default function Expenses() {
       weekTotal: week.reduce((sum, e) => sum + e.amount, 0),
       monthTotal,
       categories,
-      budgetPct: Math.min(100, Math.round((monthTotal / settings.monthlyBudget) * 100)),
+      // Guard against a 0 budget so the bar never renders NaN%.
+      budgetPct:
+        settings.monthlyBudget > 0
+          ? Math.min(100, Math.round((monthTotal / settings.monthlyBudget) * 100))
+          : 0,
       remaining: settings.monthlyBudget - monthTotal,
     };
   }, [expenses, settings.monthlyBudget, now]);
@@ -131,11 +137,11 @@ export default function Expenses() {
   const handleSave = () => {
     const amount = Number.parseFloat(form.amount);
     if (!Number.isFinite(amount) || amount <= 0) {
-      toast.error("Enter a valid amount");
+      toast.error(t("expenses.invalidAmount"));
       return;
     }
     if (!form.date) {
-      toast.error("Pick a date");
+      toast.error(t("expenses.pickDate"));
       return;
     }
     const iso = new Date(`${form.date}T${form.time || "12:00"}`).toISOString();
@@ -149,10 +155,10 @@ export default function Expenses() {
     };
     if (editingId) {
       updateExpense(editingId, payload);
-      toast.success("Expense updated");
+      toast.success(t("expenses.updated"));
     } else {
       addExpense(payload);
-      toast.success(`${formatCurrency(payload.amount, currency)} expense added`);
+      toast.success(t("expenses.added", { amount: formatCurrency(payload.amount, currency) }));
     }
     setSheetOpen(false);
   };
@@ -160,12 +166,12 @@ export default function Expenses() {
   return (
     <div className="animate-fade-in">
       <PageHeader
-        title="Expenses"
-        subtitle={format(now, "MMMM yyyy")}
+        title={t("expenses.title")}
+        subtitle={fmtDate(now.toISOString(), "MMMM yyyy")}
         actions={
           <Button
             size="icon"
-            aria-label="Add expense"
+            aria-label={t("expenses.addExpense")}
             onClick={() => {
               setEditingId(null);
               setForm(emptyForm());
@@ -181,9 +187,9 @@ export default function Expenses() {
       {/* Totals */}
       <section className="grid grid-cols-3 gap-2.5 px-4 pt-4">
         {[
-          { label: "Today", value: stats.todayTotal },
-          { label: "This week", value: stats.weekTotal },
-          { label: "This month", value: stats.monthTotal },
+          { label: t("expenses.today"), value: stats.todayTotal },
+          { label: t("expenses.thisWeek"), value: stats.weekTotal },
+          { label: t("expenses.thisMonth"), value: stats.monthTotal },
         ].map((item) => (
           <div key={item.label} className="rounded-2xl bg-card p-3.5 shadow-sm ring-1 ring-border">
             <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">{item.label}</p>
@@ -198,8 +204,8 @@ export default function Expenses() {
       <section className="px-4 pt-4">
         <div className="rounded-2xl bg-card p-4 shadow-sm ring-1 ring-border">
           <div className="flex items-baseline justify-between">
-            <p className="text-[14px] font-bold">Monthly budget</p>
-            <p className="text-[13px] font-semibold text-muted-foreground">
+            <p className="text-[14px] font-bold">{t("expenses.monthlyBudget")}</p>
+            <p className="text-[13px] font-semibold text-muted-foreground tabular">
               {formatCurrency(stats.monthTotal, currency)} / {formatCurrency(settings.monthlyBudget, currency, true)}
             </p>
           </div>
@@ -213,14 +219,15 @@ export default function Expenses() {
             />
           </div>
           <p className="mt-2 text-[12.5px] text-muted-foreground">
-            {stats.remaining >= 0 ? (
-              <>
-                <span className="font-bold text-foreground">{formatCurrency(stats.remaining, currency)}</span> remaining
-                this month
-              </>
+            {settings.monthlyBudget <= 0 ? (
+              t("expenses.noBudget")
+            ) : stats.remaining >= 0 ? (
+              <span className="font-semibold text-foreground">
+                {t("expenses.remaining", { amount: formatCurrency(stats.remaining, currency) })}
+              </span>
             ) : (
               <span className="font-bold text-destructive">
-                {formatCurrency(Math.abs(stats.remaining), currency)} over budget
+                {t("expenses.overBudget", { amount: formatCurrency(Math.abs(stats.remaining), currency) })}
               </span>
             )}
           </p>
@@ -230,14 +237,14 @@ export default function Expenses() {
       {/* By category */}
       {stats.categories.length > 0 && (
         <section className="px-4 pt-6">
-          <SectionTitle>Spending by category</SectionTitle>
+          <SectionTitle>{t("expenses.byCategory")}</SectionTitle>
           <div className="space-y-3 rounded-2xl bg-card p-4 shadow-sm ring-1 ring-border">
             {stats.categories.slice(0, 6).map(({ category, total }) => {
               const pct = stats.monthTotal > 0 ? Math.round((total / stats.monthTotal) * 100) : 0;
               return (
                 <div key={category}>
                   <div className="flex items-center justify-between text-[13px]">
-                    <span className="font-bold">{category}</span>
+                    <span className="font-bold">{t(`expenseCategories.${category}`)}</span>
                     <span className="text-muted-foreground">
                       {formatCurrency(total, currency)} · {pct}%
                     </span>
@@ -261,19 +268,19 @@ export default function Expenses() {
           to="/subscriptions"
           className="flex items-center justify-between rounded-2xl bg-accent px-4 py-3.5 text-accent-foreground ring-1 ring-border transition-transform active:scale-[0.99]"
         >
-          <span className="text-[14px] font-bold">Manage subscriptions & recurring payments</span>
-          <ArrowRight className="h-4 w-4 shrink-0" />
+          <span className="text-[14px] font-bold">{t("expenses.manageSubs")}</span>
+          <ArrowRight className="h-4 w-4 shrink-0 rtl:rotate-180" />
         </Link>
       </section>
 
       {/* Recent */}
       <section className="px-4 pt-6">
-        <SectionTitle>Recent expenses</SectionTitle>
+        <SectionTitle>{t("expenses.recent")}</SectionTitle>
         {recent.length === 0 ? (
           <div className="flex flex-col items-center rounded-2xl bg-card py-14 text-center shadow-sm ring-1 ring-border">
             <ReceiptText className="h-10 w-10 text-muted-foreground/50" />
-            <p className="mt-3 text-[15px] font-bold">No expenses yet</p>
-            <p className="mt-1 text-[13px] text-muted-foreground">Add your first expense to start tracking.</p>
+            <p className="mt-3 text-[15px] font-bold">{t("expenses.emptyTitle")}</p>
+            <p className="mt-1 text-[13px] text-muted-foreground">{t("expenses.emptySub")}</p>
           </div>
         ) : (
           <div className="overflow-hidden rounded-2xl bg-card shadow-sm ring-1 ring-border">
@@ -293,7 +300,7 @@ export default function Expenses() {
                     <p className="truncate text-[14px] font-bold">{expense.merchant}</p>
                     <p className="flex items-center gap-1 text-[12px] text-muted-foreground">
                       <PayIcon className="h-3 w-3" />
-                      {relativeDayLabel(expense.date)} · {formatTime12(format(parseISO(expense.date), "HH:mm"))}
+                      {relativeDay(expense.date)} · {formatTime12(format(parseISO(expense.date), "HH:mm"))}
                     </p>
                   </div>
                   <p className="text-[14px] font-extrabold tabular">-{formatCurrency(expense.amount, currency)}</p>
@@ -308,10 +315,10 @@ export default function Expenses() {
       <FormSheet
         open={sheetOpen}
         onOpenChange={setSheetOpen}
-        title={editingId ? "Edit Expense" : "Add Expense"}
+        title={editingId ? t("expenses.editExpense") : t("expenses.addExpense")}
       >
         <div className="space-y-4">
-          <Field label={`Amount (${currency})`}>
+          <Field label={t("expenses.amountLabel", { currency })}>
             <Input
               type="number"
               inputMode="decimal"
@@ -325,7 +332,7 @@ export default function Expenses() {
           </Field>
 
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Date">
+            <Field label={t("common.date")}>
               <Input
                 type="date"
                 value={form.date}
@@ -333,7 +340,7 @@ export default function Expenses() {
                 className="h-12 rounded-xl"
               />
             </Field>
-            <Field label="Time">
+            <Field label={t("common.time")}>
               <Input
                 type="time"
                 value={form.time}
@@ -343,34 +350,36 @@ export default function Expenses() {
             </Field>
           </div>
 
-          <Field label="Category">
+          <Field label={t("common.category")}>
             <ChipPicker
               options={EXPENSE_CATEGORIES}
               value={form.category}
               onChange={(category) => setForm((f) => ({ ...f, category }))}
+              render={(category) => t(`expenseCategories.${category}`)}
             />
           </Field>
 
-          <Field label="Merchant">
+          <Field label={t("expenses.merchant")}>
             <Input
-              placeholder="e.g. Woolworths"
+              placeholder={t("expenses.merchantPh")}
               value={form.merchant}
               onChange={(e) => setForm((f) => ({ ...f, merchant: e.target.value }))}
               className="h-12 rounded-xl"
             />
           </Field>
 
-          <Field label="Payment method">
+          <Field label={t("expenses.paymentMethod")}>
             <ChipPicker
               options={PAYMENT_METHODS}
               value={form.paymentMethod}
               onChange={(paymentMethod) => setForm((f) => ({ ...f, paymentMethod }))}
+              render={(method) => t(`paymentMethods.${method}`)}
             />
           </Field>
 
-          <Field label="Notes">
+          <Field label={t("common.notes")}>
             <Textarea
-              placeholder="Optional notes..."
+              placeholder={t("expenses.notesPh")}
               value={form.notes}
               onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
               className="min-h-[70px] rounded-xl"
@@ -382,7 +391,7 @@ export default function Expenses() {
               <Button
                 type="button"
                 variant="outline"
-                aria-label="Delete expense"
+                aria-label={t("common.delete")}
                 onClick={() => setConfirmDelete(true)}
                 className="h-12 rounded-xl border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
               >
@@ -390,7 +399,7 @@ export default function Expenses() {
               </Button>
             )}
             <Button onClick={handleSave} className="h-12 flex-1 rounded-xl text-[15px] font-bold shadow-md shadow-primary/20">
-              {editingId ? "Save Changes" : "Add Expense"}
+              {editingId ? t("expenses.saveChanges") : t("expenses.addExpense")}
             </Button>
           </div>
         </div>
@@ -399,24 +408,22 @@ export default function Expenses() {
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <AlertDialogContent className="mx-auto max-w-[340px] rounded-2xl">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete this expense?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently remove it from your records. This action cannot be undone.
-            </AlertDialogDescription>
+            <AlertDialogTitle>{t("expenses.deleteTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("expenses.deleteDesc")}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="rounded-xl">Cancel</AlertDialogCancel>
+            <AlertDialogCancel className="rounded-xl">{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
                 if (!editingId) return;
                 deleteExpense(editingId);
                 setConfirmDelete(false);
                 setSheetOpen(false);
-                toast.success("Expense deleted");
+                toast.success(t("expenses.deleted"));
               }}
               className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              {t("common.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

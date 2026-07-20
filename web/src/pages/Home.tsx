@@ -15,36 +15,29 @@ import {
   Wallet,
 } from "lucide-react";
 import { useApp } from "@/context/AppContext";
-import {
-  daysUntil,
-  daysUntilLabel,
-  documentStatus,
-  formatCurrency,
-  formatDateShort,
-  formatTime12,
-  initials,
-  relativeDayLabel,
-} from "@/lib/format";
+import { useI18n } from "@/context/I18nContext";
+import { daysUntil, documentStatus, formatCurrency, formatTime12, initials } from "@/lib/format";
 import { CategoryBubble, EXPENSE_META } from "@/components/lifevault/category-meta";
 import { SectionTitle } from "@/components/lifevault/PageHeader";
 import { cn } from "@/lib/utils";
 
-function greeting(): string {
+function greetingKey(): "home.goodMorning" | "home.goodAfternoon" | "home.goodEvening" {
   const hour = new Date().getHours();
-  if (hour < 12) return "Good morning";
-  if (hour < 17) return "Good afternoon";
-  return "Good evening";
+  if (hour < 12) return "home.goodMorning";
+  if (hour < 17) return "home.goodAfternoon";
+  return "home.goodEvening";
 }
 
 const QUICK_ACTIONS = [
-  { label: "Document", icon: FilePlus2, to: "/documents?add=1" },
-  { label: "Expense", icon: Wallet, to: "/expenses?add=1" },
-  { label: "Subscription", icon: RefreshCcw, to: "/subscriptions?add=1" },
-  { label: "Appointment", icon: CalendarPlus, to: "/calendar?add=1" },
-];
+  { key: "home.quickDocument", icon: FilePlus2, to: "/documents?add=1" },
+  { key: "home.quickExpense", icon: Wallet, to: "/expenses?add=1" },
+  { key: "home.quickSubscription", icon: RefreshCcw, to: "/subscriptions?add=1" },
+  { key: "home.quickAppointment", icon: CalendarPlus, to: "/calendar?add=1" },
+] as const;
 
 export default function Home() {
   const { user, settings, expenses, subscriptions, documents, appointments, unreadCount } = useApp();
+  const { t, fmtDate, relativeDay, dueIn } = useI18n();
   const navigate = useNavigate();
   const now = useMemo(() => new Date(), []);
   const currency = settings.currency;
@@ -75,7 +68,11 @@ export default function Home() {
       expiring,
       upcomingAppointments,
       remaining: settings.monthlyBudget - spentMonth,
-      budgetPct: Math.min(100, Math.round((spentMonth / settings.monthlyBudget) * 100)),
+      // Guard against a 0 budget so the bar never renders NaN%.
+      budgetPct:
+        settings.monthlyBudget > 0
+          ? Math.min(100, Math.round((spentMonth / settings.monthlyBudget) * 100))
+          : 0,
     };
   }, [expenses, subscriptions, documents, appointments, settings.monthlyBudget, now]);
 
@@ -96,15 +93,15 @@ export default function Home() {
             {initials(user?.name ?? "You")}
           </Link>
           <div className="min-w-0">
-            <p className="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">{greeting()}</p>
+            <p className="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">{t(greetingKey())}</p>
             <h1 className="truncate text-[19px] font-extrabold leading-tight tracking-tight">
-              {user?.name.split(" ")[0] ?? "there"}
+              {user?.name.split(" ")[0] ?? t("home.fallbackName")}
             </h1>
           </div>
         </div>
         <Link
           to="/notifications"
-          aria-label="Notifications"
+          aria-label={t("home.notifications")}
           className="relative mt-5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-card shadow-sm ring-1 ring-border transition-transform active:scale-95"
         >
           <Bell className="h-5 w-5" />
@@ -122,7 +119,7 @@ export default function Home() {
           <div className="absolute -right-10 -top-16 h-44 w-44 rounded-full bg-white/5" aria-hidden />
           <div className="absolute -bottom-20 -left-8 h-48 w-48 rounded-full bg-info/15 blur-2xl" aria-hidden />
           <div className="relative">
-            <p className="text-[12px] font-semibold uppercase tracking-wider text-white/60">Spent this month</p>
+            <p className="text-[12px] font-semibold uppercase tracking-wider text-white/60">{t("home.spentThisMonth")}</p>
             <p className="mt-1 text-[34px] font-extrabold tracking-tight tabular">
               {formatCurrency(stats.spentMonth, currency)}
             </p>
@@ -136,12 +133,21 @@ export default function Home() {
               />
             </div>
             <div className="mt-2.5 flex items-center justify-between gap-3 text-[13px]">
-              <span className="min-w-0 truncate text-white/60">{stats.budgetPct}% of {formatCurrency(settings.monthlyBudget, currency, true)} budget</span>
-              <span className="shrink-0 font-bold">
-                {stats.remaining >= 0
-                  ? `${formatCurrency(stats.remaining, currency)} left`
-                  : `${formatCurrency(Math.abs(stats.remaining), currency)} over`}
+              <span className="min-w-0 truncate text-white/60">
+                {settings.monthlyBudget > 0
+                  ? t("home.budgetUsage", {
+                      pct: stats.budgetPct,
+                      budget: formatCurrency(settings.monthlyBudget, currency, true),
+                    })
+                  : t("home.noBudget")}
               </span>
+              {settings.monthlyBudget > 0 && (
+                <span className="shrink-0 font-bold">
+                  {stats.remaining >= 0
+                    ? t("home.amountLeft", { amount: formatCurrency(stats.remaining, currency) })
+                    : t("home.amountOver", { amount: formatCurrency(Math.abs(stats.remaining), currency) })}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -159,13 +165,13 @@ export default function Home() {
             <Sparkles className="h-6 w-6" />
           </span>
           <div className="relative min-w-0 flex-1">
-            <p className="text-[15px] font-extrabold tracking-tight">AI Assistant</p>
+            <p className="text-[15px] font-extrabold tracking-tight">{t("home.aiAssistant")}</p>
             <p className="mt-0.5 truncate text-[12.5px] text-white/70">
-              Scan a photo or search your vault in natural language
+              {t("home.aiAssistantSub")}
             </p>
           </div>
           <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/10 ring-1 ring-white/15 transition-transform group-hover:translate-x-0.5">
-            <ArrowRight className="h-4 w-4" />
+            <ArrowRight className="h-4 w-4 rtl:rotate-180" />
           </span>
         </Link>
       </section>
@@ -182,7 +188,7 @@ export default function Home() {
           <p className="mt-3 text-[20px] font-extrabold tracking-tight tabular">
             {formatCurrency(stats.spentToday, currency)}
           </p>
-          <p className="text-[12px] font-semibold text-muted-foreground">Spent today</p>
+          <p className="text-[12px] font-semibold text-muted-foreground">{t("home.spentToday")}</p>
         </button>
         <button
           onClick={() => navigate("/subscriptions")}
@@ -195,7 +201,9 @@ export default function Home() {
             {formatCurrency(stats.upcomingTotal, currency)}
           </p>
           <p className="text-[12px] font-semibold text-muted-foreground">
-            {stats.upcoming.length} payment{stats.upcoming.length === 1 ? "" : "s"} due in 30d
+            {stats.upcoming.length === 1
+              ? t("home.paymentDueOne")
+              : t("home.paymentsDueMany", { count: stats.upcoming.length })}
           </p>
         </button>
         <button
@@ -206,7 +214,7 @@ export default function Home() {
             <FileWarning className="h-[18px] w-[18px]" />
           </span>
           <p className="mt-3 text-[20px] font-extrabold tracking-tight tabular">{stats.expiring.length}</p>
-          <p className="text-[12px] font-semibold text-muted-foreground">Documents need attention</p>
+          <p className="text-[12px] font-semibold text-muted-foreground">{t("home.docsAttention")}</p>
         </button>
         <button
           onClick={() => navigate("/calendar")}
@@ -218,17 +226,17 @@ export default function Home() {
           <p className="mt-3 text-[20px] font-extrabold tracking-tight tabular">
             {stats.upcomingAppointments.length}
           </p>
-          <p className="text-[12px] font-semibold text-muted-foreground">Upcoming appointments</p>
+          <p className="text-[12px] font-semibold text-muted-foreground">{t("home.upcomingAppointments")}</p>
         </button>
       </section>
 
       {/* Quick actions */}
       <section className="px-4 pt-6">
-        <SectionTitle>Quick add</SectionTitle>
+        <SectionTitle>{t("home.quickAdd")}</SectionTitle>
         <div className="grid grid-cols-4 gap-2">
           {QUICK_ACTIONS.map((action) => (
             <button
-              key={action.label}
+              key={action.key}
               onClick={() => navigate(action.to)}
               className="group flex flex-col items-center gap-2 rounded-2xl bg-card py-3.5 shadow-sm ring-1 ring-border transition-all active:scale-95"
             >
@@ -238,7 +246,7 @@ export default function Home() {
                   <Plus className="h-2.5 w-2.5" strokeWidth={3} />
                 </span>
               </span>
-              <span className="text-[11px] font-bold">{action.label}</span>
+              <span className="text-[11px] font-bold">{t(action.key)}</span>
             </button>
           ))}
         </div>
@@ -250,11 +258,11 @@ export default function Home() {
           <SectionTitle
             action={
               <Link to="/subscriptions" className="flex items-center gap-0.5 text-[13px] font-bold text-primary dark:text-foreground">
-                See all <ArrowRight className="h-3.5 w-3.5" />
+                {t("common.seeAll")} <ArrowRight className="h-3.5 w-3.5 rtl:rotate-180" />
               </Link>
             }
           >
-            Upcoming payments
+            {t("home.upcomingPayments")}
           </SectionTitle>
           <div className="overflow-hidden rounded-2xl bg-card shadow-sm ring-1 ring-border">
             {stats.upcoming.slice(0, 3).map((sub, i) => (
@@ -266,7 +274,10 @@ export default function Home() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[14px] font-bold">{sub.name}</p>
                   <p className="text-[12px] text-muted-foreground">
-                    Due {daysUntilLabel(sub.nextPaymentDate)} · {formatDateShort(sub.nextPaymentDate)}
+                    {t("home.dueLine", {
+                      when: dueIn(sub.nextPaymentDate),
+                      date: fmtDate(sub.nextPaymentDate, "d MMM"),
+                    })}
                   </p>
                 </div>
                 <p className="text-[14px] font-extrabold tabular">{formatCurrency(sub.price, currency)}</p>
@@ -282,11 +293,11 @@ export default function Home() {
           <SectionTitle
             action={
               <Link to="/calendar" className="flex items-center gap-0.5 text-[13px] font-bold text-primary dark:text-foreground">
-                Calendar <ArrowRight className="h-3.5 w-3.5" />
+                {t("home.calendar")} <ArrowRight className="h-3.5 w-3.5 rtl:rotate-180" />
               </Link>
             }
           >
-            Next appointment
+            {t("home.nextAppointment")}
           </SectionTitle>
           <Link
             to="/calendar"
@@ -298,11 +309,11 @@ export default function Home() {
             <div className="min-w-0 flex-1">
               <p className="truncate text-[14px] font-bold">{stats.upcomingAppointments[0].title}</p>
               <p className="text-[12px] text-muted-foreground">
-                {relativeDayLabel(stats.upcomingAppointments[0].date)} ·{" "}
+                {relativeDay(stats.upcomingAppointments[0].date)} ·{" "}
                 {formatTime12(stats.upcomingAppointments[0].time)}
               </p>
             </div>
-            <ArrowRight className="h-4 w-4 text-muted-foreground" />
+            <ArrowRight className="h-4 w-4 text-muted-foreground rtl:rotate-180" />
           </Link>
         </section>
       )}
@@ -312,11 +323,11 @@ export default function Home() {
         <SectionTitle
           action={
             <Link to="/expenses" className="flex items-center gap-0.5 text-[13px] font-bold text-primary dark:text-foreground">
-              See all <ArrowRight className="h-3.5 w-3.5" />
+              {t("common.seeAll")} <ArrowRight className="h-3.5 w-3.5 rtl:rotate-180" />
             </Link>
           }
         >
-          Recent activity
+          {t("home.recentActivity")}
         </SectionTitle>
         <div className="overflow-hidden rounded-2xl bg-card shadow-sm ring-1 ring-border">
           {recentExpenses.map((expense, i) => (
@@ -328,7 +339,7 @@ export default function Home() {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[14px] font-bold">{expense.merchant}</p>
                 <p className="text-[12px] text-muted-foreground">
-                  {relativeDayLabel(expense.date)} · {expense.category}
+                  {relativeDay(expense.date)} · {t(`expenseCategories.${expense.category}`)}
                 </p>
               </div>
               <p className="text-[14px] font-extrabold tabular">-{formatCurrency(expense.amount, currency)}</p>

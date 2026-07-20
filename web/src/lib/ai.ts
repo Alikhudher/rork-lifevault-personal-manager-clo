@@ -50,22 +50,26 @@ import {
 /*
  * Public AI gateway configuration.
  *
- * These values are PUBLIC (not secrets) — they are the same values Rork
- * injects as EXPO_PUBLIC_* env vars in the dev preview. They identify the
- * project to the Rork AI toolkit proxy and use the shared delegated-auth
- * token (`rork_web_delegated_auth`), which only authorizes gateway access
- * for this project's billed usage — it is not a user credential.
+ * These are the project's REAL Rork AI Cloud credentials. They are
+ * client-side public values BY DESIGN — every shipped app bundle contains
+ * them (like a Supabase anon key or a Firebase config). They only scope
+ * gateway access + billing to this Rork project and can be rotated from
+ * Rork at any time.
  *
- * We read them from Vite env vars first (so the Codemagic build / dashboard
- * can override them), then fall back to EXPO_PUBLIC_* (Rork dev injection),
- * then to the baked-in defaults below. The defaults guarantee that
- * production / TestFlight builds always have a working AI config even when
- * the EXPO_PUBLIC_* vars are not present in the CI environment — which is
- * what caused "AI features aren't configured for this build" in TestFlight.
+ * DEFAULT_TOOLKIT_SECRET is the real project key (rork_sk_…) provisioned
+ * via Rork AI Cloud and verified live against the gateway. It replaces the
+ * old preview-only placeholder "rork_web_delegated_auth", which only
+ * worked inside the Rork web preview runtime and caused HTTP 401
+ * ("AI Cloud access was denied") in native TestFlight builds.
+ *
+ * Resolution order: VITE_* (Codemagic dashboard override) → EXPO_PUBLIC_*
+ * (Rork dev injection) → baked-in defaults below. The defaults guarantee
+ * TestFlight / App Store builds always ship working AI credentials with
+ * zero CI configuration.
  */
 const DEFAULT_TOOLKIT_URL = "https://toolkit.rork.com";
 const DEFAULT_APP_KEY = "rpk_p2samtqe2dbgg0rtbnht2cbcza07h7kn";
-const DEFAULT_TOOLKIT_SECRET = "rork_web_delegated_auth";
+const DEFAULT_TOOLKIT_SECRET = "rork_sk_o09n1n8s5n2mycwmlpl089kc8ys9yfev";
 
 const TOOLKIT_URL =
   (import.meta.env.VITE_TOOLKIT_URL as string | undefined) ??

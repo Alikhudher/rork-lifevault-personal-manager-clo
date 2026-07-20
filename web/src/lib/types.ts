@@ -242,18 +242,27 @@ export interface DeviceSession {
 /**
  * A registered account record stored in the account registry.
  * Survives logout so credentials can always be validated.
- * Stored only for the local mock auth flow — never do this in production.
+ *
+ * Passwords are stored ONLY as a salted PBKDF2-SHA256 hash (see
+ * lib/password.ts) — never in plaintext. The legacy `password` field
+ * from older builds is migrated to a hash on load and then removed.
  */
 export interface RegisteredAccount {
   email: string;
   name: string;
   /** Optional profile photo as a data URL or remote URL. */
   photo: string | null;
-  /** Stored only for the local mock auth flow — never do this in production. */
-  password: string;
+  /** Base64 PBKDF2-SHA256 hash of the account password. */
+  passwordHash?: string;
+  /** Base64 per-account random salt for the password hash. */
+  passwordSalt?: string;
+  /** ms timestamp of the last password change — drives cross-device sign-out. */
+  passwordChangedAt?: number;
+  /** Legacy plaintext password from pre-hashing builds. Migrated + removed on load. */
+  password?: string;
   /** ISO datetime the account was created. */
   createdAt: string;
-  /** Whether the email has been verified (mock). */
+  /** Whether the email has been verified. */
   emailVerified: boolean;
 }
 
@@ -264,10 +273,21 @@ export interface UserProfile {
   photo: string | null;
   /** ISO datetime the account was created. */
   createdAt: string;
-  /** Stored only for the local mock auth flow — never do this in production. */
-  password: string | null;
-  /** Whether the email has been verified (mock). */
+  /** Whether the email has been verified. */
   emailVerified: boolean;
+}
+
+/**
+ * Credentials snapshot synced through the end-to-end encrypted cloud
+ * backup (record id "__account__"). Contains only the salted hash —
+ * never a password. Other devices apply it and force a re-login when
+ * the password changed elsewhere.
+ */
+export interface SyncedAccountCredentials {
+  email: string;
+  passwordHash: string;
+  passwordSalt: string;
+  passwordChangedAt: number;
 }
 
 export interface NotificationPrefs {

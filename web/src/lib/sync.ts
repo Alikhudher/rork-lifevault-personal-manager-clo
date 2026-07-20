@@ -38,6 +38,7 @@ export type RecordKind =
   | "notification"
   | "settings"
   | "security"
+  | "account"
   | "folder";
 
 /** A logical record as it lives in local state. */

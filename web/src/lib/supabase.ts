@@ -262,6 +262,34 @@ export async function withTimeout<T>(promise: Promise<T>, ms: number, label: str
 
 let client: SupabaseClient | null = null;
 let clientCreationFailed = false;
+let ephemeralSeq = 0;
+
+/**
+ * Creates a throwaway Supabase client with an IN-MEMORY session that is
+ * never persisted and never touches the app's main cloud-backup session.
+ * Used for server-side verifications that must not disturb existing
+ * auth state: sending/checking email verification codes and verifying
+ * a current password via a real sign-in attempt.
+ */
+export function createEphemeralClient(): SupabaseClient | null {
+  if (!supabaseConfigured) return null;
+  try {
+    return createClient(resolved.url, resolved.anonKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        storageKey: `lv-ephemeral-${++ephemeralSeq}`,
+      },
+      global: { fetch: fetchWithTimeout },
+    });
+  } catch (err) {
+    console.error(
+      "[CloudBackup] Failed to create ephemeral Supabase client:",
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
 
 /**
  * Returns the app-wide singleton Supabase client, or null when not

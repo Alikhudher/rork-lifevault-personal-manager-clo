@@ -336,7 +336,7 @@ export default function BackupSync() {
                 icon={KeyRound}
                 bubble="bg-warning/12 text-warning"
                 title="Change backup password"
-                subtitle="Re-encrypts all your data with the new password"
+                subtitle="Verifies your current password, then re-encrypts your data"
                 onClick={() => setChangePwOpen(true)}
                 isLast={false}
               />
@@ -826,7 +826,9 @@ function ChangePasswordSheet({
         toast.error(result.error);
         return;
       }
-      toast.success("Backup password changed and data re-encrypted");
+      toast.success("Backup password changed and data re-encrypted", {
+        description: "All other devices were signed out and need the new password.",
+      });
       setCurrent("");
       setNext("");
       setConfirm("");
@@ -845,7 +847,7 @@ function ChangePasswordSheet({
       open={open}
       onOpenChange={onOpenChange}
       title="Change backup password"
-      description="Your data will be re-encrypted and re-uploaded with the new password."
+      description="Your current password is verified with the server first. Your data is then re-encrypted with the new password and every other device is signed out."
     >
       <div className="space-y-4">
         <Field label="Current backup password">

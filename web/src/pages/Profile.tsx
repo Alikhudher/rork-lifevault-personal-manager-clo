@@ -62,7 +62,7 @@ import {
   SupportSheet,
   WhatsNewSheet,
 } from "@/components/lifevault/AccountSheets";
-import { useApp } from "@/context/AppContext";
+import { accountHasPassword, useApp } from "@/context/AppContext";
 import { useI18n } from "@/context/I18nContext";
 import { formatCurrency, initials } from "@/lib/format";
 import { isLanguageCode, LANGUAGES } from "@/lib/i18n";
@@ -319,10 +319,12 @@ function SettingsCard({ children }: { children: React.ReactNode }) {
 export default function Profile() {
   const {
     user,
+    accounts,
     settings,
     updateSettings,
     signOut,
     deleteAccount,
+    verifyAccountPassword,
     documents,
     expenses,
     subscriptions,
@@ -332,9 +334,44 @@ export default function Profile() {
   const { t, language, setLanguage } = useI18n();
   const navigate = useNavigate();
   const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
+  const [deletePassword, setDeletePassword] = useState<string>("");
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<boolean>(false);
   const [legalDoc, setLegalDoc] = useState<"privacy" | "terms" | null>(null);
   const [sheet, setSheet] = useState<SheetKind>(null);
   const [budgetOpen, setBudgetOpen] = useState<boolean>(false);
+
+  /** Deleting the account is a sensitive action — the password is verified first. */
+  const deleteRequiresPassword = useMemo(() => {
+    const account = accounts.find(
+      (a) => a.email.toLowerCase() === (user?.email ?? "").toLowerCase(),
+    );
+    return accountHasPassword(account);
+  }, [accounts, user?.email]);
+
+  const handleConfirmDelete = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    // Keep the dialog open until verification passes.
+    e.preventDefault();
+    if (deleting) return;
+    setDeleteError(null);
+    if (deleteRequiresPassword) {
+      if (!deletePassword) {
+        setDeleteError(t("profile.deletePasswordWrong"));
+        return;
+      }
+      setDeleting(true);
+      const ok = await verifyAccountPassword(deletePassword);
+      setDeleting(false);
+      if (!ok) {
+        setDeleteError(t("profile.deletePasswordWrong"));
+        return;
+      }
+    }
+    setConfirmDelete(false);
+    deleteAccount();
+    toast.success(t("profile.accountDeleted"));
+    navigate("/onboarding");
+  };
 
   const openSheet = (kind: Exclude<SheetKind, null>) => setSheet(kind);
   const closeSheet = () => setSheet(null);
@@ -731,21 +768,53 @@ export default function Profile() {
       <ShareAppSheet open={sheet === "share"} onOpenChange={closeSheet} />
       <BudgetSheet open={budgetOpen} onOpenChange={setBudgetOpen} />
 
-      {/* Delete confirm */}
-      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+      {/* Delete confirm — requires the current password */}
+      <AlertDialog
+        open={confirmDelete}
+        onOpenChange={(open) => {
+          setConfirmDelete(open);
+          if (open) {
+            setDeletePassword("");
+            setDeleteError(null);
+            setDeleting(false);
+          }
+        }}
+      >
         <AlertDialogContent className="mx-auto max-w-[340px] rounded-2xl">
           <AlertDialogHeader>
             <AlertDialogTitle>{t("profile.deleteTitle")}</AlertDialogTitle>
             <AlertDialogDescription>{t("profile.deleteDesc")}</AlertDialogDescription>
           </AlertDialogHeader>
+          {deleteRequiresPassword && (
+            <div className="space-y-1.5">
+              <label className="text-[13px] font-bold text-foreground" htmlFor="delete-password">
+                {t("profile.deletePasswordLabel")}
+              </label>
+              <Input
+                id="delete-password"
+                type="password"
+                autoComplete="current-password"
+                placeholder={t("profile.deletePasswordPlaceholder")}
+                value={deletePassword}
+                onChange={(e) => {
+                  setDeletePassword(e.target.value);
+                  setDeleteError(null);
+                }}
+                className="h-11 rounded-xl"
+                disabled={deleting}
+              />
+              {deleteError && (
+                <p className="text-[12px] font-bold text-destructive" role="alert">
+                  {deleteError}
+                </p>
+              )}
+            </div>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel className="rounded-xl">{t("profile.keepAccount")}</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                deleteAccount();
-                toast.success(t("profile.accountDeleted"));
-                navigate("/onboarding");
-              }}
+              onClick={(e) => void handleConfirmDelete(e)}
+              disabled={deleting || (deleteRequiresPassword && deletePassword.length === 0)}
               className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               {t("profile.deleteForever")}

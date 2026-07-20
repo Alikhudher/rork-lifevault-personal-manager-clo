@@ -21,7 +21,7 @@ type AppHook = { current: ReturnType<typeof useApp> };
 /** Register a fresh account (most tests need an existing registered user). */
 async function signUpTestUser(result: AppHook): Promise<void> {
   await act(async () => {
-    result.current.signUp("Test User", TEST_EMAIL, TEST_PASSWORD);
+    await result.current.signUp("Test User", TEST_EMAIL, TEST_PASSWORD);
   });
 }
 
@@ -117,7 +117,7 @@ test("sign in with unknown email returns not_found", async () => {
 
   let res: AuthResult = { ok: true, error: null };
   await act(async () => {
-    res = result.current.signIn("nobody@example.com", "anything");
+    res = await result.current.signIn("nobody@example.com", "anything");
   });
   expect(res.ok).toBe(false);
   if (!res.ok) {
@@ -135,7 +135,7 @@ test("wrong password is rejected for a registered account", async () => {
 
   let res: AuthResult = { ok: true, error: null };
   await act(async () => {
-    res = result.current.signIn(TEST_EMAIL, "wrongpassword");
+    res = await result.current.signIn(TEST_EMAIL, "wrongpassword");
   });
   expect(res.ok).toBe(false);
   if (!res.ok) {
@@ -158,7 +158,7 @@ test("after logout, wrong password is still rejected and correct one works", asy
   // THE BUG: wrong password must still be rejected after logout
   let res: AuthResult = { ok: true, error: null };
   await act(async () => {
-    res = result.current.signIn(TEST_EMAIL, "wrongpassword");
+    res = await result.current.signIn(TEST_EMAIL, "wrongpassword");
   });
   expect(res.ok).toBe(false);
   if (!res.ok) {
@@ -168,7 +168,7 @@ test("after logout, wrong password is still rejected and correct one works", asy
 
   // Correct password should still work after logout
   await act(async () => {
-    res = result.current.signIn(TEST_EMAIL, TEST_PASSWORD);
+    res = await result.current.signIn(TEST_EMAIL, TEST_PASSWORD);
   });
   expect(res.ok).toBe(true);
   expect(result.current.user).not.toBeNull();
@@ -179,7 +179,7 @@ test("newly registered account persists after logout", async () => {
 
   let res: AuthResult = { ok: true, error: null };
   await act(async () => {
-    res = result.current.signUp("Test User", TEST_EMAIL, TEST_PASSWORD);
+    res = await result.current.signUp("Test User", TEST_EMAIL, TEST_PASSWORD);
   });
   expect(res.ok).toBe(true);
   expect(result.current.user?.email).toBe(TEST_EMAIL);
@@ -190,13 +190,13 @@ test("newly registered account persists after logout", async () => {
   expect(result.current.user).toBeNull();
 
   await act(async () => {
-    res = result.current.signIn(TEST_EMAIL, "wrongpassword");
+    res = await result.current.signIn(TEST_EMAIL, "wrongpassword");
   });
   expect(res.ok).toBe(false);
   expect(result.current.user).toBeNull();
 
   await act(async () => {
-    res = result.current.signIn(TEST_EMAIL, TEST_PASSWORD);
+    res = await result.current.signIn(TEST_EMAIL, TEST_PASSWORD);
   });
   expect(res.ok).toBe(true);
   expect(result.current.user?.email).toBe(TEST_EMAIL);
@@ -208,7 +208,7 @@ test("duplicate email signup is rejected", async () => {
 
   let res: AuthResult = { ok: true, error: null };
   await act(async () => {
-    res = result.current.signUp("Imposter", TEST_EMAIL, "hacked");
+    res = await result.current.signUp("Imposter", TEST_EMAIL, "hacked");
   });
   expect(res.ok).toBe(false);
 });
@@ -220,15 +220,18 @@ test("changePassword requires correct current password", async () => {
   // Wrong current password must fail
   let ok = true;
   await act(async () => {
-    ok = result.current.changePassword("wrongcurrent", "newpassword123");
+    ok = await result.current.changePassword("wrongcurrent", "newpassword123");
   });
   expect(ok).toBe(false);
 
   // Correct current password must succeed
   await act(async () => {
-    ok = result.current.changePassword(TEST_PASSWORD, "newpassword123");
+    ok = await result.current.changePassword(TEST_PASSWORD, "newpassword123");
   });
   expect(ok).toBe(true);
+
+  // The user STAYS signed in after changing the password.
+  expect(result.current.user?.email).toBe(TEST_EMAIL);
 
   await act(async () => {
     result.current.signOut();
@@ -237,15 +240,127 @@ test("changePassword requires correct current password", async () => {
   // Old password must no longer work
   let res: AuthResult = { ok: true, error: null };
   await act(async () => {
-    res = result.current.signIn(TEST_EMAIL, TEST_PASSWORD);
+    res = await result.current.signIn(TEST_EMAIL, TEST_PASSWORD);
   });
   expect(res.ok).toBe(false);
 
   // New password must work
   await act(async () => {
-    res = result.current.signIn(TEST_EMAIL, "newpassword123");
+    res = await result.current.signIn(TEST_EMAIL, "newpassword123");
   });
   expect(res.ok).toBe(true);
+});
+
+test("changePassword revokes every other device session but keeps this one", async () => {
+  // Seed an install with an extra (non-demo) device session.
+  localStorage.setItem(
+    "lifevault-state-v1",
+    JSON.stringify({
+      onboarded: true,
+      user: null,
+      lastEmail: null,
+      accounts: [],
+      sessions: [
+        { id: "ses_this_device", device: "iPhone", location: "This device", app: "LifeVault", lastActive: new Date().toISOString(), current: true },
+        { id: "ses_other_real", device: "iPad", location: "Sydney", app: "LifeVault", lastActive: new Date().toISOString() },
+      ],
+    }),
+  );
+  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await signUpTestUser(result);
+  expect(result.current.sessions).toHaveLength(2);
+
+  let ok = false;
+  await act(async () => {
+    ok = await result.current.changePassword(TEST_PASSWORD, "newpassword123");
+  });
+  expect(ok).toBe(true);
+  // Other devices are signed out; the current session survives.
+  expect(result.current.sessions).toHaveLength(1);
+  expect(result.current.sessions[0].current).toBe(true);
+  expect(result.current.user?.email).toBe(TEST_EMAIL);
+});
+
+test("verifyAccountPassword accepts only the correct password", async () => {
+  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await signUpTestUser(result);
+
+  await expect(result.current.verifyAccountPassword("wrongpassword")).resolves.toBe(false);
+  await expect(result.current.verifyAccountPassword(TEST_PASSWORD)).resolves.toBe(true);
+});
+
+test("resetAccountPassword replaces the password after email verification", async () => {
+  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await signUpTestUser(result);
+  await act(async () => {
+    result.current.signOut();
+  });
+
+  // Unknown emails cannot be reset.
+  let ok = true;
+  await act(async () => {
+    ok = await result.current.resetAccountPassword("missing@example.com", "whatever123");
+  });
+  expect(ok).toBe(false);
+
+  await act(async () => {
+    ok = await result.current.resetAccountPassword(TEST_EMAIL, "brandnew123");
+  });
+  expect(ok).toBe(true);
+
+  // Old password is dead; the new one signs in.
+  let res: AuthResult = { ok: true, error: null };
+  await act(async () => {
+    res = await result.current.signIn(TEST_EMAIL, TEST_PASSWORD);
+  });
+  expect(res.ok).toBe(false);
+  await act(async () => {
+    res = await result.current.signIn(TEST_EMAIL, "brandnew123");
+  });
+  expect(res.ok).toBe(true);
+});
+
+test("legacy plaintext account still signs in and is upgraded to a hash", async () => {
+  localStorage.setItem(
+    "lifevault-state-v1",
+    JSON.stringify({
+      onboarded: true,
+      user: null,
+      lastEmail: null,
+      accounts: [
+        {
+          email: "legacy@example.com",
+          name: "Legacy User",
+          photo: null,
+          password: "legacypass",
+          createdAt: new Date().toISOString(),
+          emailVerified: true,
+        },
+      ],
+    }),
+  );
+  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+
+  // Wrong password is still rejected for legacy accounts.
+  let res: AuthResult = { ok: true, error: null };
+  await act(async () => {
+    res = await result.current.signIn("legacy@example.com", "wrong");
+  });
+  expect(res.ok).toBe(false);
+
+  await act(async () => {
+    res = await result.current.signIn("legacy@example.com", "legacypass");
+  });
+  expect(res.ok).toBe(true);
+
+  // The plaintext has been replaced by a salted hash.
+  const stored = JSON.parse(localStorage.getItem("lifevault-state-v1")!) as {
+    accounts: { email: string; password?: string; passwordHash?: string; passwordSalt?: string }[];
+  };
+  const account = stored.accounts.find((a) => a.email === "legacy@example.com");
+  expect(account?.passwordHash).toBeTruthy();
+  expect(account?.passwordSalt).toBeTruthy();
+  expect(account?.password).toBeUndefined();
 });
 
 test("signOutAllDevices clears user session", async () => {
@@ -261,7 +376,7 @@ test("signOutAllDevices clears user session", async () => {
   // Wrong password must still be rejected
   let res: AuthResult = { ok: true, error: null };
   await act(async () => {
-    res = result.current.signIn(TEST_EMAIL, "wrongpassword");
+    res = await result.current.signIn(TEST_EMAIL, "wrongpassword");
   });
   expect(res.ok).toBe(false);
 });
@@ -294,25 +409,33 @@ test("signInWithBiometric fails when no previous login exists", async () => {
   expect(res.ok).toBe(false);
 });
 
-test("password validation survives page reload (persisted registry)", async () => {
+test("password validation survives page reload (persisted registry, hash only)", async () => {
   const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
 
   await act(async () => {
-    result.current.signUp("Persist User", "persist@example.com", "persistpass");
+    await result.current.signUp("Persist User", "persist@example.com", "persistpass");
   });
 
   // Simulate a page reload by re-reading persisted state from localStorage.
   const stored = localStorage.getItem("lifevault-state-v1");
   expect(stored).not.toBeNull();
 
-  const parsed = JSON.parse(stored!);
+  const parsed = JSON.parse(stored!) as {
+    accounts: { email: string; password?: string; passwordHash?: string; passwordSalt?: string }[];
+    user: { password?: string } | null;
+  };
   expect(parsed.accounts).toBeDefined();
   // Only the account the user actually registered — no seeded demo accounts.
   expect(parsed.accounts.length).toBe(1);
 
-  const persistAccount = parsed.accounts.find(
-    (a: { email: string }) => a.email === "persist@example.com",
-  );
+  const persistAccount = parsed.accounts.find((a) => a.email === "persist@example.com");
   expect(persistAccount).toBeDefined();
-  expect(persistAccount.password).toBe("persistpass");
+  // SECURITY: the password is never persisted in plaintext — only a
+  // salted PBKDF2 hash is stored.
+  expect(persistAccount?.password).toBeUndefined();
+  expect(persistAccount?.passwordHash).toBeTruthy();
+  expect(persistAccount?.passwordSalt).toBeTruthy();
+  expect(persistAccount?.passwordHash).not.toContain("persistpass");
+  // The signed-in profile carries no credential material either.
+  expect(parsed.user?.password).toBeUndefined();
 });

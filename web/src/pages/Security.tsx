@@ -31,7 +31,12 @@ import {
 import { PageHeader, SectionTitle } from "@/components/lifevault/PageHeader";
 import { FormSheet, Field } from "@/components/lifevault/FormSheet";
 import { useApp } from "@/context/AppContext";
-import { checkBiometry, type BiometryStatus } from "@/lib/security";
+import {
+  authenticateWithBiometry,
+  checkBiometry,
+  verifyPin,
+  type BiometryStatus,
+} from "@/lib/security";
 import {
   AUTO_LOCK_OPTIONS,
   PIN_LENGTH_OPTIONS,
@@ -342,6 +347,131 @@ function PinSetupSheet({
 }
 
 /* ------------------------------------------------------------------ */
+/* Verify current PIN sheet                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Requires the CURRENT PIN before a sensitive change (turning the PIN
+ * off or replacing it). The attempt is checked against the stored
+ * salted hash — a wrong PIN is always rejected.
+ */
+function ConfirmPinSheet({
+  open,
+  onOpenChange,
+  pinLength,
+  title,
+  description,
+  onVerified,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  pinLength: PinLength;
+  title: string;
+  description: string;
+  onVerified: () => void;
+}) {
+  const [pin, setPin] = useState<string>("");
+  const [checking, setChecking] = useState<boolean>(false);
+  const [error, setError] = useState<string>("");
+
+  useEffect(() => {
+    if (open) {
+      setPin("");
+      setChecking(false);
+      setError("");
+    }
+  }, [open]);
+
+  const submit = useCallback(
+    async (finalPin: string) => {
+      setChecking(true);
+      const ok = await verifyPin(finalPin);
+      setChecking(false);
+      if (!ok) {
+        setError("Incorrect PIN. Try again.");
+        setPin("");
+        return;
+      }
+      onOpenChange(false);
+      onVerified();
+    },
+    [onOpenChange, onVerified],
+  );
+
+  const pushDigit = useCallback(
+    (d: string) => {
+      if (checking) return;
+      setError("");
+      if (pin.length >= pinLength) return;
+      const next = pin + d;
+      setPin(next);
+      if (next.length === pinLength) void submit(next);
+    },
+    [checking, pin, pinLength, submit],
+  );
+
+  return (
+    <FormSheet open={open} onOpenChange={onOpenChange} title={title} description={description}>
+      <div className="flex flex-col items-center gap-7 py-4">
+        <div className="flex items-center gap-3" aria-label={`${pin.length} of ${pinLength} digits entered`}>
+          {Array.from({ length: pinLength }).map((_, i) => (
+            <span
+              key={i}
+              className={cn(
+                "h-3.5 w-3.5 rounded-full transition-all duration-150",
+                i < pin.length ? "scale-110 bg-primary dark:bg-foreground" : "bg-muted-foreground/25",
+              )}
+            />
+          ))}
+        </div>
+
+        {error && <p className="-mt-3 text-[13px] font-bold text-destructive">{error}</p>}
+        {checking && (
+          <p className="-mt-3 flex items-center gap-1.5 text-[13px] font-bold text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Checking…
+          </p>
+        )}
+
+        <div className="grid w-full max-w-[280px] grid-cols-3 gap-2.5">
+          {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((d) => (
+            <button
+              key={d}
+              type="button"
+              disabled={checking}
+              onClick={() => pushDigit(d)}
+              className="flex h-16 items-center justify-center rounded-2xl bg-secondary/60 text-[22px] font-bold tabular transition-all active:scale-95 active:bg-secondary disabled:opacity-40"
+            >
+              {d}
+            </button>
+          ))}
+          <div className="flex h-16 items-center justify-center" aria-hidden />
+          <button
+            type="button"
+            disabled={checking}
+            onClick={() => pushDigit("0")}
+            className="flex h-16 items-center justify-center rounded-2xl bg-secondary/60 text-[22px] font-bold tabular transition-all active:scale-95 active:bg-secondary disabled:opacity-40"
+          >
+            0
+          </button>
+          <button
+            type="button"
+            disabled={checking || pin.length === 0}
+            onClick={() => {
+              setError("");
+              setPin((p) => p.slice(0, -1));
+            }}
+            aria-label="Delete digit"
+            className="flex h-16 items-center justify-center rounded-2xl text-muted-foreground transition-all active:scale-95 disabled:opacity-30"
+          >
+            <Delete className="h-6 w-6" />
+          </button>
+        </div>
+      </div>
+    </FormSheet>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Disable PIN confirmation                                            */
 /* ------------------------------------------------------------------ */
 
@@ -406,6 +536,8 @@ export default function Security() {
     open: false,
   });
   const [disablePinOpen, setDisablePinOpen] = useState<boolean>(false);
+  // Which sensitive action is waiting for current-PIN verification.
+  const [confirmPinFor, setConfirmPinFor] = useState<"disable" | "change" | null>(null);
 
   // Check biometry availability on mount.
   useEffect(() => {
@@ -430,10 +562,20 @@ export default function Security() {
     return found?.label ?? "Immediately";
   }, [security.autoLockDelay]);
 
-  const handleBiometricToggle = (enabled: boolean) => {
+  const handleBiometricToggle = async (enabled: boolean) => {
     if (enabled && !biometry.available) {
       toast.error("Biometric authentication isn't available on this device.");
       return;
+    }
+    if (!enabled && security.biometricEnabled) {
+      // Sensitive change: removing a protection layer requires the user
+      // to authenticate first (mirrors iOS behaviour). If biometrics are
+      // genuinely unavailable we allow the change so nobody gets stuck.
+      const outcome = await authenticateWithBiometry("Confirm it's you to turn off biometric lock");
+      if (!outcome.ok && outcome.reason !== "unavailable") {
+        toast.error("Verification failed — biometric lock stays on.");
+        return;
+      }
     }
     updateSecurity({ biometricEnabled: enabled });
     toast.success(enabled ? `${biometry.label || "Biometric lock"} enabled` : "Biometric lock disabled");
@@ -462,6 +604,17 @@ export default function Security() {
       toast.error("Couldn't remove the PIN.");
     } finally {
       setDisablePinOpen(false);
+    }
+  };
+
+  /** After the current PIN is verified, run the pending sensitive action. */
+  const handlePinVerified = () => {
+    const action = confirmPinFor;
+    setConfirmPinFor(null);
+    if (action === "disable") {
+      void confirmDisablePin();
+    } else if (action === "change") {
+      setPinSheet({ mode: "change", open: true });
     }
   };
 
@@ -519,7 +672,7 @@ export default function Security() {
               <Switch
                 checked={security.biometricEnabled}
                 disabled={!biometry.available && !checkingBio}
-                onCheckedChange={handleBiometricToggle}
+                onCheckedChange={(enabled) => void handleBiometricToggle(enabled)}
                 aria-label="Toggle biometric lock"
               />
             }
@@ -543,8 +696,12 @@ export default function Security() {
                 icon={Lock}
                 bubble="bg-violet-500/12 text-violet-600 dark:text-violet-400"
                 title="Change PIN"
-                subtitle="Replace your current PIN"
-                onClick={() => setPinSheet({ mode: "change", open: true })}
+                subtitle="Requires your current PIN"
+                onClick={() => {
+                  // Verify the current PIN before allowing a replacement.
+                  if (pinConfigured) setConfirmPinFor("change");
+                  else setPinSheet({ mode: "change", open: true });
+                }}
               />
               <SettingRow
                 icon={Eye}
@@ -703,7 +860,27 @@ export default function Security() {
       <DisablePinDialog
         open={disablePinOpen}
         onOpenChange={setDisablePinOpen}
-        onConfirm={confirmDisablePin}
+        onConfirm={() => {
+          setDisablePinOpen(false);
+          // Turning the PIN off requires the CURRENT PIN first.
+          if (pinConfigured) setConfirmPinFor("disable");
+          else void confirmDisablePin();
+        }}
+      />
+
+      <ConfirmPinSheet
+        open={confirmPinFor !== null}
+        onOpenChange={(o) => {
+          if (!o) setConfirmPinFor(null);
+        }}
+        pinLength={security.pinLength}
+        title="Enter current PIN"
+        description={
+          confirmPinFor === "disable"
+            ? "Confirm your current PIN to turn PIN lock off."
+            : "Confirm your current PIN before choosing a new one."
+        }
+        onVerified={handlePinVerified}
       />
     </div>
   );

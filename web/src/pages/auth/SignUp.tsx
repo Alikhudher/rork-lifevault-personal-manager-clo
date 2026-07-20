@@ -14,9 +14,11 @@ export default function SignUp() {
   const [email, setEmail] = useState<string>("");
   const [password, setPassword] = useState<string>("");
   const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [submitting, setSubmitting] = useState<boolean>(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     if (!name.trim()) {
       toast.error("Enter your name");
       return;
@@ -29,13 +31,19 @@ export default function SignUp() {
       toast.error("Password must be at least 6 characters");
       return;
     }
-    const result = signUp(name.trim(), email.trim().toLowerCase(), password);
-    if (!result.ok) {
-      toast.error("An account with that email already exists. Try signing in instead.");
-      return;
+    setSubmitting(true);
+    try {
+      // The password is stored only as a salted hash — never plaintext.
+      const result = await signUp(name.trim(), email.trim().toLowerCase(), password);
+      if (!result.ok) {
+        toast.error("An account with that email already exists. Try signing in instead.");
+        return;
+      }
+      toast.success(`Welcome to LifeVault, ${name.trim().split(" ")[0]}!`);
+      navigate("/", { replace: true });
+    } finally {
+      setSubmitting(false);
     }
-    toast.success(`Welcome to LifeVault, ${name.trim().split(" ")[0]}!`);
-    navigate("/", { replace: true });
   };
 
   return (
@@ -95,9 +103,10 @@ export default function SignUp() {
         <Button
           type="submit"
           size="lg"
+          disabled={submitting}
           className="h-[52px] w-full rounded-2xl text-[15px] font-bold shadow-lg shadow-primary/25 transition-transform active:scale-[0.98]"
         >
-          Create Account
+          {submitting ? "Creating account…" : "Create Account"}
         </Button>
       </form>
 

@@ -7,6 +7,8 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { toast } from "sonner";
+import { hashPassword, verifyPassword } from "@/lib/password";
 import {
   currentDeviceSession,
   DEFAULT_SETTINGS,
@@ -36,6 +38,7 @@ import type {
   SecuritySettings,
   Settings,
   Subscription,
+  SyncedAccountCredentials,
   UserProfile,
   VaultDocument,
 } from "@/lib/types";
@@ -67,17 +70,31 @@ export type AuthResult =
 
 interface AppContextValue extends PersistedState {
   completeOnboarding: () => void;
-  /** Validates password against the account registry before signing in. */
-  signIn: (email: string, password: string) => AuthResult;
+  /** Validates the password against the stored hash before signing in. */
+  signIn: (email: string, password: string) => Promise<AuthResult>;
   /** Convenience for Face ID unlock — skips password validation. */
   signInWithBiometric: () => AuthResult;
-  signUp: (name: string, email: string, password: string) => AuthResult;
+  signUp: (name: string, email: string, password: string) => Promise<AuthResult>;
   signOut: () => void;
   deleteAccount: () => void;
   updateSettings: (patch: Partial<Settings>) => void;
   updateSecurity: (patch: Partial<SecuritySettings>) => void;
   updateUser: (patch: Partial<UserProfile>) => void;
-  changePassword: (current: string, next: string) => boolean;
+  /**
+   * Change the signed-in account's password. The current password is
+   * cryptographically verified against the stored hash — a wrong
+   * current password is ALWAYS rejected. On success the user stays
+   * signed in here and every other device session is revoked.
+   */
+  changePassword: (current: string, next: string) => Promise<boolean>;
+  /** Verify the signed-in account's password (for sensitive actions). */
+  verifyAccountPassword: (password: string) => Promise<boolean>;
+  /**
+   * Set a new password for an account after its email ownership has
+   * been verified (Forgot Password flow). Never call without a
+   * completed email verification.
+   */
+  resetAccountPassword: (email: string, newPassword: string) => Promise<boolean>;
   revokeSession: (id: string) => void;
   signOutAllDevices: () => void;
   verifyEmail: () => void;
@@ -139,7 +156,16 @@ interface AppContextValue extends PersistedState {
 /** A flat record as returned by the cloud sync engine. */
 export interface RestoredRecord {
   id: string;
-  kind: "document" | "expense" | "subscription" | "appointment" | "notification" | "settings" | "security" | "folder";
+  kind:
+    | "document"
+    | "expense"
+    | "subscription"
+    | "appointment"
+    | "notification"
+    | "settings"
+    | "security"
+    | "account"
+    | "folder";
   data: unknown;
   updatedAt: number;
   deletedAt: number | null;
@@ -202,6 +228,13 @@ function purgeDemoData(state: PersistedState): PersistedState {
   };
 }
 
+/** Drop the legacy plaintext password field older builds kept on the profile. */
+function sanitizeUser(user: (UserProfile & { password?: unknown }) | null | undefined): UserProfile | null {
+  if (!user) return null;
+  const { password: _legacyPassword, ...rest } = user;
+  return rest as UserProfile;
+}
+
 function loadState(): PersistedState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -211,6 +244,7 @@ function loadState(): PersistedState {
     return purgeDemoData({
       ...seed,
       ...parsed,
+      user: sanitizeUser(parsed.user),
       settings: { ...seed.settings, ...parsed.settings, notifications: { ...seed.settings.notifications, ...parsed.settings?.notifications } },
       security: { ...seed.security, ...parsed.security },
       sessions: parsed.sessions && parsed.sessions.length > 0 ? parsed.sessions : seed.sessions,
@@ -223,20 +257,60 @@ function loadState(): PersistedState {
   }
 }
 
-/** Build a UserProfile session from a registered account. */
+/** Build a UserProfile session from a registered account (never carries credentials). */
 function profileFromAccount(account: RegisteredAccount): UserProfile {
   return {
     name: account.name,
     email: account.email,
     photo: account.photo,
     createdAt: account.createdAt,
-    password: account.password,
     emailVerified: account.emailVerified,
   };
 }
 
 function findAccount(accounts: RegisteredAccount[], email: string): RegisteredAccount | undefined {
   return accounts.find((a) => a.email.toLowerCase() === email.toLowerCase());
+}
+
+/** True when the account has any credential configured (hash or legacy). */
+export function accountHasPassword(account: RegisteredAccount | undefined): boolean {
+  if (!account) return false;
+  return Boolean(
+    (account.passwordHash && account.passwordSalt) ||
+      (typeof account.password === "string" && account.password.length > 0),
+  );
+}
+
+/**
+ * Verify a password attempt against an account. Hashed credentials are
+ * checked with a constant-time PBKDF2 comparison; legacy plaintext
+ * accounts (pre-hashing builds) fall back to direct comparison until
+ * their one-time migration completes.
+ */
+async function accountPasswordMatches(account: RegisteredAccount, password: string): Promise<boolean> {
+  if (account.passwordHash && account.passwordSalt) {
+    return verifyPassword(password, account.passwordSalt, account.passwordHash);
+  }
+  if (typeof account.password === "string" && account.password.length > 0) {
+    return account.password === password;
+  }
+  return false;
+}
+
+/** Return the account with fresh hashed credentials and no plaintext. */
+function withCredentials(
+  account: RegisteredAccount,
+  hash: string,
+  salt: string,
+  changedAt: number,
+): RegisteredAccount {
+  return {
+    ...account,
+    passwordHash: hash,
+    passwordSalt: salt,
+    passwordChangedAt: changedAt,
+    password: undefined,
+  };
 }
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
@@ -261,25 +335,76 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     document.documentElement.classList.toggle("dark", state.settings.darkMode);
   }, [state.settings.darkMode]);
 
+  // One-time migration: accounts persisted by pre-hashing builds still
+  // carry a plaintext password. Re-store them as salted PBKDF2 hashes
+  // and drop the plaintext. Sign-in also upgrades lazily, so auth works
+  // even before this completes.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const legacy = stateRef.current.accounts.filter(
+        (a) =>
+          (!a.passwordHash || !a.passwordSalt) &&
+          typeof a.password === "string" &&
+          a.password.length > 0,
+      );
+      if (legacy.length === 0) return;
+      try {
+        const upgraded = new Map<string, RegisteredAccount>();
+        for (const account of legacy) {
+          const rec = await hashPassword(account.password as string);
+          upgraded.set(
+            account.email.toLowerCase(),
+            withCredentials(account, rec.hash, rec.salt, account.passwordChangedAt ?? 0),
+          );
+        }
+        if (cancelled) return;
+        setState((s) => ({
+          ...s,
+          accounts: s.accounts.map((a) => upgraded.get(a.email.toLowerCase()) ?? a),
+        }));
+        console.log(`[Auth] Migrated ${upgraded.size} account(s) to hashed passwords`);
+      } catch (error) {
+        console.error("[Auth] Password hash migration failed", error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const completeOnboarding = useCallback(() => {
     setState((s) => ({ ...s, onboarded: true }));
   }, []);
 
-  const signIn = useCallback((email: string, password: string): AuthResult => {
+  const signIn = useCallback(async (email: string, password: string): Promise<AuthResult> => {
     const normalized = email.trim().toLowerCase();
-    const s = stateRef.current;
-    const account = findAccount(s.accounts, normalized);
+    const account = findAccount(stateRef.current.accounts, normalized);
     if (!account) {
       return { ok: false, error: "not_found" };
     }
-    if (account.password !== password) {
+    const matches = await accountPasswordMatches(account, password);
+    if (!matches) {
       return { ok: false, error: "wrong_password" };
     }
+    // Opportunistic upgrade: a legacy plaintext account is re-stored as
+    // a salted hash on its first successful sign-in.
+    let upgraded: RegisteredAccount | null = null;
+    if (!account.passwordHash || !account.passwordSalt) {
+      const rec = await hashPassword(password);
+      upgraded = withCredentials(account, rec.hash, rec.salt, account.passwordChangedAt ?? 0);
+    }
+    const s = stateRef.current;
+    const active = upgraded ?? findAccount(s.accounts, normalized) ?? account;
     const next: PersistedState = {
       ...s,
       onboarded: true,
-      lastEmail: account.email,
-      user: profileFromAccount(account),
+      lastEmail: active.email,
+      accounts: upgraded
+        ? s.accounts.map((a) => (a.email.toLowerCase() === normalized ? upgraded! : a))
+        : s.accounts,
+      user: profileFromAccount(active),
     };
     stateRef.current = next;
     setState(next);
@@ -305,18 +430,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return { ok: true, error: null };
   }, []);
 
-  const signUp = useCallback((name: string, email: string, password: string): AuthResult => {
+  const signUp = useCallback(async (name: string, email: string, password: string): Promise<AuthResult> => {
     const normalized = email.trim().toLowerCase();
-    const s = stateRef.current;
-    const existing = findAccount(s.accounts, normalized);
+    const existing = findAccount(stateRef.current.accounts, normalized);
     if (existing) {
       return { ok: false, error: "not_found" };
     }
+    const rec = await hashPassword(password);
+    const s = stateRef.current;
     const account: RegisteredAccount = {
       email: normalized,
       name: name.trim(),
       photo: null,
-      password,
+      passwordHash: rec.hash,
+      passwordSalt: rec.salt,
+      passwordChangedAt: Date.now(),
       createdAt: new Date().toISOString(),
       emailVerified: true,
     };
@@ -346,19 +474,55 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setState(seed);
   }, []);
 
-  const changePassword = useCallback((current: string, next: string) => {
+  const changePassword = useCallback(async (current: string, next: string): Promise<boolean> => {
+    const s0 = stateRef.current;
+    if (!s0.user) return false;
+    const account = findAccount(s0.accounts, s0.user.email);
+    if (!account) return false;
+    // The current password must ALWAYS verify against the stored hash —
+    // a wrong current password is never accepted.
+    if (accountHasPassword(account)) {
+      const ok = await accountPasswordMatches(account, current);
+      if (!ok) return false;
+    }
+    const rec = await hashPassword(next);
+    const changedAt = Date.now();
+    const emailLower = account.email.toLowerCase();
     const s = stateRef.current;
-    if (!s.user) return false;
-    // The current password must always match the registered account.
-    const account = findAccount(s.accounts, s.user.email);
-    if (!account || account.password !== current) return false;
-    const updatedAccount: RegisteredAccount = { ...account, password: next };
     const nextState: PersistedState = {
       ...s,
       accounts: s.accounts.map((a) =>
-        a.email.toLowerCase() === account.email.toLowerCase() ? updatedAccount : a,
+        a.email.toLowerCase() === emailLower ? withCredentials(a, rec.hash, rec.salt, changedAt) : a,
       ),
-      user: { ...s.user, password: next },
+      // Security: changing the password revokes every OTHER device
+      // session — the current one stays signed in. Synced devices are
+      // signed out via the "__account__" record on their next sync.
+      sessions: s.sessions.filter((session) => session.current),
+    };
+    stateRef.current = nextState;
+    setState(nextState);
+    return true;
+  }, []);
+
+  const verifyAccountPassword = useCallback(async (password: string): Promise<boolean> => {
+    const s = stateRef.current;
+    if (!s.user) return false;
+    const account = findAccount(s.accounts, s.user.email);
+    if (!account) return false;
+    return accountPasswordMatches(account, password);
+  }, []);
+
+  const resetAccountPassword = useCallback(async (email: string, newPassword: string): Promise<boolean> => {
+    const normalized = email.trim().toLowerCase();
+    if (!findAccount(stateRef.current.accounts, normalized)) return false;
+    const rec = await hashPassword(newPassword);
+    const changedAt = Date.now();
+    const s = stateRef.current;
+    const nextState: PersistedState = {
+      ...s,
+      accounts: s.accounts.map((a) =>
+        a.email.toLowerCase() === normalized ? withCredentials(a, rec.hash, rec.salt, changedAt) : a,
+      ),
     };
     stateRef.current = nextState;
     setState(nextState);
@@ -651,6 +815,59 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // Demo rows lingering in old cloud backups must never sync back in.
     const records = rawRecords.filter((r) => !DEMO_RECORD_IDS.has(r.id));
     if (records.length === 0) return;
+
+    // Account credentials sync separately from vault data: a password
+    // changed on another device is applied here, and — when it affects
+    // the signed-in user — THIS device is signed out so the new
+    // password is required (the encrypted backup is the source of
+    // truth for credential changes).
+    for (const record of records) {
+      if (record.kind !== "account") continue;
+      if (record.deletedAt || !record.data || typeof record.data !== "object") continue;
+      const cred = record.data as Partial<SyncedAccountCredentials>;
+      if (
+        typeof cred.email !== "string" ||
+        typeof cred.passwordHash !== "string" ||
+        typeof cred.passwordSalt !== "string" ||
+        typeof cred.passwordChangedAt !== "number" ||
+        cred.passwordHash.length === 0 ||
+        cred.passwordSalt.length === 0
+      ) {
+        continue;
+      }
+      const emailLower = cred.email.toLowerCase();
+      const nextHash = cred.passwordHash;
+      const nextSalt = cred.passwordSalt;
+      const nextChangedAt = cred.passwordChangedAt;
+      const s = stateRef.current;
+      const account = s.accounts.find((a) => a.email.toLowerCase() === emailLower);
+      if (!account) continue;
+      const localChangedAt = account.passwordChangedAt ?? 0;
+      if (nextChangedAt <= localChangedAt || nextHash === account.passwordHash) continue;
+      const affectsCurrentUser = (s.user?.email ?? "").toLowerCase() === emailLower;
+      console.log("[Auth] Applying password change from another device");
+      setState((prev) => ({
+        ...prev,
+        accounts: prev.accounts.map((a) =>
+          a.email.toLowerCase() === emailLower
+            ? {
+                ...a,
+                passwordHash: nextHash,
+                passwordSalt: nextSalt,
+                passwordChangedAt: nextChangedAt,
+                password: undefined,
+              }
+            : a,
+        ),
+        user: affectsCurrentUser ? null : prev.user,
+      }));
+      if (affectsCurrentUser) {
+        toast.info("Your password was changed on another device", {
+          description: "Sign in again with your new password.",
+        });
+      }
+    }
+
     setState((s) => {
       const docs = new Map(s.documents.map((d) => [d.id, d]));
       const exps = new Map(s.expenses.map((e) => [e.id, e]));
@@ -735,6 +952,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       updateSecurity,
       updateUser,
       changePassword,
+      verifyAccountPassword,
+      resetAccountPassword,
       revokeSession,
       signOutAllDevices,
       verifyEmail,
@@ -780,6 +999,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       updateSecurity,
       updateUser,
       changePassword,
+      verifyAccountPassword,
+      resetAccountPassword,
       revokeSession,
       signOutAllDevices,
       verifyEmail,

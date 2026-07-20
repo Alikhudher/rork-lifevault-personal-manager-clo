@@ -137,6 +137,9 @@ export const ar: TranslationDict = {
     keepAccount: "الاحتفاظ بالحساب",
     deleteForever: "حذف نهائي",
     accountDeleted: "تم حذف الحساب",
+    deletePasswordLabel: "أكد كلمة المرور",
+    deletePasswordPlaceholder: "أدخل كلمة المرور الحالية",
+    deletePasswordWrong: "كلمة المرور الحالية غير صحيحة.",
     footer: "LifeVault v{version} · صُنع بعناية",
   },
   budget: {

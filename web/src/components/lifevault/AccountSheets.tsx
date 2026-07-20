@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
   Check,
   CheckCircle2,
   Clock,
   Eye,
   EyeOff,
+  KeyRound,
   Lightbulb,
   Loader2,
   Mail,
@@ -43,7 +45,12 @@ import {
 } from "@/components/ui/alert-dialog";
 import { FormSheet, Field } from "@/components/lifevault/FormSheet";
 import { PhotoPicker } from "@/components/lifevault/PhotoPicker";
-import { useApp } from "@/context/AppContext";
+import { accountHasPassword, useApp } from "@/context/AppContext";
+import {
+  finishVerifiedSession,
+  requestEmailCode,
+  verifyEmailCode,
+} from "@/lib/account-recovery";
 import type { DeviceSession } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -63,7 +70,7 @@ function deviceIcon(device: string) {
 /* Edit Profile Sheet                                                  */
 /* ------------------------------------------------------------------ */
 
-type EditStep = "form" | "verify";
+type EditStep = "form" | "password" | "verify";
 
 export function EditProfileSheet({
   open,
@@ -72,13 +79,16 @@ export function EditProfileSheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { user, updateUser, verifyEmail, accounts } = useApp();
+  const { user, updateUser, accounts, verifyAccountPassword } = useApp();
   const [name, setName] = useState<string>("");
   const [email, setEmail] = useState<string>("");
   const [photo, setPhoto] = useState<string | null>(null);
   const [step, setStep] = useState<EditStep>("form");
   const [code, setCode] = useState<string>("");
-  const [sending, setSending] = useState<boolean>(false);
+  const [currentPw, setCurrentPw] = useState<string>("");
+  const [showCurrentPw, setShowCurrentPw] = useState<boolean>(false);
+  const [busy, setBusy] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
   const [resendIn, setResendIn] = useState<number>(0);
 
   // Sync form state whenever the sheet opens.
@@ -89,6 +99,10 @@ export function EditProfileSheet({
       setPhoto(user?.photo ?? null);
       setStep("form");
       setCode("");
+      setCurrentPw("");
+      setShowCurrentPw(false);
+      setBusy(false);
+      setError(null);
       setResendIn(0);
     }
   }, [open, user]);
@@ -100,30 +114,47 @@ export function EditProfileSheet({
     return () => window.clearTimeout(t);
   }, [resendIn]);
 
+  const normalizedEmail = email.trim().toLowerCase();
+
   const emailChanged = useMemo(
-    () => email.trim().toLowerCase() !== (user?.email ?? "").toLowerCase(),
-    [email, user?.email],
+    () => normalizedEmail !== (user?.email ?? "").toLowerCase(),
+    [normalizedEmail, user?.email],
   );
 
   /** True if the chosen email is already used by another account. */
   const emailTaken = useMemo(() => {
-    const normalized = email.trim().toLowerCase();
-    if (!normalized) return false;
+    if (!normalizedEmail) return false;
     return accounts.some(
-      (a) => a.email.toLowerCase() === normalized && a.email.toLowerCase() !== (user?.email ?? "").toLowerCase(),
+      (a) => a.email.toLowerCase() === normalizedEmail && a.email.toLowerCase() !== (user?.email ?? "").toLowerCase(),
     );
-  }, [email, accounts, user?.email]);
+  }, [normalizedEmail, accounts, user?.email]);
 
-  const sendCode = useCallback(() => {
-    setSending(true);
-    window.setTimeout(() => {
-      setSending(false);
-      setResendIn(30);
-      toast.success("Verification code sent", { description: `Check ${email.trim()} for a 6-digit code.` });
-    }, 900);
-  }, [email]);
+  /** Whether the signed-in account has a password to verify. */
+  const requiresPassword = useMemo(() => {
+    const account = accounts.find(
+      (a) => a.email.toLowerCase() === (user?.email ?? "").toLowerCase(),
+    );
+    return accountHasPassword(account);
+  }, [accounts, user?.email]);
+
+  /** Send a REAL 6-digit code to the new address via the auth server. */
+  const sendCode = useCallback(async (): Promise<boolean> => {
+    const result = await requestEmailCode(normalizedEmail);
+    if (result.ok === false) {
+      setError(result.error);
+      toast.error(result.error);
+      return false;
+    }
+    setCode("");
+    setResendIn(60);
+    toast.success("Verification code sent", {
+      description: `Check ${normalizedEmail} (and Spam) for a 6-digit code.`,
+    });
+    return true;
+  }, [normalizedEmail]);
 
   const handleSave = () => {
+    setError(null);
     if (!name.trim()) {
       toast.error("Name cannot be empty");
       return;
@@ -137,8 +168,19 @@ export function EditProfileSheet({
       return;
     }
     if (emailChanged) {
-      setStep("verify");
-      sendCode();
+      // Changing the email is a sensitive action: the current password
+      // is verified first, then ownership of the NEW address is proven
+      // with a real emailed code — nothing is accepted blindly.
+      if (requiresPassword) {
+        setStep("password");
+        return;
+      }
+      setBusy(true);
+      void sendCode()
+        .then((sent) => {
+          if (sent) setStep("verify");
+        })
+        .finally(() => setBusy(false));
       return;
     }
     // No email change — save directly.
@@ -147,30 +189,75 @@ export function EditProfileSheet({
     onOpenChange(false);
   };
 
-  const handleVerify = () => {
-    if (code.length !== 6) {
-      toast.error("Enter the 6-digit code");
+  const handlePasswordContinue = async () => {
+    if (busy) return;
+    setError(null);
+    if (!currentPw) {
+      setError("Enter your current password.");
       return;
     }
-    // Mock: any 6-digit code is accepted.
-    updateUser({ name: name.trim(), email: email.trim().toLowerCase(), photo, emailVerified: true });
-    verifyEmail();
-    toast.success("Email verified & profile saved");
-    onOpenChange(false);
+    setBusy(true);
+    try {
+      const ok = await verifyAccountPassword(currentPw);
+      if (!ok) {
+        setError("Current password is incorrect.");
+        return;
+      }
+      const sent = await sendCode();
+      if (sent) setStep("verify");
+    } finally {
+      setBusy(false);
+    }
   };
+
+  const handleVerify = async () => {
+    if (busy) return;
+    setError(null);
+    if (code.length !== 6) {
+      setError("Enter the 6-digit code.");
+      return;
+    }
+    setBusy(true);
+    try {
+      // Server-side check — a wrong or expired code is always rejected.
+      const result = await verifyEmailCode(normalizedEmail, code);
+      if (result.ok === false) {
+        setError(result.error);
+        setCode("");
+        return;
+      }
+      await finishVerifiedSession(result.session);
+      updateUser({ name: name.trim(), email: normalizedEmail, photo, emailVerified: true });
+      toast.success("Email verified & profile saved");
+      onOpenChange(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const errorBox = error ? (
+    <div className="flex items-start gap-2 rounded-xl bg-destructive/10 p-3 ring-1 ring-destructive/25" role="alert">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+      <p className="text-[12.5px] font-semibold leading-relaxed text-destructive">{error}</p>
+    </div>
+  ) : null;
 
   return (
     <FormSheet
       open={open}
       onOpenChange={onOpenChange}
-      title={step === "form" ? "Edit profile" : "Verify email"}
+      title={
+        step === "form" ? "Edit profile" : step === "password" ? "Confirm your password" : "Verify email"
+      }
       description={
         step === "form"
           ? "Update your photo, name and email."
-          : `We sent a 6-digit code to ${email.trim()}.`
+          : step === "password"
+            ? "Changing your email requires your current password."
+            : `We sent a 6-digit code to ${normalizedEmail}.`
       }
     >
-      {step === "form" ? (
+      {step === "form" && (
         <div className="space-y-5">
           {/* Photo picker — uses @capacitor/camera on native (real permission
               prompts + native picker) and a hidden file input on the web. */}
@@ -223,16 +310,88 @@ export function EditProfileSheet({
             </p>
           </div>
 
+          {errorBox}
+
           <Button
             type="button"
             size="lg"
             onClick={handleSave}
+            disabled={busy}
             className="h-[52px] w-full rounded-2xl text-[15px] font-bold shadow-lg shadow-primary/25 transition-transform active:scale-[0.98]"
           >
-            {emailChanged ? "Continue to verify" : "Save changes"}
+            {busy ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" /> Sending code…
+              </>
+            ) : emailChanged ? (
+              "Continue to verify"
+            ) : (
+              "Save changes"
+            )}
           </Button>
         </div>
-      ) : (
+      )}
+
+      {step === "password" && (
+        <div className="space-y-5">
+          <div className="flex flex-col items-center gap-1 pb-2 text-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-warning/12 text-warning">
+              <KeyRound className="h-6 w-6" />
+            </span>
+            <p className="text-[13px] text-muted-foreground">
+              Confirm it&apos;s you before changing the email to{" "}
+              <span className="font-bold text-foreground">{normalizedEmail}</span>
+            </p>
+          </div>
+
+          <Field label="Current password">
+            <PasswordInput
+              value={currentPw}
+              onChange={setCurrentPw}
+              show={showCurrentPw}
+              onToggle={() => setShowCurrentPw((v) => !v)}
+              placeholder="••••••••"
+              autoComplete="current-password"
+            />
+          </Field>
+
+          {errorBox}
+
+          <div className="flex gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              onClick={() => {
+                setStep("form");
+                setError(null);
+                setCurrentPw("");
+              }}
+              disabled={busy}
+              className="h-[52px] flex-1 rounded-2xl text-[15px] font-bold"
+            >
+              Back
+            </Button>
+            <Button
+              type="button"
+              size="lg"
+              onClick={() => void handlePasswordContinue()}
+              disabled={busy}
+              className="h-[52px] flex-1 rounded-2xl text-[15px] font-bold shadow-lg shadow-primary/25 transition-transform active:scale-[0.98]"
+            >
+              {busy ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Checking…
+                </>
+              ) : (
+                "Continue"
+              )}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step === "verify" && (
         <div className="space-y-5">
           <div className="flex flex-col items-center gap-1 pb-2 text-center">
             <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-info/12 text-info">
@@ -270,21 +429,31 @@ export function EditProfileSheet({
             ) : (
               <button
                 type="button"
-                onClick={sendCode}
-                disabled={sending}
+                onClick={() => {
+                  setBusy(true);
+                  void sendCode().finally(() => setBusy(false));
+                }}
+                disabled={busy}
                 className="font-bold text-primary dark:text-foreground"
               >
-                {sending ? "Sending…" : "Resend code"}
+                {busy ? "Sending…" : "Resend code"}
               </button>
             )}
           </div>
+
+          {errorBox}
 
           <div className="flex gap-3">
             <Button
               type="button"
               variant="outline"
               size="lg"
-              onClick={() => setStep("form")}
+              onClick={() => {
+                setStep("form");
+                setError(null);
+                setCode("");
+              }}
+              disabled={busy}
               className="h-[52px] flex-1 rounded-2xl text-[15px] font-bold"
             >
               Back
@@ -292,10 +461,17 @@ export function EditProfileSheet({
             <Button
               type="button"
               size="lg"
-              onClick={handleVerify}
+              onClick={() => void handleVerify()}
+              disabled={busy || code.length !== 6}
               className="h-[52px] flex-1 rounded-2xl text-[15px] font-bold shadow-lg shadow-primary/25 transition-transform active:scale-[0.98]"
             >
-              Verify & save
+              {busy ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Verifying…
+                </>
+              ) : (
+                "Verify & save"
+              )}
             </Button>
           </div>
         </div>
@@ -332,13 +508,14 @@ export function ChangePasswordSheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { user, changePassword } = useApp();
+  const { user, accounts, changePassword } = useApp();
   const [current, setCurrent] = useState<string>("");
   const [next, setNext] = useState<string>("");
   const [confirm, setConfirm] = useState<string>("");
   const [showCurrent, setShowCurrent] = useState<boolean>(false);
   const [showNext, setShowNext] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -348,43 +525,55 @@ export function ChangePasswordSheet({
       setShowCurrent(false);
       setShowNext(false);
       setSaving(false);
+      setError(null);
     }
   }, [open]);
 
   const strength = useMemo(() => passwordStrength(next), [next]);
-  const hasPassword = user?.password !== null;
+  /** Registry-based: true when the signed-in account has a stored credential. */
+  const hasPassword = useMemo(() => {
+    const account = accounts.find(
+      (a) => a.email.toLowerCase() === (user?.email ?? "").toLowerCase(),
+    );
+    return accountHasPassword(account);
+  }, [accounts, user?.email]);
   const canSave =
     (hasPassword ? current.length > 0 : true) &&
     next.length >= 6 &&
     next === confirm;
 
-  const handleSubmit = () => {
-    if (!canSave) {
-      if (hasPassword && !current) {
-        toast.error("Enter your current password");
-        return;
-      }
-      if (next.length < 6) {
-        toast.error("New password must be at least 6 characters");
-        return;
-      }
-      if (next !== confirm) {
-        toast.error("Passwords do not match");
-        return;
-      }
+  const handleSubmit = async () => {
+    if (saving) return;
+    setError(null);
+    if (hasPassword && !current) {
+      setError("Enter your current password.");
+      return;
+    }
+    if (next.length < 6) {
+      setError("New password must be at least 6 characters.");
+      return;
+    }
+    if (next !== confirm) {
+      setError("Passwords do not match.");
       return;
     }
     setSaving(true);
-    window.setTimeout(() => {
-      const ok = changePassword(current, next);
-      setSaving(false);
+    try {
+      // The current password is verified against the stored hash — a
+      // wrong current password NEVER goes through.
+      const ok = await changePassword(current, next);
       if (!ok) {
-        toast.error("Current password is incorrect");
+        setError("Current password is incorrect.");
+        toast.error("Current password is incorrect.");
         return;
       }
-      toast.success("Password changed successfully");
+      toast.success("Password updated", {
+        description: "You stay signed in on this device — all other devices were signed out.",
+      });
       onOpenChange(false);
-    }, 700);
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -451,11 +640,18 @@ export function ChangePasswordSheet({
           )}
         </Field>
 
+        {error && (
+          <div className="flex items-start gap-2 rounded-xl bg-destructive/10 p-3 ring-1 ring-destructive/25" role="alert">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+            <p className="text-[12.5px] font-semibold leading-relaxed text-destructive">{error}</p>
+          </div>
+        )}
+
         <Button
           type="button"
           size="lg"
           disabled={!canSave || saving}
-          onClick={handleSubmit}
+          onClick={() => void handleSubmit()}
           className="h-[52px] w-full rounded-2xl text-[15px] font-bold shadow-lg shadow-primary/25 transition-transform active:scale-[0.98]"
         >
           {saving ? (
@@ -466,6 +662,10 @@ export function ChangePasswordSheet({
             "Update password"
           )}
         </Button>
+
+        <p className="text-center text-[12px] leading-relaxed text-muted-foreground">
+          Changing your password keeps you signed in on this device and signs out all other devices.
+        </p>
       </div>
     </FormSheet>
   );
@@ -798,6 +998,17 @@ export function FaqSheet({ open, onOpenChange }: { open: boolean; onOpenChange: 
 /* ------------------------------------------------------------------ */
 
 const WHATS_NEW: { version: string; date: string; changes: string[] }[] = [
+  {
+    version: "1.1",
+    date: "Jul 2026",
+    changes: [
+      "Full password reset by email — verify with a 6-digit code, then set a new password.",
+      "Passwords are now stored only as salted hashes, never in plain text.",
+      "Current password is verified before any sensitive change — wrong passwords are always rejected.",
+      "Changing your backup password now verifies the old one with the server and re-encrypts your data.",
+      "Changing any password signs out all other devices automatically.",
+    ],
+  },
   {
     version: "1.0",
     date: "Jul 2026",

@@ -16,17 +16,17 @@ export default function SignIn() {
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [submitting, setSubmitting] = useState<boolean>(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     if (!email.trim() || !password) {
       toast.error("Enter your email and password");
       return;
     }
     setSubmitting(true);
-    // Simulate a small network delay for realism.
-    window.setTimeout(() => {
-      const result = signIn(email.trim().toLowerCase(), password);
-      setSubmitting(false);
+    try {
+      // Password verification runs against the stored salted hash.
+      const result = await signIn(email.trim().toLowerCase(), password);
       if (!result.ok) {
         toast.error(
           result.error === "wrong_password"
@@ -38,7 +38,9 @@ export default function SignIn() {
       toast.success("Welcome back!");
       const from = (location.state as { from?: string } | null)?.from;
       navigate(from ?? "/", { replace: true });
-    }, 350);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (

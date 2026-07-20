@@ -141,6 +141,9 @@ export const en = {
     keepAccount: "Keep account",
     deleteForever: "Delete forever",
     accountDeleted: "Account deleted",
+    deletePasswordLabel: "Confirm your password",
+    deletePasswordPlaceholder: "Enter your current password",
+    deletePasswordWrong: "Current password is incorrect.",
     footer: "LifeVault v{version} · Made with care",
   },
   budget: {

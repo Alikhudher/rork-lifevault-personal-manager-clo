@@ -32,6 +32,7 @@ import {
   withTimeout,
 } from "@/lib/supabase";
 import { deriveKey, getSessionKey, setSessionKey } from "@/lib/crypto";
+import { verifyCloudPassword } from "@/lib/account-recovery";
 import {
   backupAll,
   fetchSalt,
@@ -54,6 +55,7 @@ import type {
   SecuritySettings,
   Settings,
   Subscription,
+  SyncedAccountCredentials,
   VaultDocument,
 } from "@/lib/types";
 
@@ -245,6 +247,8 @@ function buildRecordSet(args: {
   notifications: AppNotification[];
   settings: Settings;
   security: SecuritySettings;
+  /** Signed-in account credentials (hash only) — propagates password changes to other devices. */
+  account: SyncedAccountCredentials | null;
 }): VaultRecord[] {
   const recs: VaultRecord[] = [];
   for (const d of args.documents) {
@@ -264,6 +268,9 @@ function buildRecordSet(args: {
   }
   recs.push({ id: "__settings__", kind: "settings", data: args.settings, updatedAt: 0, deletedAt: null });
   recs.push({ id: "__security__", kind: "security", data: args.security, updatedAt: 0, deletedAt: null });
+  if (args.account) {
+    recs.push({ id: "__account__", kind: "account", data: args.account, updatedAt: 0, deletedAt: null });
+  }
   return recs;
 }
 
@@ -592,6 +599,21 @@ export function SyncProvider({ children }: { children: ReactNode }) {
    *    propagate to other devices (kept for 30 days, then pruned).
    */
   const buildCurrentRecords = useCallback((): VaultRecord[] => {
+    // Only the signed-in account's HASHED credentials are synced (inside
+    // the E2E encrypted payload) so other devices can enforce password
+    // changes. Legacy accounts without a hash are skipped until migrated.
+    const registered = app.user
+      ? app.accounts.find((a) => a.email.toLowerCase() === app.user!.email.toLowerCase())
+      : undefined;
+    const account: SyncedAccountCredentials | null =
+      registered?.passwordHash && registered.passwordSalt
+        ? {
+            email: registered.email.toLowerCase(),
+            passwordHash: registered.passwordHash,
+            passwordSalt: registered.passwordSalt,
+            passwordChangedAt: registered.passwordChangedAt ?? 0,
+          }
+        : null;
     const raw = buildRecordSet({
       documents: app.documents,
       expenses: app.expenses,
@@ -600,6 +622,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       notifications: app.notifications,
       settings: app.settings,
       security: app.security,
+      account,
     });
     const stamps = getStamps();
     const now = Date.now();
@@ -640,6 +663,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     app.notifications,
     app.settings,
     app.security,
+    app.user,
+    app.accounts,
     getStamps,
     persistStamps,
   ]);
@@ -777,19 +802,44 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const changeBackupPassword = useCallback(
-    async (_current: string, next: string): Promise<CloudAuthResult> => {
+    async (current: string, next: string): Promise<CloudAuthResult> => {
       const sb = getSupabase();
       if (!sb) return { ok: false, error: "Cloud backup is not configured for this build." };
-      if (!sessionEmail.current) return { ok: false, error: "Unlock cloud backup first." };
+      const session = await getSupabaseSession();
+      const email = session?.user?.email ?? sessionEmail.current;
+      if (!session || !email) return { ok: false, error: "Unlock cloud backup first." };
       try {
-        const { error } = await sb.auth.updateUser({ password: next });
+        // 1. SERVER-SIDE verification of the current backup password — a
+        //    real sign-in attempt on an ephemeral client. A wrong current
+        //    password is rejected here and NOTHING is changed.
+        cloudLog("Change password: verifying current password with the server");
+        const verified = await verifyCloudPassword(email, current);
+        if (verified.ok === false) {
+          cloudError("Current password verification failed", verified.error);
+          if (verified.code === "wrong_password") {
+            // User-input error — not a sync failure. Don't poison sync status.
+            return { ok: false, error: "Current password is incorrect." };
+          }
+          setLastError(verified.error);
+          setStatus("error");
+          return { ok: false, error: verified.error };
+        }
+
+        // 2. Update the cloud auth password.
+        const { error } = await withTimeout(
+          sb.auth.updateUser({ password: next }),
+          REQUEST_TIMEOUT_MS,
+          "Updating the backup password",
+        );
         if (error) {
           const friendly = friendlyAuthError(error);
           setLastError(friendly);
           setStatus("error");
           return { ok: false, error: friendly };
         }
-        // Re-derive the key with a fresh salt and re-back-up.
+        cloudLog("Change password: cloud auth password updated");
+
+        // 3. Re-derive the key with a fresh salt and re-encrypt everything.
         const created = await initCloudSalt();
         if (!created.salt) {
           const friendly = cloudStorageError(created.error);
@@ -806,6 +856,21 @@ export function SyncProvider({ children }: { children: ReactNode }) {
             ok: false,
             error: "Password changed, but re-encrypting your backup failed. Tap “Back up now” to finish.",
           };
+        }
+
+        // 4. Security: revoke every OTHER device's cloud session. They
+        //    must unlock again with the NEW backup password. This device
+        //    stays signed in.
+        try {
+          await withTimeout(
+            sb.auth.signOut({ scope: "others" }),
+            REQUEST_TIMEOUT_MS,
+            "Signing out other devices",
+          );
+          cloudLog("Change password: all other device sessions revoked");
+        } catch (signOutErr) {
+          // Non-fatal — the password change itself succeeded.
+          cloudError("Signing out other devices failed", signOutErr);
         }
         return { ok: true };
       } catch (err) {

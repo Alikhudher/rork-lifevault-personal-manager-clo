@@ -5,6 +5,12 @@
  * Every record is encrypted client-side before upload (see crypto.ts);
  * the server only ever stores ciphertext + iv + timestamps.
  *
+ * Column types: `vault_records.id` is TEXT (client-generated ids like
+ * "doc_kx8…" or "__settings__" are not UUIDs). The only uuid columns
+ * are the `user_id` columns, which only ever receive the Supabase auth
+ * user id (a real UUID). The encryption salt lives in the dedicated
+ * `sync_state.salt` TEXT column — never in a uuid field.
+ *
  * Sync model:
  *   • Each record has `id`, `kind`, `updated_at` (client ms), `deleted_at`.
  *   • Upload: push local records whose `updated_at` > lastSyncedAt.
@@ -61,6 +67,8 @@ interface SyncStateRow {
   last_synced_at: number | null;
   last_backup_at: number | null;
   schema_version: number;
+  /** Per-user encryption salt (base64 TEXT column), null until setup. */
+  salt: string | null;
 }
 
 const TABLE_RECORDS = "vault_records";
@@ -106,7 +114,6 @@ export async function getSyncMetadata(): Promise<SyncMetadata | null> {
       .from(TABLE_RECORDS)
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
-      .neq("id", SALT_ID)
       .is("deleted_at", null);
 
     return {
@@ -221,7 +228,6 @@ export async function restoreAll(
       .from(TABLE_RECORDS)
       .select("id, kind, ciphertext, iv, updated_at, deleted_at")
       .eq("user_id", userId)
-      .neq("id", SALT_ID)
       .order("updated_at", { ascending: true });
 
     if (error) throw new Error(error.message);
@@ -348,12 +354,11 @@ export async function syncIncremental(
       .maybeSingle();
     const lastSyncedAt = (stateRow as SyncStateRow | null)?.last_synced_at ?? 0;
 
-    // 2. Pull all remote rows newer than lastSyncedAt (excluding the salt row).
+    // 2. Pull all remote rows newer than lastSyncedAt.
     const { data: remoteRows, error: pullErr } = await sb
       .from(TABLE_RECORDS)
       .select("id, kind, ciphertext, iv, updated_at, deleted_at")
       .eq("user_id", userId)
-      .neq("id", SALT_ID)
       .gt("updated_at", lastSyncedAt);
     if (pullErr) throw new Error(pullErr.message);
     const remote = (remoteRows ?? []) as VaultRecordRow[];
@@ -473,53 +478,29 @@ export async function wipeCloudData(): Promise<{ ok: boolean; error?: string }> 
 /* ------------------------------------------------------------------ */
 
 /**
- * The encryption salt is stored in sync_state (as part of the schema_version
- * field's metadata). We keep it simple: a dedicated row in vault_records
- * with kind='__salt__' that's never encrypted. This lets a new device
- * fetch the salt before deriving the key.
+ * The per-user encryption salt lives in the dedicated `sync_state.salt`
+ * TEXT column (base64). It is account metadata, not a vault record — it
+ * must never be written into `vault_records` (whose `id` values are
+ * client record ids). A new device fetches it before deriving the key.
  */
-const SALT_ID = "__salt__";
 
-/** Store the salt for this user (called during initial backup setup). */
+/** Store the salt for this user (initial setup or password change). */
 export async function storeSalt(salt: string): Promise<{ ok: boolean; error?: string }> {
   if (!supabaseConfigured) return { ok: false, error: "Cloud backup is not configured." };
   const sb = getSupabase();
   const userId = await getSupabaseUserId();
   if (!sb || !userId) return { ok: false, error: "Not signed in to cloud." };
   try {
+    // Upsert ONLY user_id + salt: on conflict, columns absent from the
+    // payload (last_synced_at, last_backup_at, schema_version) keep
+    // their existing values, so rotating the salt never resets sync
+    // pointers. A brand-new row gets column defaults.
     const { error } = await sb
       .from(TABLE_STATE)
-      .upsert(
-        {
-          user_id: userId,
-          last_synced_at: null,
-          last_backup_at: null,
-          schema_version: 1,
-        },
-        { onConflict: "user_id" },
-      );
+      .upsert({ user_id: userId, salt }, { onConflict: "user_id" });
     if (error) {
-      console.error("[CloudBackup] storeSalt (sync_state) failed:", error.message);
+      console.error("[CloudBackup] storeSalt failed:", error.message);
       return { ok: false, error: error.message };
-    }
-    // Store salt in its own row so it's fetchable before key derivation.
-    const { error: saltErr } = await sb
-      .from(TABLE_RECORDS)
-      .upsert(
-        {
-          id: SALT_ID,
-          user_id: userId,
-          kind: "settings", // reuse existing kind — payload is the salt string
-          ciphertext: salt, // NOT encrypted — this is the salt itself
-          iv: "",
-          updated_at: Date.now(),
-          deleted_at: null,
-        },
-        { onConflict: "user_id,id" },
-      );
-    if (saltErr) {
-      console.error("[CloudBackup] storeSalt (vault_records) failed:", saltErr.message);
-      return { ok: false, error: saltErr.message };
     }
     return { ok: true };
   } catch (err) {
@@ -549,17 +530,17 @@ export async function fetchSalt(): Promise<SaltFetchResult> {
   if (!sb || !userId) return { ok: false, salt: null, error: "Not signed in to cloud." };
   try {
     const { data, error } = await sb
-      .from(TABLE_RECORDS)
-      .select("ciphertext")
+      .from(TABLE_STATE)
+      .select("salt")
       .eq("user_id", userId)
-      .eq("id", SALT_ID)
       .maybeSingle();
     if (error) {
       console.error("[CloudBackup] fetchSalt query failed:", error.message);
       return { ok: false, salt: null, error: error.message };
     }
-    const row = data as { ciphertext?: string } | null;
-    return { ok: true, salt: row?.ciphertext ?? null };
+    const row = data as { salt: string | null } | null;
+    const salt = row?.salt ?? null;
+    return { ok: true, salt: salt && salt.length > 0 ? salt : null };
   } catch (err) {
     console.error("[CloudBackup] fetchSalt threw:", err instanceof Error ? err.message : err);
     return {

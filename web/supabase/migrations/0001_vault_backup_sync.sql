@@ -5,14 +5,18 @@
 -- Design:
 --   • vault_records  — one row per logical record (document, expense, etc.),
 --     encrypted client-side with AES-GCM. The server only ever sees ciphertext.
---   • sync_state     — per-user pointer to the last successful sync/backup time.
+--     `id` is a CLIENT-GENERATED string ("doc_kx8…", "__settings__") — TEXT,
+--     never uuid. Only `user_id` is uuid (always auth.uid()).
+--   • sync_state     — per-user pointer to the last successful sync/backup
+--     time + the encryption salt (TEXT, base64).
 --   • RLS on both tables restricts access to the calling user via auth.uid().
 
 -- ----------------------------------------------------------------------
 -- 1. vault_records
 -- ----------------------------------------------------------------------
 create table if not exists public.vault_records (
-  id          uuid        not null,
+  -- Client-generated record id (e.g. "doc_kx8…", "__settings__") — TEXT, not uuid.
+  id          text        not null,
   user_id     uuid        not null,
   kind        text        not null,
   ciphertext  text        not null,
@@ -32,7 +36,9 @@ create table if not exists public.sync_state (
   user_id          uuid    primary key,
   last_synced_at   bigint,
   last_backup_at   bigint,
-  schema_version   integer not null default 1
+  schema_version   integer not null default 1,
+  -- Per-user encryption salt (base64 TEXT) — fetched before key derivation.
+  salt             text
 );
 
 -- ----------------------------------------------------------------------

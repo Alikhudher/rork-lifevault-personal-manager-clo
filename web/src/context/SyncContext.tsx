@@ -32,9 +32,15 @@ import {
   withTimeout,
 } from "@/lib/supabase";
 import { deriveKey, getSessionKey, setSessionKey } from "@/lib/crypto";
-import { describeSendFailure, verifyCloudPassword } from "@/lib/account-recovery";
+import {
+  describeSendFailure,
+  verifyCloudPassword,
+  type VerifiedEmailSession,
+} from "@/lib/account-recovery";
 import {
   backupAll,
+  cloudBackupExistsForEmail,
+  describeUnlockFailure,
   fetchSalt,
   getSyncMetadata,
   hasCloudBackup,
@@ -43,6 +49,7 @@ import {
   syncIncremental,
   syncReady,
   wipeCloudData,
+  wipeCloudRecords,
   type RestoreResult,
   type SyncMetadata,
   type VaultRecord,
@@ -62,7 +69,12 @@ import type {
 export type SyncStatus = "idle" | "syncing" | "error" | "disabled";
 
 /** Machine-readable failure reason so the UI can offer recovery actions. */
-export type CloudAuthErrorCode = "email_unconfirmed";
+export type CloudAuthErrorCode =
+  | "email_unconfirmed"
+  /** No cloud backup exists for the entered email (verified server-side). */
+  | "no_backup_found"
+  /** A backup exists but the entered backup password is wrong. */
+  | "wrong_backup_password";
 
 /** Result of a cloud auth action, with a user-displayable error on failure. */
 export type CloudAuthResult =
@@ -89,6 +101,17 @@ interface SyncContextValue {
   setupCloud: (email: string, backupPassword: string) => Promise<CloudAuthResult>;
   /** Sign in to Supabase + derive the encryption key from the stored salt. */
   unlockCloud: (email: string, backupPassword: string) => Promise<CloudAuthResult>;
+  /**
+   * Complete a "Forgot backup password" reset after the email was
+   * verified with a 6-digit code. Sets the new cloud password, removes
+   * the old (permanently undecryptable) encrypted records, rotates the
+   * salt, and re-uploads this device's data encrypted with the new
+   * password. Every other device is signed out.
+   */
+  resetBackupPassword: (
+    session: VerifiedEmailSession,
+    newPassword: string,
+  ) => Promise<CloudAuthResult>;
   /**
    * Re-send the signup confirmation email. On failure the exact server
    * error message is surfaced (rate limits, mailer errors, etc.).
@@ -182,6 +205,21 @@ function friendlyAuthError(err: unknown): string {
 function isEmailUnconfirmedError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : typeof err === "string" ? err : "";
   return /email[_ ]not[_ ]confirmed/i.test(msg);
+}
+
+/**
+ * True when Supabase rejected the credentials themselves. This single
+ * error deliberately covers BOTH "no such account" and "wrong
+ * password" — the server-side backup-exists check tells them apart.
+ */
+function isInvalidCredentialsError(err: unknown): boolean {
+  const e = (typeof err === "object" && err !== null ? err : {}) as {
+    message?: unknown;
+    code?: unknown;
+  };
+  const msg =
+    typeof e.message === "string" ? e.message : typeof err === "string" ? err : "";
+  return e.code === "invalid_credentials" || /invalid login credentials|invalid_credentials/i.test(msg);
 }
 
 /** Map storage-layer errors (salt/table access) to actionable messages. */
@@ -456,11 +494,26 @@ export function SyncProvider({ children }: { children: ReactNode }) {
                   "This account exists but its email was never confirmed. Tap the link in the confirmation email, or resend it below.",
               };
             }
-            if (/already registered|already exists/i.test(signUpErr.message)) {
+            if (
+              /already registered|already exists/i.test(signUpErr.message) ||
+              isInvalidCredentialsError(signInErr)
+            ) {
+              // A cloud identity exists but this password doesn't open it.
+              // Tell the user whether it actually holds a backup.
+              const exists = await cloudBackupExistsForEmail(email);
+              if (exists === true) {
+                return {
+                  ok: false,
+                  code: "wrong_backup_password",
+                  error:
+                    "This email already has a cloud backup, but this backup password doesn't match it. Use “Unlock cloud backup” with your original backup password, or reset it via “Forgot backup password?” below.",
+                };
+              }
               return {
                 ok: false,
+                code: "wrong_backup_password",
                 error:
-                  "An account with this email already exists, but this backup password doesn't match. Use “Unlock cloud backup” with your original backup password.",
+                  "A cloud identity for this email already exists, but the password doesn't match. Use “Forgot backup password?” below to verify your email and choose a new backup password.",
               };
             }
             return { ok: false, error: friendlyAuthError(signInErr) };
@@ -523,6 +576,16 @@ export function SyncProvider({ children }: { children: ReactNode }) {
           cloudError("Sign-in failed", error);
           if (isEmailUnconfirmedError(error)) {
             return { ok: false, code: "email_unconfirmed", error: friendlyAuthError(error) };
+          }
+          if (isInvalidCredentialsError(error)) {
+            // Supabase can't tell "no account" from "wrong password" —
+            // ask the server whether a backup exists so the user gets
+            // the TRUE reason instead of a catch-all.
+            cloudLog("Invalid credentials — checking whether a backup exists for this email");
+            const exists = await cloudBackupExistsForEmail(email);
+            cloudLog(`Backup-exists check for ${maskEmail(email)}: ${exists === null ? "unknown" : exists}`);
+            const described = describeUnlockFailure(exists);
+            return { ok: false, code: described.code ?? undefined, error: described.error };
           }
           return { ok: false, error: friendlyAuthError(error) };
         }
@@ -880,6 +943,103 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     [backupNow],
   );
 
+  const resetBackupPassword = useCallback(
+    async (session: VerifiedEmailSession, newPassword: string): Promise<CloudAuthResult> => {
+      const sb = getSupabase();
+      if (!sb) return { ok: false, error: "Cloud backup is not configured for this build." };
+
+      const run = async (): Promise<CloudAuthResult> => {
+        cloudLog(`Backup password reset started for ${maskEmail(session.email)}`);
+        // 1. Set the new cloud password on the code-verified session —
+        //    ownership of the email was already proven server-side.
+        const { error: updateErr } = await session.client.auth.updateUser({
+          password: newPassword,
+        });
+        if (updateErr) {
+          cloudError("Setting the new backup password failed", updateErr);
+          return { ok: false, error: friendlyAuthError(updateErr) };
+        }
+        cloudLog("New backup password accepted by the server");
+
+        // 2. Sign in on the app's main client with the new password.
+        const { error: signInErr } = await sb.auth.signInWithPassword({
+          email: session.email,
+          password: newPassword,
+        });
+        if (signInErr) {
+          cloudError("Post-reset sign-in failed", signInErr);
+          return { ok: false, error: friendlyAuthError(signInErr) };
+        }
+        setCloudSignedIn(true);
+        sessionEmail.current = session.email;
+
+        // 3. Records encrypted with the OLD password can never be
+        //    decrypted again — remove them so they don't linger as
+        //    ghost rows in counts and restores.
+        const wiped = await wipeCloudRecords();
+        if (!wiped.ok) {
+          const error = cloudStorageError(wiped.error);
+          return { ok: false, error };
+        }
+
+        // 4. Fresh salt + key derived from the new password.
+        const created = await initCloudSalt();
+        if (!created.salt) {
+          cloudError("Salt rotation failed", created.error);
+          return { ok: false, error: cloudStorageError(created.error) };
+        }
+        const key = await deriveKey(newPassword, created.salt);
+        setSessionKey(key);
+        setCloudUnlocked(true);
+        setHasExistingBackup(true);
+        setStatus("idle");
+        setLastError(null);
+
+        // 5. Security: every OTHER device must unlock again with the
+        //    new backup password. Non-fatal if it fails.
+        try {
+          await withTimeout(
+            sb.auth.signOut({ scope: "others" }),
+            REQUEST_TIMEOUT_MS,
+            "Signing out other devices",
+          );
+          cloudLog("Backup password reset: other device sessions revoked");
+        } catch (signOutErr) {
+          cloudError("Signing out other devices failed", signOutErr);
+        }
+        return { ok: true };
+      };
+
+      try {
+        const result = await withTimeout(run(), CLOUD_OP_TIMEOUT_MS, "Backup password reset");
+        if (result.ok === false) {
+          setLastError(result.error);
+          setStatus("error");
+          return result;
+        }
+        // 6. Re-encrypt & upload this device's data with the new key
+        //    (outside the watchdog — it has its own progress + errors).
+        const backedUp = await backupNow();
+        if (!backedUp) {
+          return {
+            ok: false,
+            error:
+              "Backup password was reset and cloud access is unlocked, but re-uploading your data failed. Tap “Back up now” to finish.",
+          };
+        }
+        cloudLog("Backup password reset complete — data re-encrypted and uploaded");
+        return { ok: true };
+      } catch (err) {
+        cloudError("Backup password reset failed", err);
+        const error = friendlyAuthError(err);
+        setLastError(error);
+        setStatus("error");
+        return { ok: false, error };
+      }
+    },
+    [backupNow],
+  );
+
   /* ---------------------------------------------------------------- */
   /* Debounced auto-sync after local mutations                        */
   /* ---------------------------------------------------------------- */
@@ -906,6 +1066,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       lastError,
       setupCloud,
       unlockCloud,
+      resetBackupPassword,
       resendConfirmationEmail,
       lockCloud,
       backupNow,
@@ -925,6 +1086,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       lastError,
       setupCloud,
       unlockCloud,
+      resetBackupPassword,
       resendConfirmationEmail,
       lockCloud,
       backupNow,

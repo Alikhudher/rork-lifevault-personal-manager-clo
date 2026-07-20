@@ -8,6 +8,7 @@ import {
   KeyRound,
   Loader2,
   Lock,
+  Mail,
   MailPlus,
   RefreshCw,
   ShieldCheck,
@@ -16,6 +17,12 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  InputOTP,
+  InputOTPGroup,
+  InputOTPSeparator,
+  InputOTPSlot,
+} from "@/components/ui/input-otp";
 import { Switch } from "@/components/ui/switch";
 import {
   AlertDialog,
@@ -31,8 +38,19 @@ import { PageHeader, SectionTitle } from "@/components/lifevault/PageHeader";
 import { Field, FormSheet } from "@/components/lifevault/FormSheet";
 import { useApp } from "@/context/AppContext";
 import { useSync, type CloudAuthErrorCode } from "@/context/SyncContext";
+import {
+  finishVerifiedSession,
+  requestEmailCode,
+  verifyEmailCode,
+  type VerifiedEmailSession,
+} from "@/lib/account-recovery";
 import { supabaseConfigured } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Instagram's link blue — used for the “Forgot backup password?” action. */
+const LINK_BLUE_CLASS = "text-[#0095F6]";
 
 function SettingsCard({ children }: { children: React.ReactNode }) {
   return (
@@ -123,6 +141,8 @@ export default function BackupSync() {
   const [unlockOpen, setUnlockOpen] = useState(false);
   const [changePwOpen, setChangePwOpen] = useState(false);
   const [disableOpen, setDisableOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
   const [autoSync, setAutoSync] = useState(true);
   // What the user was trying to do when the unlock/setup sheet opened, so
   // the flow continues automatically after a successful unlock.
@@ -157,6 +177,25 @@ export default function BackupSync() {
   const handleSetupOpenChange = (open: boolean) => {
     setSetupOpen(open);
     if (!open) pendingActionRef.current = null;
+  };
+
+  /** “Forgot backup password?” — close the auth sheets, open the reset flow. */
+  const openReset = (email: string) => {
+    pendingActionRef.current = null;
+    setResetEmail(email);
+    setUnlockOpen(false);
+    setSetupOpen(false);
+    setResetOpen(true);
+  };
+
+  /**
+   * “No cloud backup found” → jump straight to Enable cloud backup.
+   * Uses the raw state setter (not the onOpenChange handler) so the
+   * pending action survives the switch and continues after setup.
+   */
+  const switchToSetup = () => {
+    setUnlockOpen(false);
+    setSetupOpen(true);
   };
 
   // If Supabase env vars are missing, show a single setup-required card.
@@ -392,6 +431,7 @@ export default function BackupSync() {
         onOpenChange={handleSetupOpenChange}
         defaultEmail={user?.email ?? ""}
         onSuccess={runPendingAction}
+        onForgotPassword={openReset}
       />
       {/* Unlock sheet */}
       <UnlockSheet
@@ -399,6 +439,14 @@ export default function BackupSync() {
         onOpenChange={handleUnlockOpenChange}
         defaultEmail={user?.email ?? ""}
         onSuccess={runPendingAction}
+        onForgotPassword={openReset}
+        onSwitchToSetup={switchToSetup}
+      />
+      {/* Forgot backup password sheet */}
+      <ResetBackupPasswordSheet
+        open={resetOpen}
+        onOpenChange={setResetOpen}
+        defaultEmail={resetEmail || user?.email || ""}
       />
       {/* Change password sheet */}
       <ChangePasswordSheet open={changePwOpen} onOpenChange={setChangePwOpen} />
@@ -450,11 +498,13 @@ function SetupSheet({
   onOpenChange,
   defaultEmail,
   onSuccess,
+  onForgotPassword,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   defaultEmail: string;
   onSuccess?: () => void;
+  onForgotPassword: (email: string) => void;
 }) {
   const sync = useSync();
   const [email, setEmail] = useState(defaultEmail);
@@ -567,6 +617,19 @@ function SetupSheet({
         {errorCode === "email_unconfirmed" && (
           <ResendConfirmation email={email} disabled={busy} onError={setError} />
         )}
+        {errorCode === "wrong_backup_password" && (
+          <button
+            type="button"
+            onClick={() => onForgotPassword(email.trim().toLowerCase())}
+            disabled={busy}
+            className={cn(
+              "block text-[14px] font-semibold transition-opacity active:opacity-60",
+              LINK_BLUE_CLASS,
+            )}
+          >
+            Forgot backup password?
+          </button>
+        )}
         <Button
           onClick={submit}
           disabled={busy}
@@ -596,11 +659,15 @@ function UnlockSheet({
   onOpenChange,
   defaultEmail,
   onSuccess,
+  onForgotPassword,
+  onSwitchToSetup,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   defaultEmail: string;
   onSuccess?: () => void;
+  onForgotPassword: (email: string) => void;
+  onSwitchToSetup: () => void;
 }) {
   const sync = useSync();
   const [email, setEmail] = useState(defaultEmail);
@@ -675,7 +742,7 @@ function UnlockSheet({
             disabled={busy}
           />
         </Field>
-        <Field label="Backup password" hint="The password you chose when enabling cloud backup.">
+        <Field label="Backup password" hint="The password you chose when enabling cloud backup — it can differ from your account password.">
           <Input
             type="password"
             autoComplete="current-password"
@@ -689,6 +756,19 @@ function UnlockSheet({
             }}
           />
         </Field>
+        {/* Instagram-style recovery entry point — blue link under the
+            password field, above the primary button. */}
+        <button
+          type="button"
+          onClick={() => onForgotPassword(email.trim().toLowerCase())}
+          disabled={busy}
+          className={cn(
+            "!mt-3 block text-[14px] font-semibold transition-opacity active:opacity-60",
+            LINK_BLUE_CLASS,
+          )}
+        >
+          Forgot backup password?
+        </button>
         {error && (
           <div className="flex items-start gap-2 rounded-xl bg-destructive/10 p-3 ring-1 ring-destructive/25" role="alert">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
@@ -697,6 +777,17 @@ function UnlockSheet({
         )}
         {errorCode === "email_unconfirmed" && (
           <ResendConfirmation email={email} disabled={busy} onError={setError} />
+        )}
+        {errorCode === "no_backup_found" && (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onSwitchToSetup}
+            disabled={busy}
+            className="h-11 w-full rounded-xl text-[13px] font-bold"
+          >
+            <Cloud className="mr-2 h-4 w-4" /> Enable cloud backup instead
+          </Button>
         )}
         <Button
           onClick={submit}
@@ -903,6 +994,346 @@ function ChangePasswordSheet({
           </p>
         )}
       </div>
+    </FormSheet>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Forgot backup password — verify email, choose a new password        */
+/* ------------------------------------------------------------------ */
+
+type ResetStep = "email" | "code" | "password";
+
+/**
+ * Recovery for a lost backup password. Ownership of the email is
+ * proven with a real 6-digit code (checked server-side), then a new
+ * backup password is set. Because the old backup can never be
+ * decrypted without the old password, the cloud copy is replaced with
+ * this device's data — stated clearly before the final step.
+ */
+function ResetBackupPasswordSheet({
+  open,
+  onOpenChange,
+  defaultEmail,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  defaultEmail: string;
+}) {
+  const sync = useSync();
+  const [step, setStep] = useState<ResetStep>("email");
+  const [email, setEmail] = useState<string>(defaultEmail);
+  const [code, setCode] = useState<string>("");
+  const [pw, setPw] = useState<string>("");
+  const [confirm, setConfirm] = useState<string>("");
+  const [busy, setBusy] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [resendIn, setResendIn] = useState<number>(0);
+  const verifiedRef = useRef<VerifiedEmailSession | null>(null);
+  const slowHint = useSlowHint(busy);
+
+  useEffect(() => {
+    if (open) {
+      setStep("email");
+      setEmail(defaultEmail);
+      setCode("");
+      setPw("");
+      setConfirm("");
+      setBusy(false);
+      setError(null);
+      setResendIn(0);
+    } else {
+      // Sheet dismissed mid-flow — discard any verified email session.
+      const session = verifiedRef.current;
+      verifiedRef.current = null;
+      if (session) void finishVerifiedSession(session);
+    }
+  }, [open, defaultEmail]);
+
+  // Resend countdown ticker.
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const t = window.setTimeout(() => setResendIn((s) => s - 1), 1000);
+    return () => window.clearTimeout(t);
+  }, [resendIn]);
+
+  const normalizedEmail = email.trim().toLowerCase();
+
+  const sendCode = async (isResend: boolean) => {
+    if (busy) return;
+    setError(null);
+    if (!EMAIL_REGEX.test(normalizedEmail)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await requestEmailCode(normalizedEmail);
+      if (result.ok === false) {
+        setError(result.error);
+        toast.error(result.error);
+        return;
+      }
+      setCode("");
+      setResendIn(60);
+      setStep("code");
+      toast.success(isResend ? "A new code is on its way" : "Verification code sent", {
+        description: `Check ${normalizedEmail} (and Spam) for a 6-digit code.`,
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const verifyCode = async () => {
+    if (busy) return;
+    setError(null);
+    if (code.length !== 6) {
+      setError("Enter the 6-digit code from the email.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await verifyEmailCode(normalizedEmail, code);
+      if (result.ok === false) {
+        setError(result.error);
+        setCode("");
+        return;
+      }
+      verifiedRef.current = result.session;
+      setStep("password");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitNewPassword = async () => {
+    if (busy) return;
+    setError(null);
+    if (pw.length < 8) {
+      setError("Backup password must be at least 8 characters.");
+      return;
+    }
+    if (pw !== confirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+    const session = verifiedRef.current;
+    if (!session) {
+      setError("Email verification expired — please start again.");
+      setStep("email");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await sync.resetBackupPassword(session, pw);
+      if (result.ok === false) {
+        setError(result.error);
+        toast.error(result.error);
+        return;
+      }
+      verifiedRef.current = null;
+      void finishVerifiedSession(session);
+      toast.success("Backup password reset", {
+        description: "Cloud backup is unlocked — your data was re-encrypted and uploaded.",
+      });
+      onOpenChange(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const errorBox = error ? (
+    <div className="flex items-start gap-2 rounded-xl bg-destructive/10 p-3 ring-1 ring-destructive/25" role="alert">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+      <p className="text-[12.5px] font-semibold leading-relaxed text-destructive">{error}</p>
+    </div>
+  ) : null;
+
+  return (
+    <FormSheet
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Reset backup password"
+      description={
+        step === "email"
+          ? "We'll email you a 6-digit code to verify it's you, then you'll choose a new backup password."
+          : step === "code"
+            ? `We sent a 6-digit code to ${normalizedEmail}.`
+            : "Email verified. Choose a new backup password."
+      }
+    >
+      {step === "email" && (
+        <div className="space-y-4">
+          <div className="flex flex-col items-center gap-1.5 pb-1 text-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#0095F6]/10 text-[#0095F6]">
+              <KeyRound className="h-6 w-6" />
+            </span>
+            <p className="max-w-[300px] text-[13px] leading-relaxed text-muted-foreground">
+              Enter the email your cloud backup uses. We&apos;ll send a verification code to prove
+              it&apos;s yours.
+            </p>
+          </div>
+          <Field label="Email">
+            <div className="relative">
+              <Input
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="h-12 rounded-xl pr-10"
+                disabled={busy}
+              />
+              <Mail className="pointer-events-none absolute right-3 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-muted-foreground" />
+            </div>
+          </Field>
+          {errorBox}
+          <Button
+            type="button"
+            onClick={() => void sendCode(false)}
+            disabled={busy}
+            className="h-[52px] w-full rounded-2xl text-[15px] font-bold"
+          >
+            {busy ? (
+              <>
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Sending…
+              </>
+            ) : (
+              "Send code"
+            )}
+          </Button>
+        </div>
+      )}
+
+      {step === "code" && (
+        <div className="space-y-4">
+          <div className="flex flex-col items-center gap-1.5 pb-1 text-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-info/12 text-info">
+              <Mail className="h-6 w-6" />
+            </span>
+            <p className="max-w-[300px] text-[13px] leading-relaxed text-muted-foreground">
+              Enter the code we sent to{" "}
+              <span className="font-bold text-foreground">{normalizedEmail}</span>
+            </p>
+          </div>
+          <div className="flex justify-center">
+            <InputOTP maxLength={6} value={code} onChange={setCode} containerClassName="gap-1.5" disabled={busy}>
+              <InputOTPGroup>
+                <InputOTPSlot index={0} className="h-12 w-12 rounded-lg text-[16px] font-bold" />
+                <InputOTPSlot index={1} className="h-12 w-12 rounded-lg text-[16px] font-bold" />
+                <InputOTPSlot index={2} className="h-12 w-12 rounded-lg text-[16px] font-bold" />
+              </InputOTPGroup>
+              <InputOTPSeparator />
+              <InputOTPGroup>
+                <InputOTPSlot index={3} className="h-12 w-12 rounded-lg text-[16px] font-bold" />
+                <InputOTPSlot index={4} className="h-12 w-12 rounded-lg text-[16px] font-bold" />
+                <InputOTPSlot index={5} className="h-12 w-12 rounded-lg text-[16px] font-bold" />
+              </InputOTPGroup>
+            </InputOTP>
+          </div>
+          <div className="flex items-center justify-center gap-1.5 text-[13px]">
+            {resendIn > 0 ? (
+              <span className="text-muted-foreground">Resend code in {resendIn}s</span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void sendCode(true)}
+                disabled={busy}
+                className={cn("font-bold", LINK_BLUE_CLASS)}
+              >
+                Resend code
+              </button>
+            )}
+          </div>
+          {errorBox}
+          <div className="flex gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setStep("email");
+                setError(null);
+                setCode("");
+              }}
+              disabled={busy}
+              className="h-[52px] flex-1 rounded-2xl text-[15px] font-bold"
+            >
+              Back
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void verifyCode()}
+              disabled={busy || code.length !== 6}
+              className="h-[52px] flex-1 rounded-2xl text-[15px] font-bold"
+            >
+              {busy ? (
+                <>
+                  <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Verifying…
+                </>
+              ) : (
+                "Verify code"
+              )}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step === "password" && (
+        <div className="space-y-4">
+          <Field label="New backup password" hint="At least 8 characters. You'll need it to unlock or restore on any device.">
+            <Input
+              type="password"
+              autoComplete="new-password"
+              placeholder="••••••••"
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              className="h-12 rounded-xl"
+              disabled={busy}
+            />
+          </Field>
+          <Field label="Confirm new backup password">
+            <Input
+              type="password"
+              autoComplete="new-password"
+              placeholder="••••••••"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              className="h-12 rounded-xl"
+              disabled={busy}
+            />
+          </Field>
+          <div className="flex items-start gap-2 rounded-xl bg-warning/10 p-3 ring-1 ring-warning/25">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+            <p className="text-[11.5px] leading-relaxed text-muted-foreground">
+              Your old backup can&apos;t be decrypted without the old password, so the cloud copy
+              will be <span className="font-bold text-foreground">replaced with the data on this device</span>,
+              re-encrypted with the new password. Other devices will need the new password.
+            </p>
+          </div>
+          {errorBox}
+          <Button
+            type="button"
+            onClick={() => void submitNewPassword()}
+            disabled={busy || pw.length < 8 || pw !== confirm}
+            className="h-[52px] w-full rounded-2xl text-[15px] font-bold"
+          >
+            {busy ? (
+              <>
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Resetting…
+              </>
+            ) : (
+              "Reset & re-encrypt"
+            )}
+          </Button>
+          {busy && slowHint && (
+            <p className="text-center text-[12px] text-muted-foreground" role="status">
+              Still working — setting the new password and re-uploading your encrypted data.
+            </p>
+          )}
+        </div>
+      )}
     </FormSheet>
   );
 }

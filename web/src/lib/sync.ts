@@ -558,6 +558,97 @@ export async function hasCloudBackup(): Promise<boolean> {
   return res.ok && res.salt !== null;
 }
 
+/* ------------------------------------------------------------------ */
+/* Unlock failure diagnosis                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Server-side check: does ANY cloud backup exist for this email?
+ * Runs BEFORE sign-in (no session needed) via the SECURITY DEFINER
+ * `cloud_backup_exists` SQL function, which returns a single boolean.
+ *
+ * Returns `null` when the check itself couldn't run (offline, function
+ * not deployed yet) so callers can fall back to a generic message
+ * instead of guessing.
+ */
+export async function cloudBackupExistsForEmail(email: string): Promise<boolean | null> {
+  if (!supabaseConfigured) return null;
+  const sb = getSupabase();
+  if (!sb) return null;
+  try {
+    const { data, error } = await sb.rpc("cloud_backup_exists", { p_email: email });
+    if (error) {
+      console.warn("[CloudBackup] backup-exists check failed:", error.message);
+      return null;
+    }
+    return data === true;
+  } catch (err) {
+    console.warn(
+      "[CloudBackup] backup-exists check threw:",
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
+export interface UnlockFailureDescription {
+  /** Machine-readable reason, or null when the true state is unknown. */
+  code: "no_backup_found" | "wrong_backup_password" | null;
+  /** User-displayable message. */
+  error: string;
+}
+
+/**
+ * Maps an invalid-credentials sign-in failure to the TRUE reason using
+ * the server-side backup-exists check. Supabase deliberately returns
+ * the same error for "no such account" and "wrong password", so
+ * without this the app could only show a misleading catch-all.
+ */
+export function describeUnlockFailure(backupExists: boolean | null): UnlockFailureDescription {
+  if (backupExists === false) {
+    return {
+      code: "no_backup_found",
+      error:
+        "No cloud backup found for this email. Double-check the address, or use “Enable cloud backup” to set one up.",
+    };
+  }
+  if (backupExists === true) {
+    return {
+      code: "wrong_backup_password",
+      error:
+        "A backup exists for this email, but the backup password is incorrect. Note: it can differ from your account password — it's the one you chose when enabling cloud backup. Forgot it? Use “Forgot backup password?” below.",
+    };
+  }
+  return {
+    code: null,
+    error:
+      "Incorrect email or backup password. If you haven't enabled cloud backup yet, use “Enable cloud backup” instead.",
+  };
+}
+
+/**
+ * Delete every encrypted record for the current user while KEEPING the
+ * sync_state row. Used by the backup-password reset: rows encrypted
+ * with the old password can never be decrypted again, so they are
+ * removed before fresh data is uploaded with the new key.
+ */
+export async function wipeCloudRecords(): Promise<{ ok: boolean; error?: string }> {
+  if (!supabaseConfigured) return { ok: false, error: "Cloud backup is not configured." };
+  const sb = getSupabase();
+  const userId = await getSupabaseUserId();
+  if (!sb || !userId) return { ok: false, error: "Not signed in to cloud." };
+  try {
+    const { error } = await sb.from(TABLE_RECORDS).delete().eq("user_id", userId);
+    if (error) {
+      console.error("[CloudBackup] wipeCloudRecords failed:", error.message);
+      return { ok: false, error: error.message };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Could not clear old records." };
+  }
+}
+
 /** Generate a fresh salt and store it. Used during first-time setup. */
 export async function initCloudSalt(): Promise<{ salt: string | null; error?: string }> {
   const salt = generateSalt();

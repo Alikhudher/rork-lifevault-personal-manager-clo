@@ -157,11 +157,19 @@ export async function requestEmailCode(email: string): Promise<RecoveryResult> {
     if (error) {
       // Log the FULL error (message + HTTP status + error code) so the
       // real server failure is always diagnosable from the console.
+      // Rate limits are an expected, self-resolving condition — warn
+      // only, so dev overlays don't report them as app crashes.
       const d = extractAuthErrorDetail(error);
-      console.error(
-        "[AccountSecurity] Code send failed:",
-        JSON.stringify({ message: error.message, status: d.status ?? null, code: d.code ?? null }),
-      );
+      const logPayload = JSON.stringify({
+        message: error.message,
+        status: d.status ?? null,
+        code: d.code ?? null,
+      });
+      if (isRateLimit(d.detail)) {
+        console.warn("[AccountSecurity] Code send rate-limited:", logPayload);
+      } else {
+        console.error("[AccountSecurity] Code send failed:", logPayload);
+      }
       return { ok: false, ...describeSendFailure(error) };
     }
     console.log("[AccountSecurity] Verification code accepted by the mail server");
@@ -199,17 +207,22 @@ export async function verifyEmailCode(
     if (error || !data.session?.user) {
       const d = error ? extractAuthErrorDetail(error) : null;
       const msg = d?.detail ?? "No session returned";
-      console.error("[AccountSecurity] Code verification failed:", msg);
       if (d && isRateLimit(d.detail)) {
+        console.warn("[AccountSecurity] Code verification rate-limited:", msg);
         return { ok: false, error: describeSendFailure(error).error, code: "rate_limited" };
       }
       if (d && (d.transient || isNetwork(d.detail))) {
+        console.error("[AccountSecurity] Code verification failed:", msg);
         return {
           ok: false,
           error: "Couldn't reach the verification service. Check your internet connection and try again.",
           code: "network",
         };
       }
+      // A wrong or expired code is expected user input — the UI shows
+      // inline guidance. Never console.error (dev overlays would report
+      // it as an app-level runtime error).
+      console.warn("[AccountSecurity] Code rejected (incorrect or expired):", msg);
       return {
         ok: false,
         error: "That code is incorrect or has expired. Check the latest email or resend a new code.",

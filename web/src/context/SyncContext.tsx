@@ -166,6 +166,19 @@ function cloudError(step: string, err: unknown): void {
   );
 }
 
+/**
+ * Expected, user-recoverable failures (wrong password, unconfirmed
+ * email, weak password). Logged as warnings — `console.error` would
+ * surface them as app-level runtime errors in dev overlays even though
+ * the UI handles them gracefully with an inline message.
+ */
+function cloudWarn(step: string, err: unknown): void {
+  console.warn(
+    `[CloudBackup] ${step}:`,
+    err instanceof Error ? `${err.name}: ${err.message}` : err,
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Error mapping                                                       */
 /* ------------------------------------------------------------------ */
@@ -220,6 +233,20 @@ function isInvalidCredentialsError(err: unknown): boolean {
   const msg =
     typeof e.message === "string" ? e.message : typeof err === "string" ? err : "";
   return e.code === "invalid_credentials" || /invalid login credentials|invalid_credentials/i.test(msg);
+}
+
+/**
+ * True for auth failures caused by what the user typed (wrong
+ * credentials, unconfirmed email, weak/reused password, malformed
+ * email) rather than by the app or the cloud infrastructure. These are
+ * answered with inline guidance and must never be logged as errors.
+ */
+function isUserInputAuthError(err: unknown): boolean {
+  if (isInvalidCredentialsError(err) || isEmailUnconfirmedError(err)) return true;
+  const msg = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return /password should be at least|weak password|should be different from the old password|same_password|invalid email|unable to validate email|is invalid/i.test(
+    msg,
+  );
 }
 
 /** Map storage-layer errors (salt/table access) to actionable messages. */
@@ -485,7 +512,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
             password: backupPassword,
           });
           if (signInErr) {
-            cloudError("Sign-in fallback failed", signInErr);
+            if (isUserInputAuthError(signInErr)) {
+              cloudWarn("Sign-in fallback rejected (existing account, different password)", signInErr);
+            } else {
+              cloudError("Sign-in fallback failed", signInErr);
+            }
             if (isEmailUnconfirmedError(signInErr)) {
               return {
                 ok: false,
@@ -529,7 +560,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
             password: backupPassword,
           });
           if (signInErr) {
-            cloudError("Post-sign-up sign-in failed", signInErr);
+            cloudWarn("Post-sign-up sign-in unavailable — email confirmation required", signInErr);
             return {
               ok: false,
               code: "email_unconfirmed",
@@ -573,7 +604,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
         const t0 = Date.now();
         const { error } = await sb.auth.signInWithPassword({ email, password: backupPassword });
         if (error) {
-          cloudError("Sign-in failed", error);
+          if (isUserInputAuthError(error)) {
+            cloudWarn("Sign-in rejected (wrong credentials or unconfirmed email)", error);
+          } else {
+            cloudError("Sign-in failed", error);
+          }
           if (isEmailUnconfirmedError(error)) {
             return { ok: false, code: "email_unconfirmed", error: friendlyAuthError(error) };
           }
@@ -875,11 +910,12 @@ export function SyncProvider({ children }: { children: ReactNode }) {
         cloudLog("Change password: verifying current password with the server");
         const verified = await verifyCloudPassword(email, current);
         if (verified.ok === false) {
-          cloudError("Current password verification failed", verified.error);
           if (verified.code === "wrong_password") {
             // User-input error — not a sync failure. Don't poison sync status.
+            cloudWarn("Current password rejected by the server", verified.error);
             return { ok: false, error: "Current password is incorrect." };
           }
+          cloudError("Current password verification failed", verified.error);
           setLastError(verified.error);
           setStatus("error");
           return { ok: false, error: verified.error };
@@ -956,7 +992,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
           password: newPassword,
         });
         if (updateErr) {
-          cloudError("Setting the new backup password failed", updateErr);
+          if (isUserInputAuthError(updateErr)) {
+            cloudWarn("New backup password rejected", updateErr);
+          } else {
+            cloudError("Setting the new backup password failed", updateErr);
+          }
           return { ok: false, error: friendlyAuthError(updateErr) };
         }
         cloudLog("New backup password accepted by the server");

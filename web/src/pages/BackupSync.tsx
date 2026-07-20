@@ -8,6 +8,7 @@ import {
   KeyRound,
   Loader2,
   Lock,
+  MailPlus,
   RefreshCw,
   ShieldCheck,
   Trash2,
@@ -29,7 +30,7 @@ import {
 import { PageHeader, SectionTitle } from "@/components/lifevault/PageHeader";
 import { Field, FormSheet } from "@/components/lifevault/FormSheet";
 import { useApp } from "@/context/AppContext";
-import { useSync } from "@/context/SyncContext";
+import { useSync, type CloudAuthErrorCode } from "@/context/SyncContext";
 import { supabaseConfigured } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 
@@ -461,12 +462,14 @@ function SetupSheet({
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<CloudAuthErrorCode | null>(null);
   const slowHint = useSlowHint(busy);
   const ranEmail = useRef(defaultEmail);
 
   useEffect(() => {
     if (open) {
       setError(null);
+      setErrorCode(null);
       if (ranEmail.current !== defaultEmail) {
         setEmail(defaultEmail);
         ranEmail.current = defaultEmail;
@@ -481,11 +484,13 @@ function SetupSheet({
     if (pw !== confirm) return setError("Passwords do not match.");
     setBusy(true);
     setError(null);
+    setErrorCode(null);
     try {
       const result = await sync.setupCloud(email.trim().toLowerCase(), pw);
       // Explicit literal comparison so TS narrows the union without strict mode.
       if (result.ok === false) {
         setError(result.error);
+        setErrorCode(result.code ?? null);
         toast.error(result.error);
         return;
       }
@@ -559,6 +564,9 @@ function SetupSheet({
             <p className="text-[12.5px] font-semibold leading-relaxed text-destructive">{error}</p>
           </div>
         )}
+        {errorCode === "email_unconfirmed" && (
+          <ResendConfirmation email={email} disabled={busy} onError={setError} />
+        )}
         <Button
           onClick={submit}
           disabled={busy}
@@ -599,12 +607,14 @@ function UnlockSheet({
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<CloudAuthErrorCode | null>(null);
   const slowHint = useSlowHint(busy);
   const ranEmail = useRef(defaultEmail);
 
   useEffect(() => {
     if (open) {
       setError(null);
+      setErrorCode(null);
       if (ranEmail.current !== defaultEmail) {
         setEmail(defaultEmail);
         ranEmail.current = defaultEmail;
@@ -620,11 +630,13 @@ function UnlockSheet({
     }
     setBusy(true);
     setError(null);
+    setErrorCode(null);
     try {
       const result = await sync.unlockCloud(email.trim().toLowerCase(), pw);
       // Explicit literal comparison so TS narrows the union without strict mode.
       if (result.ok === false) {
         setError(result.error);
+        setErrorCode(result.code ?? null);
         toast.error(result.error);
         return;
       }
@@ -683,6 +695,9 @@ function UnlockSheet({
             <p className="text-[12.5px] font-semibold leading-relaxed text-destructive">{error}</p>
           </div>
         )}
+        {errorCode === "email_unconfirmed" && (
+          <ResendConfirmation email={email} disabled={busy} onError={setError} />
+        )}
         <Button
           onClick={submit}
           disabled={busy}
@@ -704,6 +719,76 @@ function UnlockSheet({
         )}
       </div>
     </FormSheet>
+  );
+}
+
+/**
+ * "Resend confirmation email" recovery action — shown when a cloud auth
+ * attempt fails because the account's email is unconfirmed. On failure
+ * the exact server error is surfaced via onError; on success it shows
+ * where the email went.
+ */
+function ResendConfirmation({
+  email,
+  disabled,
+  onError,
+}: {
+  email: string;
+  disabled?: boolean;
+  onError: (msg: string) => void;
+}) {
+  const sync = useSync();
+  const [sending, setSending] = useState(false);
+  const [sentTo, setSentTo] = useState<string | null>(null);
+
+  const resend = async () => {
+    if (sending) return;
+    const addr = email.trim().toLowerCase();
+    if (!addr) {
+      onError("Enter your email above first.");
+      return;
+    }
+    setSending(true);
+    setSentTo(null);
+    try {
+      const result = await sync.resendConfirmationEmail(addr);
+      if (result.ok === false) {
+        onError(result.error);
+        toast.error(result.error);
+        return;
+      }
+      setSentTo(addr);
+      toast.success("Confirmation email sent");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <Button
+        type="button"
+        variant="outline"
+        onClick={() => void resend()}
+        disabled={disabled || sending}
+        className="h-11 w-full rounded-xl text-[13px] font-bold"
+      >
+        {sending ? (
+          <>
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Sending…
+          </>
+        ) : (
+          <>
+            <MailPlus className="mr-2 h-4 w-4" /> Resend confirmation email
+          </>
+        )}
+      </Button>
+      {sentTo && (
+        <p className="text-center text-[12px] font-semibold text-success" role="status">
+          Confirmation email sent to {sentTo}. Check your inbox and Spam folder.
+        </p>
+      )}
+    </div>
   );
 }
 

@@ -24,7 +24,13 @@ import {
   type ReactNode,
 } from "react";
 import { toast } from "sonner";
-import { getSupabase, getSupabaseSession, supabaseConfigured, withTimeout } from "@/lib/supabase";
+import {
+  getSupabase,
+  getSupabaseSession,
+  REQUEST_TIMEOUT_MS,
+  supabaseConfigured,
+  withTimeout,
+} from "@/lib/supabase";
 import { deriveKey, getSessionKey, setSessionKey } from "@/lib/crypto";
 import {
   backupAll,
@@ -53,8 +59,13 @@ import type {
 
 export type SyncStatus = "idle" | "syncing" | "error" | "disabled";
 
+/** Machine-readable failure reason so the UI can offer recovery actions. */
+export type CloudAuthErrorCode = "email_unconfirmed";
+
 /** Result of a cloud auth action, with a user-displayable error on failure. */
-export type CloudAuthResult = { ok: true } | { ok: false; error: string };
+export type CloudAuthResult =
+  | { ok: true }
+  | { ok: false; error: string; code?: CloudAuthErrorCode };
 
 interface SyncContextValue {
   /** True when Supabase env vars are present. */
@@ -76,6 +87,11 @@ interface SyncContextValue {
   setupCloud: (email: string, backupPassword: string) => Promise<CloudAuthResult>;
   /** Sign in to Supabase + derive the encryption key from the stored salt. */
   unlockCloud: (email: string, backupPassword: string) => Promise<CloudAuthResult>;
+  /**
+   * Re-send the signup confirmation email. On failure the exact server
+   * error message is surfaced (rate limits, mailer errors, etc.).
+   */
+  resendConfirmationEmail: (email: string) => Promise<CloudAuthResult>;
   /** Forget the in-memory encryption key (lock cloud access). */
   lockCloud: () => void;
   /** Full back up now. */
@@ -143,7 +159,7 @@ function friendlyAuthError(err: unknown): string {
     return "Incorrect email or backup password. If you haven't enabled cloud backup yet, use “Enable cloud backup” instead.";
   }
   if (/email not confirmed/i.test(msg)) {
-    return "Your email isn't confirmed yet. Tap the confirmation link we sent to your inbox, then try again.";
+    return "Your email isn't confirmed yet. Tap the confirmation link in your inbox (check Spam too), or use “Resend confirmation email” below.";
   }
   if (/rate limit|too many requests/i.test(msg)) {
     return "Too many attempts. Please wait a minute and try again.";
@@ -158,6 +174,12 @@ function friendlyAuthError(err: unknown): string {
     return "That email address doesn't look valid. Double-check it and try again.";
   }
   return msg || "Something went wrong. Please try again.";
+}
+
+/** True when the error means the account exists but its email is unconfirmed. */
+function isEmailUnconfirmedError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return /email[_ ]not[_ ]confirmed/i.test(msg);
 }
 
 /** Map storage-layer errors (salt/table access) to actionable messages. */
@@ -419,6 +441,14 @@ export function SyncProvider({ children }: { children: ReactNode }) {
           });
           if (signInErr) {
             cloudError("Sign-in fallback failed", signInErr);
+            if (isEmailUnconfirmedError(signInErr)) {
+              return {
+                ok: false,
+                code: "email_unconfirmed",
+                error:
+                  "This account exists but its email was never confirmed. Tap the link in the confirmation email, or resend it below.",
+              };
+            }
             if (/already registered|already exists/i.test(signUpErr.message)) {
               return {
                 ok: false,
@@ -442,8 +472,9 @@ export function SyncProvider({ children }: { children: ReactNode }) {
             cloudError("Post-sign-up sign-in failed", signInErr);
             return {
               ok: false,
+              code: "email_unconfirmed",
               error:
-                "Almost there — we sent a confirmation link to your inbox. Tap it, then come back and unlock cloud backup.",
+                "Almost there — we sent a confirmation link to your inbox. Tap it, then come back and unlock cloud backup. Didn't get it? Resend it below.",
             };
           }
         }
@@ -483,6 +514,9 @@ export function SyncProvider({ children }: { children: ReactNode }) {
         const { error } = await sb.auth.signInWithPassword({ email, password: backupPassword });
         if (error) {
           cloudError("Sign-in failed", error);
+          if (isEmailUnconfirmedError(error)) {
+            return { ok: false, code: "email_unconfirmed", error: friendlyAuthError(error) };
+          }
           return { ok: false, error: friendlyAuthError(error) };
         }
         cloudLog(`Signed in (${Date.now() - t0}ms)`);
@@ -507,6 +541,36 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       }
     },
     [prepareEncryptionKey],
+  );
+
+  const resendConfirmationEmail = useCallback(
+    async (email: string): Promise<CloudAuthResult> => {
+      const sb = getSupabase();
+      if (!sb) return { ok: false, error: "Cloud backup is not configured for this build." };
+      try {
+        cloudLog(`Resending confirmation email to ${maskEmail(email)}`);
+        const { error } = await withTimeout(
+          sb.auth.resend({ type: "signup", email }),
+          REQUEST_TIMEOUT_MS,
+          "Resending the confirmation email",
+        );
+        if (error) {
+          cloudError("Resend confirmation failed", error);
+          // Surface the EXACT server error so delivery problems are diagnosable.
+          const detail = error.message || "Unknown error";
+          const friendly = /rate limit|too many|frequency|security purposes|seconds/i.test(detail)
+            ? `The email service refused to send: “${detail}”. The built-in Supabase mailer allows only a few emails per hour — wait a bit, then try again.`
+            : `Couldn't send the confirmation email — the server said: “${detail}”.`;
+          return { ok: false, error: friendly };
+        }
+        cloudLog("Confirmation email accepted by the mail server");
+        return { ok: true };
+      } catch (err) {
+        cloudError("Resend confirmation threw", err);
+        return { ok: false, error: friendlyAuthError(err) };
+      }
+    },
+    [],
   );
 
   const lockCloud = useCallback(() => {
@@ -780,6 +844,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       lastError,
       setupCloud,
       unlockCloud,
+      resendConfirmationEmail,
       lockCloud,
       backupNow,
       restoreNow,
@@ -798,6 +863,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       lastError,
       setupCloud,
       unlockCloud,
+      resendConfirmationEmail,
       lockCloud,
       backupNow,
       restoreNow,

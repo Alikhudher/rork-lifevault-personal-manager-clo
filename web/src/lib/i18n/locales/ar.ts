@@ -65,6 +65,8 @@ export const ar: TranslationDict = {
     nextAppointment: "الموعد التالي",
     calendar: "التقويم",
     recentActivity: "النشاط الأخير",
+    noActivityTitle: "لا يوجد نشاط بعد",
+    noActivitySub: "أضف أول مصروف لك وسيظهر هنا.",
     dueLine: "الاستحقاق {when} · {date}",
   },
   profile: {

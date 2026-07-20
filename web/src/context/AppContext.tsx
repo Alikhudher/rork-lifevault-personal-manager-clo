@@ -8,14 +8,12 @@ import React, {
   useState,
 } from "react";
 import {
+  currentDeviceSession,
   DEFAULT_SETTINGS,
-  seedAccounts,
-  seedAppointments,
-  seedDocuments,
-  seedExpenses,
-  seedNotifications,
-  seedSessions,
-  seedSubscriptions,
+  DEMO_ACCOUNT_EMAIL,
+  DEMO_DEFAULT_BUDGET,
+  DEMO_RECORD_IDS,
+  DEMO_SESSION_IDS,
 } from "@/lib/mock-data";
 import { uid } from "@/lib/format";
 import {
@@ -149,20 +147,58 @@ export interface RestoredRecord {
 
 const AppContext = createContext<AppContextValue | null>(null);
 
+/**
+ * State for a brand-new install: completely empty. No demo documents,
+ * expenses, subscriptions, appointments, notifications or budget — records
+ * exist only after the user creates them.
+ */
 function freshSeed(): PersistedState {
   return {
     onboarded: false,
     user: null,
     lastEmail: null,
-    accounts: seedAccounts(),
-    settings: DEFAULT_SETTINGS,
+    accounts: [],
+    settings: { ...DEFAULT_SETTINGS, notifications: { ...DEFAULT_SETTINGS.notifications } },
     security: { ...DEFAULT_SECURITY_SETTINGS },
-    documents: seedDocuments(),
-    expenses: seedExpenses(),
-    subscriptions: seedSubscriptions(),
-    appointments: seedAppointments(),
-    notifications: seedNotifications(),
-    sessions: seedSessions(),
+    documents: [],
+    expenses: [],
+    subscriptions: [],
+    appointments: [],
+    notifications: [],
+    sessions: [currentDeviceSession()],
+  };
+}
+
+/**
+ * Strips demo/sample data that pre-release builds seeded into installs
+ * (TestFlight devices persisted it in localStorage). Idempotent and cheap,
+ * so it runs on every load. Exact-id matching is safe: user-created ids
+ * come from uid() and can never collide with the fixed demo ids. Cloud
+ * copies are cleaned up automatically — the sync engine emits tombstones
+ * for ids that disappear locally.
+ */
+function purgeDemoData(state: PersistedState): PersistedState {
+  const isDemoEmail = (email: string | null | undefined): boolean =>
+    (email ?? "").toLowerCase() === DEMO_ACCOUNT_EMAIL;
+  const hadDemoAccount = state.accounts.some((a) => isDemoEmail(a.email));
+  const sessions = state.sessions.filter((s) => !DEMO_SESSION_IDS.has(s.id));
+  return {
+    ...state,
+    user: isDemoEmail(state.user?.email) ? null : state.user,
+    lastEmail: isDemoEmail(state.lastEmail) ? null : state.lastEmail,
+    accounts: state.accounts.filter((a) => !isDemoEmail(a.email)),
+    documents: state.documents.filter((d) => !DEMO_RECORD_IDS.has(d.id)),
+    expenses: state.expenses.filter((e) => !DEMO_RECORD_IDS.has(e.id)),
+    subscriptions: state.subscriptions.filter((s) => !DEMO_RECORD_IDS.has(s.id)),
+    appointments: state.appointments.filter((a) => !DEMO_RECORD_IDS.has(a.id)),
+    notifications: state.notifications.filter((n) => !DEMO_RECORD_IDS.has(n.id)),
+    sessions: sessions.length > 0 ? sessions : [currentDeviceSession()],
+    // The seeded $3,800 budget only counts as demo data while the demo
+    // account is still present — a value the user set later is kept.
+    settings:
+      hadDemoAccount && state.settings.monthlyBudget === DEMO_DEFAULT_BUDGET
+        ? { ...state.settings, monthlyBudget: 0 }
+        : state.settings,
   };
 }
 
@@ -172,15 +208,15 @@ function loadState(): PersistedState {
     if (!raw) return freshSeed();
     const parsed = JSON.parse(raw) as Partial<PersistedState>;
     const seed = freshSeed();
-    return {
+    return purgeDemoData({
       ...seed,
       ...parsed,
       settings: { ...seed.settings, ...parsed.settings, notifications: { ...seed.settings.notifications, ...parsed.settings?.notifications } },
       security: { ...seed.security, ...parsed.security },
       sessions: parsed.sessions && parsed.sessions.length > 0 ? parsed.sessions : seed.sessions,
-      accounts: parsed.accounts && parsed.accounts.length > 0 ? parsed.accounts : seed.accounts,
+      accounts: parsed.accounts ?? [],
       lastEmail: parsed.lastEmail ?? parsed.user?.email ?? null,
-    };
+    });
   } catch (error) {
     console.error("Failed to load saved state, starting fresh", error);
     return freshSeed();
@@ -560,7 +596,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
-  const applyRestoredRecords = useCallback((records: RestoredRecord[]) => {
+  const applyRestoredRecords = useCallback((rawRecords: RestoredRecord[]) => {
+    // Old cloud backups may still contain pre-release demo rows — never
+    // let a restore re-introduce them.
+    const records = rawRecords.filter((r) => !DEMO_RECORD_IDS.has(r.id));
     const docs: VaultDocument[] = [];
     const exps: Expense[] = [];
     const subs: Subscription[] = [];
@@ -608,7 +647,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }));
   }, [state.settings, state.security]);
 
-  const mergeRestoredRecords = useCallback((records: RestoredRecord[]) => {
+  const mergeRestoredRecords = useCallback((rawRecords: RestoredRecord[]) => {
+    // Demo rows lingering in old cloud backups must never sync back in.
+    const records = rawRecords.filter((r) => !DEMO_RECORD_IDS.has(r.id));
     if (records.length === 0) return;
     setState((s) => {
       const docs = new Map(s.documents.map((d) => [d.id, d]));

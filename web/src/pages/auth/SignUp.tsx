@@ -54,7 +54,7 @@ export default function SignUp() {
         <Field label="Full name">
           <Input
             autoComplete="name"
-            placeholder="Mia Thompson"
+            placeholder="Your full name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             className="h-12 rounded-xl"

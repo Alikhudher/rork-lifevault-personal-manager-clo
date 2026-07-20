@@ -68,6 +68,8 @@ export const en = {
     nextAppointment: "Next appointment",
     calendar: "Calendar",
     recentActivity: "Recent activity",
+    noActivityTitle: "No activity yet",
+    noActivitySub: "Add your first expense and it will show up here.",
     dueLine: "Due {when} · {date}",
   },
   profile: {

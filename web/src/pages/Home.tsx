@@ -10,6 +10,7 @@ import {
   FileWarning,
   PiggyBank,
   Plus,
+  ReceiptText,
   RefreshCcw,
   Sparkles,
   Wallet,
@@ -329,23 +330,34 @@ export default function Home() {
         >
           {t("home.recentActivity")}
         </SectionTitle>
-        <div className="overflow-hidden rounded-2xl bg-card shadow-sm ring-1 ring-border">
-          {recentExpenses.map((expense, i) => (
-            <div
-              key={expense.id}
-              className={cn("flex items-center gap-3 px-4 py-3", i > 0 && "border-t border-border/70")}
-            >
-              <CategoryBubble meta={EXPENSE_META[expense.category]} size="sm" />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[14px] font-bold">{expense.merchant}</p>
-                <p className="text-[12px] text-muted-foreground">
-                  {relativeDay(expense.date)} · {t(`expenseCategories.${expense.category}`)}
-                </p>
+        {recentExpenses.length === 0 ? (
+          <button
+            onClick={() => navigate("/expenses?add=1")}
+            className="flex w-full flex-col items-center rounded-2xl bg-card py-10 text-center shadow-sm ring-1 ring-border transition-transform active:scale-[0.99]"
+          >
+            <ReceiptText className="h-9 w-9 text-muted-foreground/50" />
+            <p className="mt-3 text-[14px] font-bold">{t("home.noActivityTitle")}</p>
+            <p className="mt-1 px-8 text-[12.5px] text-muted-foreground">{t("home.noActivitySub")}</p>
+          </button>
+        ) : (
+          <div className="overflow-hidden rounded-2xl bg-card shadow-sm ring-1 ring-border">
+            {recentExpenses.map((expense, i) => (
+              <div
+                key={expense.id}
+                className={cn("flex items-center gap-3 px-4 py-3", i > 0 && "border-t border-border/70")}
+              >
+                <CategoryBubble meta={EXPENSE_META[expense.category]} size="sm" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[14px] font-bold">{expense.merchant}</p>
+                  <p className="text-[12px] text-muted-foreground">
+                    {relativeDay(expense.date)} · {t(`expenseCategories.${expense.category}`)}
+                  </p>
+                </div>
+                <p className="text-[14px] font-extrabold tabular">-{formatCurrency(expense.amount, currency)}</p>
               </div>
-              <p className="text-[14px] font-extrabold tabular">-{formatCurrency(expense.amount, currency)}</p>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );

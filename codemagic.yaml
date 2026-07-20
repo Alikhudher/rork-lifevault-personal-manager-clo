@@ -53,37 +53,37 @@ workflows:
         script: |
           set -e
           # The web app reads credentials via Vite env vars (VITE_* prefix):
-          #   Supabase:  VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY  (REQUIRED)
+          #   Supabase:  VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
           #   AI gateway: VITE_TOOLKIT_URL, VITE_RORK_APP_KEY,
-          #               VITE_RORK_TOOLKIT_SECRET_KEY              (recommended)
+          #               VITE_RORK_TOOLKIT_SECRET_KEY
           #
-          # Supabase vars MUST be present (cloud backup is broken without them).
-          # AI vars are PUBLIC values with safe baked-in fallbacks — the build
-          # will still succeed if they're missing, but we strongly recommend
-          # adding them to the dashboard so the production bundle has explicit
-          # values inlined via import.meta.env.
+          # Both credential sets are PUBLIC client-side values with verified
+          # baked-in fallbacks, so the build NEVER fails for missing/broken
+          # dashboard vars — the "Build web app" step resolves values by
+          # SHAPE and repairs known mistakes. This step only reports what it
+          # sees so misconfigurations are visible in the build log.
           echo "--- Resolving env vars from Codemagic environment ---"
 
-          # --- Supabase (REQUIRED — fail build if missing) ---
+          # --- Supabase (self-healing; see Build web app step) ---
+          # A previous release pasted the anon KEY into VITE_SUPABASE_URL,
+          # which shipped a TestFlight build that threw "Invalid supabaseUrl:
+          # Must be a valid HTTP or HTTPS URL." Report shape problems loudly.
+          is_url() { case "$1" in http://*|https://*) return 0;; *) return 1;; esac; }
           URL_VAL="$(printenv VITE_SUPABASE_URL || true)"
           KEY_VAL="$(printenv VITE_SUPABASE_ANON_KEY || true)"
-          echo "VITE_SUPABASE_URL      : ${URL_VAL:+present (len ${#URL_VAL})}${URL_VAL:-MISSING}"
-          echo "VITE_SUPABASE_ANON_KEY : ${KEY_VAL:+present (len ${#KEY_VAL})}${KEY_VAL:-MISSING}"
-          if [ -z "$URL_VAL" ] || [ -z "$KEY_VAL" ]; then
-            echo ""
-            echo "ERROR: One or both Supabase env vars are not visible to this build."
-            echo "Troubleshooting checklist:"
-            echo "  1. In Codemagic dashboard → Environment variables, confirm both"
-            echo "     VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are saved as"
-            echo "     encrypted values."
-            echo "  2. Confirm they belong to a variable group named \"Default\""
-            echo "     (or update environment.groups in codemagic.yaml to match"
-            echo "     your group name)."
-            echo "  3. Confirm the group is shared with this app/workflow."
-            echo "  4. Re-run the build. Dashboard edits take effect on the next build."
-            exit 1
+          echo "VITE_SUPABASE_URL      : ${URL_VAL:+present (len ${#URL_VAL})}${URL_VAL:-missing (baked-in default will be used)}"
+          echo "VITE_SUPABASE_ANON_KEY : ${KEY_VAL:+present (len ${#KEY_VAL})}${KEY_VAL:-missing (baked-in default will be used)}"
+          if [ -n "$URL_VAL" ] && ! is_url "$URL_VAL"; then
+            echo "WARNING: VITE_SUPABASE_URL does not look like an http(s) URL —"
+            echo "the anon key was probably pasted into the URL variable in the"
+            echo "Codemagic dashboard. The build step will repair this, but please"
+            echo "fix the dashboard value: it must be https://<ref>.supabase.co"
           fi
-          echo "OK: Both Supabase env vars are present in the build environment."
+          if [ -n "$KEY_VAL" ] && is_url "$KEY_VAL"; then
+            echo "WARNING: VITE_SUPABASE_ANON_KEY contains a URL — the dashboard"
+            echo "values appear swapped. The build step will repair this."
+          fi
+          echo "OK: Supabase config will be resolved and validated during the build step."
 
           # --- AI gateway (baked-in project credentials; dashboard optional) ---
           # The app ships with the project's REAL Rork AI Cloud credentials
@@ -141,14 +141,60 @@ workflows:
           touch .env
 
           # --- Supabase (required for cloud backup) ---
-          if [ -n "$VITE_SUPABASE_URL" ] && [ -n "$VITE_SUPABASE_ANON_KEY" ]; then
-            sed -i '' '/^VITE_SUPABASE_URL=/d; /^VITE_SUPABASE_ANON_KEY=/d' .env || true
-            echo "VITE_SUPABASE_URL=$VITE_SUPABASE_URL" >> .env
-            echo "VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY" >> .env
-            echo "Wrote Supabase vars to web/.env"
-          else
-            echo "WARNING: Supabase vars empty; building without cloud backup."
+          # Resolve by VALUE SHAPE, not just variable name. A previous release
+          # shipped with the anon KEY pasted into VITE_SUPABASE_URL (throwing
+          # "Invalid supabaseUrl" at runtime) and a typo'd project ref in
+          # EXPO_PUBLIC_SUPABASE_URL (a dead domain). Resolution order:
+          #   URL: first value shaped like http(s):// among VITE_SUPABASE_URL,
+          #        EXPO_PUBLIC_SUPABASE_URL, then the key vars (swap repair);
+          #        else the verified baked-in project URL.
+          #   KEY: first non-URL value among VITE_SUPABASE_ANON_KEY,
+          #        EXPO_PUBLIC_SUPABASE_ANON_KEY, then the URL vars (swap
+          #        repair); else the verified baked-in publishable key.
+          # The baked-in values below are PUBLIC client-side credentials for
+          # the project's Supabase instance ("LifeVaultHub", ref
+          # jqzubtkxiairtchzmkgj), verified live; data is protected by RLS.
+          # The runtime (web/src/lib/supabase.ts) applies the same resolution
+          # as a second line of defense.
+          is_url() { case "$1" in http://*|https://*) return 0;; *) return 1;; esac; }
+
+          SB_URL=""
+          for CAND in "${VITE_SUPABASE_URL:-}" "${EXPO_PUBLIC_SUPABASE_URL:-}" "${VITE_SUPABASE_ANON_KEY:-}" "${EXPO_PUBLIC_SUPABASE_ANON_KEY:-}"; do
+            if [ -n "$CAND" ] && is_url "$CAND"; then SB_URL="$CAND"; break; fi
+          done
+          if [ -z "$SB_URL" ]; then
+            SB_URL="https://jqzubtkxiairtchzmkgj.supabase.co"
+            echo "NOTE: No valid Supabase URL in dashboard vars; using verified baked-in URL."
           fi
+          # Surgical repair of the one known-bad typo'd ref (extra "i") that
+          # was stored in dashboards/secrets — a domain that does not exist.
+          SB_URL="${SB_URL//jqzubtkxiaiirtchzmkgj/jqzubtkxiairtchzmkgj}"
+          # Strip trailing slash for cleanliness.
+          SB_URL="${SB_URL%/}"
+
+          SB_KEY=""
+          for CAND in "${VITE_SUPABASE_ANON_KEY:-}" "${EXPO_PUBLIC_SUPABASE_ANON_KEY:-}" "${VITE_SUPABASE_URL:-}" "${EXPO_PUBLIC_SUPABASE_URL:-}"; do
+            if [ -n "$CAND" ] && ! is_url "$CAND"; then SB_KEY="$CAND"; break; fi
+          done
+          if [ -z "$SB_KEY" ]; then
+            SB_KEY="sb_publishable_vokPvwAyDq58VV7LFOcMhw_FCtkE4i-"
+            echo "NOTE: No Supabase anon key in dashboard vars; using verified baked-in key."
+          fi
+
+          # Hard validation: the resolved URL must be a URL. With the baked-in
+          # fallback this cannot fail, but keep the guard so a future edit can
+          # never ship garbage again.
+          if ! is_url "$SB_URL"; then
+            echo "ERROR: Resolved Supabase URL is not a valid http(s) URL: $SB_URL"
+            exit 1
+          fi
+
+          sed -i '' '/^VITE_SUPABASE_URL=/d; /^VITE_SUPABASE_ANON_KEY=/d' .env || true
+          echo "VITE_SUPABASE_URL=$SB_URL" >> .env
+          echo "VITE_SUPABASE_ANON_KEY=$SB_KEY" >> .env
+          echo "Wrote resolved Supabase vars to web/.env"
+          echo "  VITE_SUPABASE_URL      = $SB_URL"
+          echo "  VITE_SUPABASE_ANON_KEY = present (len ${#SB_KEY})"
 
           # --- AI gateway (required for AI document analysis) ---
           # Resolve with fallback chain: VITE_* (dashboard override) →

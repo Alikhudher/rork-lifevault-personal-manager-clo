@@ -29,6 +29,7 @@ import {
   verifyEmailCode,
   type VerifiedEmailSession,
 } from "@/lib/account-recovery";
+import { trackEmailDelivery } from "@/lib/email-delivery";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const RESEND_COOLDOWN_S = 60;
@@ -80,6 +81,7 @@ export default function ForgotPassword() {
     }
     setBusy(true);
     try {
+      const sentAt = Date.now();
       const result = await requestEmailCode(normalizedEmail);
       if (result.ok === false) {
         setError(result.error);
@@ -92,6 +94,8 @@ export default function ForgotPassword() {
       toast.success(isResend ? "A new code is on its way" : "Verification code sent", {
         description: `Check ${normalizedEmail} (and Spam) for a 6-digit code.`,
       });
+      // Follow the message all the way to the inbox via Brevo's logs.
+      void trackEmailDelivery(normalizedEmail, sentAt);
     } finally {
       setBusy(false);
     }

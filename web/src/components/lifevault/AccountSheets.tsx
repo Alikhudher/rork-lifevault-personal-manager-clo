@@ -54,6 +54,7 @@ import {
   verifyEmailCode,
   type VerifiedEmailSession,
 } from "@/lib/account-recovery";
+import { trackEmailDelivery } from "@/lib/email-delivery";
 import type { DeviceSession } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -142,6 +143,7 @@ export function EditProfileSheet({
 
   /** Send a REAL 6-digit code to the new address via the auth server. */
   const sendCode = useCallback(async (): Promise<boolean> => {
+    const sentAt = Date.now();
     const result = await requestEmailCode(normalizedEmail);
     if (result.ok === false) {
       setError(result.error);
@@ -153,6 +155,8 @@ export function EditProfileSheet({
     toast.success("Verification code sent", {
       description: `Check ${normalizedEmail} (and Spam) for a 6-digit code.`,
     });
+    // Follow the message all the way to the inbox via Brevo's logs.
+    void trackEmailDelivery(normalizedEmail, sentAt);
     return true;
   }, [normalizedEmail]);
 
@@ -635,6 +639,7 @@ export function ChangePasswordSheet({
     }
     setSaving(true);
     try {
+      const sentAt = Date.now();
       const result = await requestEmailCode(normalizedRecoveryEmail);
       if (result.ok === false) {
         setError(result.error);
@@ -647,6 +652,8 @@ export function ChangePasswordSheet({
       toast.success(isResend ? "A new code is on its way" : "Verification code sent", {
         description: `Check ${normalizedRecoveryEmail} (and Spam) for a 6-digit code.`,
       });
+      // Follow the message all the way to the inbox via Brevo's logs.
+      void trackEmailDelivery(normalizedRecoveryEmail, sentAt);
     } finally {
       setSaving(false);
     }

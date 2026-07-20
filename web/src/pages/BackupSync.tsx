@@ -44,6 +44,7 @@ import {
   verifyEmailCode,
   type VerifiedEmailSession,
 } from "@/lib/account-recovery";
+import { trackEmailDelivery } from "@/lib/email-delivery";
 import { supabaseConfigured } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 
@@ -842,6 +843,7 @@ function ResendConfirmation({
     setSending(true);
     setSentTo(null);
     try {
+      const sentAt = Date.now();
       const result = await sync.resendConfirmationEmail(addr);
       if (result.ok === false) {
         onError(result.error);
@@ -850,6 +852,8 @@ function ResendConfirmation({
       }
       setSentTo(addr);
       toast.success("Confirmation email sent");
+      // Follow the message all the way to the inbox via Brevo's logs.
+      void trackEmailDelivery(addr, sentAt);
     } finally {
       setSending(false);
     }
@@ -1068,6 +1072,7 @@ function ResetBackupPasswordSheet({
     }
     setBusy(true);
     try {
+      const sentAt = Date.now();
       const result = await requestEmailCode(normalizedEmail);
       if (result.ok === false) {
         setError(result.error);
@@ -1080,6 +1085,8 @@ function ResetBackupPasswordSheet({
       toast.success(isResend ? "A new code is on its way" : "Verification code sent", {
         description: `Check ${normalizedEmail} (and Spam) for a 6-digit code.`,
       });
+      // Follow the message all the way to the inbox via Brevo's logs.
+      void trackEmailDelivery(normalizedEmail, sentAt);
     } finally {
       setBusy(false);
     }

@@ -86,10 +86,18 @@ function verifyUrl(data: HookEmailData, tokenHash: string): string {
   return `${base}/auth/v1/verify?${params.toString()}`;
 }
 
-function buildEmail(data: HookEmailData): { subject: string; html: string } {
+/**
+ * Every email carries BOTH an HTML and a plain-text part — multipart
+ * messages score measurably better with Gmail's spam/deferral filters
+ * than HTML-only mail (relevant here because the sender is a personal
+ * gmail.com address, which Gmail already treats with suspicion when
+ * relayed through Brevo).
+ */
+function buildEmail(data: HookEmailData): { subject: string; html: string; text: string } {
   const expiry = note(
     "The code expires in 60 minutes. If you didn&#8217;t request it, you can safely ignore this email.",
   );
+  const expiryText = "The code expires in 60 minutes. If you didn't request it, you can safely ignore this email.";
   switch (data.email_action_type) {
     case "signup":
       return {
@@ -101,6 +109,7 @@ function buildEmail(data: HookEmailData): { subject: string; html: string } {
             button(verifyUrl(data, data.token_hash), "Confirm email") +
             `<p style='margin:18px 0 0;font-size:13px;color:#6b7280'>The code and link expire in 60 minutes. If you didn&#8217;t request this, you can safely ignore this email.</p>`,
         ),
+        text: `LifeVault\n\nConfirm this email address to activate cloud backup.\n\nIf the app asks for a code, enter: ${data.token}\n\nOr confirm via this link:\n${verifyUrl(data, data.token_hash)}\n\n${expiryText}`,
       };
     case "recovery":
       return {
@@ -112,6 +121,7 @@ function buildEmail(data: HookEmailData): { subject: string; html: string } {
               "The code expires in 60 minutes. If you didn&#8217;t request a reset, you can safely ignore this email &#8212; your password stays unchanged.",
             ),
         ),
+        text: `LifeVault\n\nEnter this code to reset your password: ${data.token}\n\nThe code expires in 60 minutes. If you didn't request a reset, you can safely ignore this email — your password stays unchanged.`,
       };
     case "invite":
       return {
@@ -123,11 +133,13 @@ function buildEmail(data: HookEmailData): { subject: string; html: string } {
             `<div style='height:18px'></div>` +
             expiry,
         ),
+        text: `LifeVault\n\nYou've been invited to LifeVault. Accept the invitation:\n${verifyUrl(data, data.token_hash)}\n\n${expiryText}`,
       };
     case "reauthentication":
       return {
         subject: `${data.token} is your LifeVault verification code`,
         html: card(lead("Enter this code to verify your identity:") + codeBlock(data.token) + expiry),
+        text: `LifeVault\n\nEnter this code to verify your identity: ${data.token}\n\n${expiryText}`,
       };
     case "email_change":
     case "email_change_current":
@@ -138,6 +150,7 @@ function buildEmail(data: HookEmailData): { subject: string; html: string } {
         html: card(
           lead("Confirm the change to your LifeVault email address with this code:") + codeBlock(token) + expiry,
         ),
+        text: `LifeVault\n\nConfirm the change to your LifeVault email address with this code: ${token}\n\n${expiryText}`,
       };
     }
     // "magiclink" — also the safe default for any future action type.
@@ -145,6 +158,7 @@ function buildEmail(data: HookEmailData): { subject: string; html: string } {
       return {
         subject: "Your LifeVault verification code",
         html: card(lead("Enter this verification code in the app:") + codeBlock(data.token) + expiry),
+        text: `LifeVault\n\nEnter this verification code in the app: ${data.token}\n\n${expiryText}`,
       };
   }
 }
@@ -155,7 +169,13 @@ function buildEmail(data: HookEmailData): { subject: string; html: string } {
 
 type SendResult = { ok: true; messageId: string } | { ok: false; status: number; body: string };
 
-async function sendViaBrevo(to: string, subject: string, html: string): Promise<SendResult> {
+async function sendViaBrevo(
+  to: string,
+  subject: string,
+  html: string,
+  text: string,
+  action: string,
+): Promise<SendResult> {
   const apiKey = Deno.env.get("BREVO_API_KEY") ?? "";
   const senderEmail = Deno.env.get("MAIL_SENDER_EMAIL") ?? "";
   const senderName = Deno.env.get("MAIL_SENDER_NAME") ?? "LifeVault";
@@ -167,9 +187,13 @@ async function sendViaBrevo(to: string, subject: string, html: string): Promise<
     headers: { "api-key": apiKey, "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({
       sender: { name: senderName, email: senderEmail },
+      replyTo: { name: senderName, email: senderEmail },
       to: [{ email: to }],
       subject,
       htmlContent: html,
+      textContent: text,
+      // Tags make every auth email identifiable in Brevo's logs by flow.
+      tags: ["lifevault-auth", action.replace(/[^a-z0-9_-]/gi, "").slice(0, 40) || "unknown"],
     }),
   });
   const body = await res.text();
@@ -229,8 +253,8 @@ Deno.serve(async (req) => {
   }
 
   console.log(`[send-email] Sending action=${action} to=${maskEmail(recipient)}`);
-  const { subject, html } = buildEmail(data.email_data);
-  const result = await sendViaBrevo(recipient, subject, html);
+  const { subject, html, text } = buildEmail(data.email_data);
+  const result = await sendViaBrevo(recipient, subject, html, text, action);
 
   if (!result.ok) {
     // Log the FULL Brevo response and return the real reason to Auth.

@@ -284,6 +284,24 @@ export default function Profile() {
       {/* Profile hero card */}
       <section className="px-4 pt-4">
         <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[hsl(219,60%,15%)] to-[hsl(216,55%,28%)] p-5 text-white shadow-lg shadow-primary/15">
+          {/* Cover photo — fills the header edge-to-edge with a centered
+              cover crop (no letterboxing, no zoom-out). A navy scrim on top
+              keeps the text and stats readable. */}
+          {user?.photo && (
+            <>
+              <img
+                src={user.photo}
+                alt=""
+                aria-hidden
+                draggable={false}
+                className="pointer-events-none absolute inset-0 h-full w-full select-none object-cover object-center"
+              />
+              <div
+                className="pointer-events-none absolute inset-0 bg-gradient-to-br from-[hsl(219,60%,15%)]/90 via-[hsl(219,60%,15%)]/78 to-[hsl(216,55%,28%)]/64"
+                aria-hidden
+              />
+            </>
+          )}
           {/* decorative glow */}
           <div
             className="pointer-events-none absolute -right-12 -top-12 h-40 w-40 rounded-full bg-white/10 blur-2xl"

@@ -1,84 +1,32 @@
 import { useEffect, useRef, useState } from "react";
-import { Keyboard } from "@capacitor/keyboard";
-
-/**
- * On-screen keyboard inset in CSS pixels (0 when no keyboard is visible).
- *
- * In iOS WKWebView (Capacitor) the keyboard overlays the layout viewport
- * instead of resizing it, so `window.innerHeight` stays constant while the
- * keyboard is up. `visualViewport` reports the visible (un-occluded) region
- * and is the reliable cross-platform signal.
- */
-function keyboardInsetFromViewport(): number {
-  if (typeof window === "undefined" || !window.visualViewport) return 0;
-  const vv = window.visualViewport;
-  return Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-}
+import { subscribeKeyboard } from "@/lib/keyboard";
 
 /**
  * Keyboard avoidance for inline (non-sheet) inputs.
  *
- * The app shell's main scroll container has no built-in keyboard handling, so
- * inline fields like the Profile → Monthly budget input can end up hidden
- * behind the soft keyboard on iOS. This hook:
+ * Screens render inside a page-level scroll container with no built-in
+ * keyboard handling, so inline fields (Profile → Monthly budget, AI search,
+ * sign-in forms…) can end up hidden behind the soft keyboard on iOS. This
+ * hook:
  *
- *  - Tracks the keyboard height via `@capacitor/keyboard` events with a
- *    `visualViewport` fallback (works on web too).
- *  - Adds bottom padding to the scroll container equal to the keyboard height,
- *    so the user can always scroll the focused field above the keyboard.
+ *  - Tracks the keyboard inset via the central keyboard manager
+ *    (`@capacitor/keyboard` native events + `visualViewport` fallback).
+ *  - Adds bottom padding to the scroll container equal to the keyboard
+ *    height plus the iOS safe area, so the user can always scroll the
+ *    focused field above the keyboard.
  *  - Scrolls the focused input into view (centered) whenever the keyboard
  *    appears or the focused element changes while the keyboard is open.
  *
- * Two signals are combined for reliability:
- *  - @capacitor/keyboard events (native iOS/Android — exact keyboard height)
- *  - visualViewport resize/scroll (web + fallback)
- *
  * @returns a ref to attach to the scrollable container (e.g. `<main>`).
  */
-export function useKeyboardAvoidance() {
+export function useKeyboardAvoidance<T extends HTMLElement = HTMLElement>() {
   const [keyboardHeight, setKeyboardHeight] = useState<number>(0);
-  const scrollRef = useRef<HTMLElement | null>(null);
+  const scrollRef = useRef<T | null>(null);
 
-  useEffect(() => {
-    let kapShow: { remove: () => void } | undefined;
-    let kapHide: { remove: () => void } | undefined;
-
-    const updateFromViewport = () => {
-      setKeyboardHeight(keyboardInsetFromViewport());
-    };
-
-    // Native keyboard events (Capacitor). These fire reliably inside the
-    // iOS WKWebView where visualViewport can be delayed or batched.
-    try {
-      Keyboard.addListener("keyboardWillShow", (info) => {
-        setKeyboardHeight(info.keyboardHeight);
-      }).then((h) => {
-        kapShow = h;
-      });
-      Keyboard.addListener("keyboardWillHide", () => {
-        setKeyboardHeight(0);
-      }).then((h) => {
-        kapHide = h;
-      });
-    } catch {
-      // Keyboard plugin not available (pure web) — visualViewport below covers it.
-    }
-
-    const vv = window.visualViewport;
-    if (vv) {
-      vv.addEventListener("resize", updateFromViewport);
-      vv.addEventListener("scroll", updateFromViewport);
-    }
-
-    return () => {
-      if (vv) {
-        vv.removeEventListener("resize", updateFromViewport);
-        vv.removeEventListener("scroll", updateFromViewport);
-      }
-      kapShow?.remove();
-      kapHide?.remove();
-    };
-  }, []);
+  useEffect(
+    () => subscribeKeyboard((state) => setKeyboardHeight(state.inset)),
+    [],
+  );
 
   // When the keyboard appears (or focus changes while it's open), scroll the
   // focused input into view inside the scroll container so it isn't hidden
@@ -88,7 +36,7 @@ export function useKeyboardAvoidance() {
     if (!container) return;
 
     if (keyboardHeight > 0) {
-      container.style.paddingBottom = `${keyboardHeight + 24}px`;
+      container.style.paddingBottom = `calc(${keyboardHeight + 24}px + env(safe-area-inset-bottom, 0px))`;
     } else {
       container.style.paddingBottom = "";
     }
@@ -98,7 +46,7 @@ export function useKeyboardAvoidance() {
     if (!(el instanceof HTMLElement) && !(el instanceof SVGElement)) return;
     if (!container.contains(el as Node)) return;
 
-    // Defer until the padding/transform has been applied.
+    // Defer until the padding has been applied.
     const id = window.requestAnimationFrame(() => {
       (el as HTMLElement).scrollIntoView({ block: "center", behavior: "smooth" });
     });
@@ -111,6 +59,7 @@ export function useKeyboardAvoidance() {
     const container = scrollRef.current;
     if (!container) return;
 
+    const rafIds = new Set<number>();
     const onFocusIn = (e: FocusEvent) => {
       const target = e.target;
       if (!(target instanceof HTMLElement)) return;
@@ -121,7 +70,6 @@ export function useKeyboardAvoidance() {
       rafIds.add(id);
     };
 
-    const rafIds = new Set<number>();
     document.addEventListener("focusin", onFocusIn);
     return () => {
       document.removeEventListener("focusin", onFocusIn);

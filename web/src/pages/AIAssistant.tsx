@@ -31,6 +31,7 @@ import { toast } from "sonner";
 import { PageHeader } from "@/components/lifevault/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { useApp } from "@/context/AppContext";
 import { formatCurrency } from "@/lib/format";
 import {
@@ -638,9 +639,15 @@ function ActionInline({ action }: { action: SuggestedAction }) {
 function ScanResultCard({
   result,
   onClose,
+  autoOpenReview,
+  onReviewOpened,
 }: {
   result: ScanResult;
   onClose: () => void;
+  /** Open the editable review sheet automatically (fresh analysis). */
+  autoOpenReview?: boolean;
+  /** Called once the auto-opened review has been shown for this result. */
+  onReviewOpened?: () => void;
 }) {
   const navigate = useNavigate();
   const { addDocument, addExpense, addAppointment } = useApp();
@@ -651,17 +658,46 @@ function ScanResultCard({
   const [saveCategory, setSaveCategory] = useState<DocumentCategory>("Other");
   const [saveReminderDays, setSaveReminderDays] = useState<ReminderDays>(30);
   const [saveNotes, setSaveNotes] = useState<string>("");
+  const [saveIssueDate, setSaveIssueDate] = useState<string>("");
+  const [saveExpiryDate, setSaveExpiryDate] = useState<string>("");
+  const [draftFields, setDraftFields] = useState<{ label: string; value: string }[]>([]);
   const [savedDocId, setSavedDocId] = useState<string | null>(null);
 
-  // Pre-fill the save sheet with the AI's suggested title, category, and
-  // summary whenever the scan result changes.
+  // Pre-fill the review sheet with everything the AI extracted — title,
+  // category, dates, summary and every field — whenever the result changes.
   useEffect(() => {
     setSaveName(result.title);
     setSaveCategory(result.category);
     setSaveReminderDays(30);
     setSaveNotes(result.summary);
+    setSaveIssueDate(result.issueDate ?? "");
+    setSaveExpiryDate(result.expiryDate ?? "");
+    setDraftFields(result.fields.map((f) => ({ label: f.label, value: f.value })));
     setSavedDocId(null);
-  }, [result.id, result.title, result.category, result.summary]);
+  }, [result.id, result.title, result.category, result.summary, result.issueDate, result.expiryDate, result.fields]);
+
+  // After the AI finishes analyzing, open the editable review automatically
+  // so the user checks and corrects the extraction BEFORE saving.
+  const autoOpenedRef = useRef<boolean>(false);
+  useEffect(() => {
+    if (autoOpenReview && !autoOpenedRef.current) {
+      autoOpenedRef.current = true;
+      setSaveOpen(true);
+      onReviewOpened?.();
+    }
+  }, [autoOpenReview, onReviewOpened]);
+
+  const updateField = useCallback((idx: number, key: "label" | "value", val: string) => {
+    setDraftFields((fields) => fields.map((f, i) => (i === idx ? { ...f, [key]: val } : f)));
+  }, []);
+
+  const removeField = useCallback((idx: number) => {
+    setDraftFields((fields) => fields.filter((_, i) => i !== idx));
+  }, []);
+
+  const addField = useCallback(() => {
+    setDraftFields((fields) => [...fields, { label: "", value: "" }]);
+  }, []);
 
   const suggestedCatMeta = DOCUMENT_META[result.category];
   const SuggestedCatIcon = suggestedCatMeta.icon;
@@ -745,22 +781,33 @@ function ScanResultCard({
       toast.error("Enter a document name");
       return;
     }
+    // Keep only fields that still carry content after the user's review, and
+    // persist them as readable lines in the notes so they stay visible and
+    // editable everywhere in the app.
+    const cleanFields = draftFields
+      .map((f) => ({ label: f.label.trim(), value: f.value.trim() }))
+      .filter((f) => f.label.length > 0 || f.value.length > 0);
+    const fieldLines = cleanFields
+      .map((f) => (f.label && f.value ? `${f.label}: ${f.value}` : f.label || f.value))
+      .join("\n");
+    const notes = [saveNotes.trim(), fieldLines].filter(Boolean).join("\n\n");
     const doc: Omit<VaultDocument, "id" | "createdAt"> = {
       name,
       category: saveCategory,
-      issueDate: result.issueDate,
-      expiryDate: result.expiryDate,
-      notes: saveNotes.trim(),
+      issueDate: saveIssueDate || null,
+      expiryDate: saveExpiryDate || null,
+      notes,
       reminderDays: saveReminderDays,
       fileName: null,
       fileKind: "image",
     };
     addDocument(doc);
     setSavedDocId("saved");
+    setSaveOpen(false);
     toast.success(`Saved to ${saveCategory}`, {
       description: `"${name}" is now in your vault.`,
     });
-  }, [saveName, saveCategory, saveNotes, saveReminderDays, result.issueDate, result.expiryDate, addDocument]);
+  }, [saveName, saveCategory, saveNotes, saveReminderDays, saveIssueDate, saveExpiryDate, draftFields, addDocument]);
 
   return (
     <div className="animate-fade-in space-y-4 px-4 pt-4">
@@ -975,7 +1022,7 @@ function ScanResultCard({
               </>
             ) : (
               <>
-                <FileText className="mr-1.5 h-4 w-4" /> Save document
+                <FileText className="mr-1.5 h-4 w-4" /> Review & save
               </>
             )}
           </Button>
@@ -990,12 +1037,13 @@ function ScanResultCard({
         </div>
       </div>
 
-      {/* Save sheet — confirm/ edit AI's suggested name + folder */}
+      {/* Review & save — every extracted value is editable before anything
+          is stored. Opens automatically right after analysis. */}
       <FormSheet
         open={saveOpen}
         onOpenChange={setSaveOpen}
-        title="Save to vault"
-        description="The AI suggests a file name and folder. Edit either before saving."
+        title="Review & save"
+        description="Check what the AI extracted. Edit, add or remove anything before saving."
       >
         <div className="space-y-4">
           {/* AI suggestion banner */}
@@ -1022,7 +1070,7 @@ function ScanResultCard({
             </div>
           </div>
 
-          <Field label="File name">
+          <Field label="Document name">
             <Input
               value={saveName}
               onChange={(e) => setSaveName(e.target.value)}
@@ -1040,26 +1088,71 @@ function ScanResultCard({
             />
           </Field>
 
-          {(result.expiryDate || result.issueDate) && (
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Issue date">
-                <Input
-                  type="date"
-                  value={result.issueDate ?? ""}
-                  readOnly
-                  className="h-12 rounded-xl bg-secondary/40 text-muted-foreground"
-                />
-              </Field>
-              <Field label="Expiry date">
-                <Input
-                  type="date"
-                  value={result.expiryDate ?? ""}
-                  readOnly
-                  className="h-12 rounded-xl bg-secondary/40 text-muted-foreground"
-                />
-              </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Issue date">
+              <Input
+                type="date"
+                value={saveIssueDate}
+                onChange={(e) => setSaveIssueDate(e.target.value)}
+                className="h-12 rounded-xl"
+              />
+            </Field>
+            <Field label="Expiry date">
+              <Input
+                type="date"
+                value={saveExpiryDate}
+                onChange={(e) => setSaveExpiryDate(e.target.value)}
+                className="h-12 rounded-xl"
+              />
+            </Field>
+          </div>
+
+          {/* Extracted fields — fully editable: fix, remove, or add */}
+          <Field
+            label="Extracted details"
+            hint="Fix anything the AI misread, remove wrong values, or add missing details."
+          >
+            <div className="space-y-2">
+              {draftFields.length === 0 && (
+                <p className="rounded-xl bg-secondary/50 px-3.5 py-3 text-[12.5px] text-muted-foreground">
+                  No details extracted. Add any you want to keep.
+                </p>
+              )}
+              {draftFields.map((f, i) => (
+                <div key={`field-${i}`} className="flex items-center gap-2">
+                  <Input
+                    value={f.label}
+                    onChange={(e) => updateField(i, "label", e.target.value)}
+                    placeholder="Label"
+                    aria-label={`Detail ${i + 1} label`}
+                    className="h-11 w-[38%] shrink-0 rounded-xl bg-secondary/40 font-semibold"
+                  />
+                  <Input
+                    value={f.value}
+                    onChange={(e) => updateField(i, "value", e.target.value)}
+                    placeholder="Value"
+                    aria-label={`Detail ${i + 1} value`}
+                    className="h-11 min-w-0 flex-1 rounded-xl"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeField(i)}
+                    aria-label={`Remove detail ${i + 1}`}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={addField}
+                className="flex w-full items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-border bg-secondary/30 py-2.5 text-[13px] font-bold text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+              >
+                <Plus className="h-4 w-4" /> Add field
+              </button>
             </div>
-          )}
+          </Field>
 
           <Field label="Remind me before expiry">
             <ChipPicker
@@ -1071,11 +1164,11 @@ function ScanResultCard({
           </Field>
 
           <Field label="Notes">
-            <Input
+            <Textarea
               value={saveNotes}
               onChange={(e) => setSaveNotes(e.target.value)}
               placeholder="AI summary or extra details…"
-              className="h-12 rounded-xl"
+              className="min-h-[88px] rounded-xl"
             />
           </Field>
 
@@ -1100,10 +1193,14 @@ interface ScanResultsProps {
 
 function ScanResultsView({ outcome, onReset }: ScanResultsProps) {
   const [activeIdx, setActiveIdx] = useState<number>(0);
+  // Result ids whose review sheet has already been auto-shown, so switching
+  // between documents doesn't keep reopening it.
+  const [reviewedIds, setReviewedIds] = useState<Set<string>>(new Set());
 
   // If the user scans again and gets a single doc, default to it.
   useEffect(() => {
     setActiveIdx(0);
+    setReviewedIds(new Set());
   }, [outcome]);
 
   const active = outcome.documents[activeIdx] ?? outcome.documents[0];
@@ -1170,6 +1267,14 @@ function ScanResultsView({ outcome, onReset }: ScanResultsProps) {
         key={active.id}
         result={active}
         onClose={onReset}
+        autoOpenReview={!reviewedIds.has(active.id)}
+        onReviewOpened={() =>
+          setReviewedIds((prev) => {
+            const next = new Set(prev);
+            next.add(active.id);
+            return next;
+          })
+        }
       />
     </div>
   );

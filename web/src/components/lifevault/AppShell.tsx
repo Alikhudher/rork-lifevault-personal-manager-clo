@@ -81,8 +81,14 @@ export function AppShell() {
 
 /** Layout for public screens (onboarding / auth) — no bottom nav. */
 export function PublicShell() {
+  // Auth screens (sign in/up, forgot password) have text inputs too — give
+  // them the same keyboard avoidance as the main app shell.
+  const scrollRef = useKeyboardAvoidance<HTMLDivElement>();
   return (
-    <div className="mx-auto min-h-dvh w-full max-w-md bg-background shadow-2xl shadow-primary/5">
+    <div
+      ref={scrollRef}
+      className="mx-auto min-h-dvh w-full max-w-md bg-background shadow-2xl shadow-primary/5"
+    >
       <Outlet />
     </div>
   );

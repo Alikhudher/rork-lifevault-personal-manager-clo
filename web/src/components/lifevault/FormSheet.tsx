@@ -6,7 +6,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Keyboard } from "@capacitor/keyboard";
+import { subscribeKeyboard } from "@/lib/keyboard";
 import { cn } from "@/lib/utils";
 
 interface FormSheetProps {
@@ -15,21 +15,6 @@ interface FormSheetProps {
   title: string;
   description?: string;
   children: React.ReactNode;
-}
-
-/**
- * Height of the on-screen keyboard in CSS pixels. Returns 0 when no keyboard
- * is visible.
- *
- * In iOS WKWebView (Capacitor) the keyboard overlays the layout viewport
- * instead of resizing it, so `window.innerHeight` stays constant while the
- * keyboard is up. `visualViewport` reports the visible (un-occluded) region
- * and is the reliable cross-platform signal.
- */
-function keyboardInsetFromViewport(): number {
-  if (typeof window === "undefined" || !window.visualViewport) return 0;
-  const vv = window.visualViewport;
-  return Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
 }
 
 /**
@@ -43,11 +28,8 @@ function keyboardInsetFromViewport(): number {
  * the viewport rather than resizing it), the sheet is raised above the
  * keyboard AND its max-height is clamped to the visible viewport so the top
  * of the sheet never scrolls off-screen. The focused input is then scrolled
- * into view inside the sheet body.
- *
- * Two signals are combined for reliability:
- *  - @capacitor/keyboard events (native iOS/Android — exact keyboard height)
- *  - visualViewport resize/scroll (web + fallback)
+ * into view inside the sheet body. Keyboard tracking comes from the central
+ * manager in `@/lib/keyboard` (native Capacitor events + visualViewport).
  */
 export function FormSheet({ open, onOpenChange, title, description, children }: FormSheetProps) {
   const [keyboardHeight, setKeyboardHeight] = useState<number>(0);
@@ -56,62 +38,17 @@ export function FormSheet({ open, onOpenChange, title, description, children }: 
   );
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
-  // Track the on-screen keyboard. Only the open sheet subscribes, so closed
-  // sheets pay no cost.
+  // Track the on-screen keyboard via the shared manager. Only the open sheet
+  // subscribes, so closed sheets pay no cost.
   useEffect(() => {
     if (!open) {
       setKeyboardHeight(0);
       return;
     }
-
-    let kapShow: { remove: () => void } | undefined;
-    let kapHide: { remove: () => void } | undefined;
-
-    const updateFromViewport = () => {
-      const vv = window.visualViewport;
-      if (!vv) return;
-      setViewportHeight(vv.height);
-      setKeyboardHeight(keyboardInsetFromViewport());
-    };
-
-    // Native keyboard events (Capacitor). These fire reliably inside the
-    // iOS WKWebView where visualViewport can be delayed or batched.
-    try {
-      Keyboard.addListener("keyboardWillShow", (info) => {
-        setKeyboardHeight(info.keyboardHeight);
-        // With resize:none, window.innerHeight stays at the full size while
-        // the keyboard overlays it. visualViewport.height is the un-occluded
-        // height — use it so the sheet's max-height fits the visible area.
-        const vv = window.visualViewport;
-        setViewportHeight(vv ? vv.height : Math.max(0, window.innerHeight - info.keyboardHeight));
-      }).then((h) => {
-        kapShow = h;
-      });
-      Keyboard.addListener("keyboardWillHide", () => {
-        setKeyboardHeight(0);
-        if (typeof window !== "undefined") setViewportHeight(window.innerHeight);
-      }).then((h) => {
-        kapHide = h;
-      });
-    } catch {
-      // Keyboard plugin not available (pure web) — visualViewport below covers it.
-    }
-
-    const vv = window.visualViewport;
-    updateFromViewport();
-    if (vv) {
-      vv.addEventListener("resize", updateFromViewport);
-      vv.addEventListener("scroll", updateFromViewport);
-    }
-
-    return () => {
-      if (vv) {
-        vv.removeEventListener("resize", updateFromViewport);
-        vv.removeEventListener("scroll", updateFromViewport);
-      }
-      kapShow?.remove();
-      kapHide?.remove();
-    };
+    return subscribeKeyboard((state) => {
+      setKeyboardHeight(state.inset);
+      setViewportHeight(state.viewportHeight);
+    });
   }, [open]);
 
   // When the keyboard appears or focus changes while it's open, scroll the

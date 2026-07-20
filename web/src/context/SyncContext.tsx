@@ -32,7 +32,7 @@ import {
   withTimeout,
 } from "@/lib/supabase";
 import { deriveKey, getSessionKey, setSessionKey } from "@/lib/crypto";
-import { verifyCloudPassword } from "@/lib/account-recovery";
+import { describeSendFailure, verifyCloudPassword } from "@/lib/account-recovery";
 import {
   backupAll,
   fetchSalt,
@@ -563,12 +563,9 @@ export function SyncProvider({ children }: { children: ReactNode }) {
         );
         if (error) {
           cloudError("Resend confirmation failed", error);
-          // Surface the EXACT server error so delivery problems are diagnosable.
-          const detail = error.message || "Unknown error";
-          const friendly = /rate limit|too many|frequency|security purposes|seconds/i.test(detail)
-            ? `The email service refused to send: “${detail}”. The built-in Supabase mailer allows only a few emails per hour — wait a bit, then try again.`
-            : `Couldn't send the confirmation email — the server said: “${detail}”.`;
-          return { ok: false, error: friendly };
+          // Surface the EXACT server error (message + HTTP status + code)
+          // so delivery problems are diagnosable — never a bare "{}".
+          return { ok: false, error: describeSendFailure(error, "confirmation email").error };
         }
         cloudLog("Confirmation email accepted by the mail server");
         return { ok: true };

@@ -51,20 +51,93 @@ function isNetwork(msg: string): boolean {
   return /failed to fetch|network|fetch failed|load failed|timed out|aborted/i.test(msg);
 }
 
-function mapSendError(msg: string): { error: string; code?: RecoveryFailureCode } {
-  if (isRateLimit(msg)) {
+/**
+ * True when a message carries no human-readable information.
+ * supabase-js stringifies body-less gateway responses (502/503/504)
+ * into literally "{}" — that must never reach the user.
+ */
+function isMeaninglessMessage(msg: string): boolean {
+  const t = msg.trim();
+  return t === "" || t === "{}" || t === "[]" || t === "null" || t === "undefined" || t === "[object Object]";
+}
+
+/** Structured, always-readable view of a Supabase auth failure. */
+export interface AuthErrorDetail {
+  /** Human-readable description — never "{}", "[object Object]", or empty. */
+  detail: string;
+  status?: number;
+  code?: string;
+  /** True when the failure looks transient (gateway 5xx / retryable fetch). */
+  transient: boolean;
+}
+
+/**
+ * Extracts the most useful description from a Supabase auth error,
+ * combining the server message with the HTTP status and error code.
+ * Meaningless messages (empty body, "{}") are replaced with a clear
+ * status-based description so the real failure is always visible.
+ */
+export function extractAuthErrorDetail(err: unknown): AuthErrorDetail {
+  const e = (typeof err === "object" && err !== null ? err : {}) as {
+    message?: unknown;
+    status?: unknown;
+    code?: unknown;
+    name?: unknown;
+  };
+  const status = typeof e.status === "number" && e.status > 0 ? e.status : undefined;
+  const code = typeof e.code === "string" && e.code.length > 0 ? e.code : undefined;
+  const raw = typeof err === "string" ? err : typeof e.message === "string" ? e.message : "";
+  const transient =
+    (typeof e.name === "string" && e.name === "AuthRetryableFetchError") ||
+    status === 502 ||
+    status === 503 ||
+    status === 504;
+  const meta = [status !== undefined ? `HTTP ${status}` : null, code ?? null]
+    .filter((part): part is string => part !== null)
+    .join(", ");
+  if (!isMeaninglessMessage(raw)) {
+    return { detail: meta.length > 0 ? `${raw} (${meta})` : raw, status, code, transient };
+  }
+  return {
+    detail:
+      meta.length > 0
+        ? `the request failed with ${meta} and an empty response body`
+        : "the request failed with an empty response body",
+    status,
+    code,
+    transient,
+  };
+}
+
+/**
+ * Maps a failed email-send attempt to a user-displayable message.
+ * Exported so every email-sending surface (recovery flows, cloud
+ * confirmation resend) reports identical, real server errors.
+ */
+export function describeSendFailure(
+  err: unknown,
+  emailKind: string = "verification email",
+): { error: string; code?: RecoveryFailureCode } {
+  const { detail, transient } = extractAuthErrorDetail(err);
+  if (isRateLimit(detail)) {
     return {
-      error: `The email service refused to send: “${msg}”. The mailer allows only a few emails per hour — wait a bit, then try again.`,
+      error: `The email service refused to send: “${detail}”. The mailer allows only a few emails per hour — wait a bit, then try again.`,
       code: "rate_limited",
     };
   }
-  if (isNetwork(msg)) {
+  if (transient) {
+    return {
+      error: `The email service is temporarily unavailable (${detail}). Try again in a moment.`,
+      code: "network",
+    };
+  }
+  if (isNetwork(detail)) {
     return {
       error: "Couldn't reach the verification service. Check your internet connection and try again.",
       code: "network",
     };
   }
-  return { error: `Couldn't send the verification email — the server said: “${msg}”.` };
+  return { error: `Couldn't send the ${emailKind} — the server said: “${detail}”.` };
 }
 
 /**
@@ -82,15 +155,20 @@ export async function requestEmailCode(email: string): Promise<RecoveryResult> {
       "Sending the verification code",
     );
     if (error) {
-      console.error("[AccountSecurity] Code send failed:", error.message);
-      return { ok: false, ...mapSendError(error.message) };
+      // Log the FULL error (message + HTTP status + error code) so the
+      // real server failure is always diagnosable from the console.
+      const d = extractAuthErrorDetail(error);
+      console.error(
+        "[AccountSecurity] Code send failed:",
+        JSON.stringify({ message: error.message, status: d.status ?? null, code: d.code ?? null }),
+      );
+      return { ok: false, ...describeSendFailure(error) };
     }
     console.log("[AccountSecurity] Verification code accepted by the mail server");
     return { ok: true };
   } catch (err) {
-    const msg = messageOf(err);
-    console.error("[AccountSecurity] Code send threw:", msg);
-    return { ok: false, ...mapSendError(msg) };
+    console.error("[AccountSecurity] Code send threw:", messageOf(err));
+    return { ok: false, ...describeSendFailure(err) };
   }
 }
 
@@ -119,10 +197,13 @@ export async function verifyEmailCode(
       "Checking the verification code",
     );
     if (error || !data.session?.user) {
-      const msg = error?.message ?? "No session returned";
+      const d = error ? extractAuthErrorDetail(error) : null;
+      const msg = d?.detail ?? "No session returned";
       console.error("[AccountSecurity] Code verification failed:", msg);
-      if (isRateLimit(msg)) return { ok: false, error: mapSendError(msg).error, code: "rate_limited" };
-      if (isNetwork(msg)) {
+      if (d && isRateLimit(d.detail)) {
+        return { ok: false, error: describeSendFailure(error).error, code: "rate_limited" };
+      }
+      if (d && (d.transient || isNetwork(d.detail))) {
         return {
           ok: false,
           error: "Couldn't reach the verification service. Check your internet connection and try again.",
@@ -143,7 +224,14 @@ export async function verifyEmailCode(
   } catch (err) {
     const msg = messageOf(err);
     console.error("[AccountSecurity] Code verification threw:", msg);
-    return { ok: false, error: mapSendError(msg).error, code: isNetwork(msg) ? "network" : undefined };
+    if (isNetwork(msg)) {
+      return {
+        ok: false,
+        error: "Couldn't reach the verification service. Check your internet connection and try again.",
+        code: "network",
+      };
+    }
+    return { ok: false, error: `Couldn't check the code — ${extractAuthErrorDetail(err).detail}.` };
   }
 }
 
@@ -229,13 +317,15 @@ export async function verifyCloudPassword(email: string, password: string): Prom
           code: "rate_limited",
         };
       }
-      console.error("[AccountSecurity] Password verification failed:", msg);
+      const d = extractAuthErrorDetail(error);
+      console.error("[AccountSecurity] Password verification failed:", d.detail);
       return {
         ok: false,
-        error: isNetwork(msg)
-          ? "Couldn't reach the cloud to verify your password. Check your internet connection and try again."
-          : `Couldn't verify your password — the server said: “${msg}”.`,
-        code: isNetwork(msg) ? "network" : undefined,
+        error:
+          d.transient || isNetwork(d.detail)
+            ? "Couldn't reach the cloud to verify your password. Check your internet connection and try again."
+            : `Couldn't verify your password — the server said: “${d.detail}”.`,
+        code: d.transient || isNetwork(d.detail) ? "network" : undefined,
       };
     }
     console.log("[AccountSecurity] Current password verified by the server");

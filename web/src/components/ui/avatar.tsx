@@ -13,7 +13,12 @@ const Avatar = ({ ref, className, ...props }: React.ComponentPropsWithRef<typeof
 Avatar.displayName = AvatarPrimitive.Root.displayName;
 
 const AvatarImage = ({ ref, className, ...props }: React.ComponentPropsWithRef<typeof AvatarPrimitive.Image>) => (
-  <AvatarPrimitive.Image ref={ref} className={cn("aspect-square h-full w-full", className)} {...props} />
+  <AvatarPrimitive.Image
+    ref={ref}
+    draggable={false}
+    className={cn("aspect-square h-full w-full object-cover object-center", className)}
+    {...props}
+  />
 );
 AvatarImage.displayName = AvatarPrimitive.Image.displayName;
 

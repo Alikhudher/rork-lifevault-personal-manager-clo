@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
@@ -94,6 +94,8 @@ function formatTime(ms: number | null | undefined): string {
   });
 }
 
+type PendingAction = "backup" | "restore" | null;
+
 export default function BackupSync() {
   const navigate = useNavigate();
   const { user } = useApp();
@@ -103,6 +105,40 @@ export default function BackupSync() {
   const [changePwOpen, setChangePwOpen] = useState(false);
   const [disableOpen, setDisableOpen] = useState(false);
   const [autoSync, setAutoSync] = useState(true);
+  // What the user was trying to do when the unlock/setup sheet opened, so
+  // the flow continues automatically after a successful unlock.
+  const pendingActionRef = useRef<PendingAction>(null);
+
+  const openUnlock = (action: PendingAction) => {
+    pendingActionRef.current = action;
+    setUnlockOpen(true);
+  };
+
+  const openSetup = (action: PendingAction) => {
+    pendingActionRef.current = action;
+    setSetupOpen(true);
+  };
+
+  /** Runs after a successful unlock/setup — continues the original intent. */
+  const runPendingAction = () => {
+    const action = pendingActionRef.current;
+    pendingActionRef.current = null;
+    if (action === "backup") {
+      void sync.backupNow();
+    } else if (action === "restore") {
+      navigate("/restore");
+    }
+  };
+
+  const handleUnlockOpenChange = (open: boolean) => {
+    setUnlockOpen(open);
+    if (!open) pendingActionRef.current = null;
+  };
+
+  const handleSetupOpenChange = (open: boolean) => {
+    setSetupOpen(open);
+    if (!open) pendingActionRef.current = null;
+  };
 
   // If Supabase env vars are missing, show a single setup-required card.
   if (!supabaseConfigured) {
@@ -203,10 +239,12 @@ export default function BackupSync() {
         <div className="grid grid-cols-2 gap-3">
           <Button
             onClick={() => {
-              if (!sync.cloudUnlocked) {
-                setUnlockOpen(true);
-              } else {
+              if (sync.cloudUnlocked) {
                 void sync.backupNow();
+              } else if (sync.hasExistingBackup) {
+                openUnlock("backup");
+              } else {
+                openSetup("backup");
               }
             }}
             disabled={busy}
@@ -216,10 +254,11 @@ export default function BackupSync() {
           </Button>
           <Button
             onClick={() => {
-              if (!sync.cloudUnlocked) {
-                setUnlockOpen(true);
-              } else {
+              if (sync.cloudUnlocked) {
                 navigate("/restore");
+              } else {
+                // Restoring implies an existing backup — always go through unlock.
+                openUnlock("restore");
               }
             }}
             disabled={busy}
@@ -246,7 +285,7 @@ export default function BackupSync() {
                     ? "Enter your backup password to decrypt"
                     : "Set a backup password to start secure sync"
                 }
-                onClick={() => (sync.hasExistingBackup ? setUnlockOpen(true) : setSetupOpen(true))}
+                onClick={() => (sync.hasExistingBackup ? openUnlock(null) : openSetup(null))}
                 isLast={false}
               />
             </>
@@ -258,7 +297,9 @@ export default function BackupSync() {
                 bubble="bg-info/12 text-info"
                 title="Sync now"
                 subtitle="Push & pull latest changes"
-                onClick={() => void sync.syncNow()}
+                onClick={() => {
+                  if (!busy) void sync.syncNow();
+                }}
                 isLast={false}
               />
               <Row
@@ -327,9 +368,19 @@ export default function BackupSync() {
       </section>
 
       {/* Setup sheet */}
-      <SetupSheet open={setupOpen} onOpenChange={setSetupOpen} defaultEmail={user?.email ?? ""} />
+      <SetupSheet
+        open={setupOpen}
+        onOpenChange={handleSetupOpenChange}
+        defaultEmail={user?.email ?? ""}
+        onSuccess={runPendingAction}
+      />
       {/* Unlock sheet */}
-      <UnlockSheet open={unlockOpen} onOpenChange={setUnlockOpen} defaultEmail={user?.email ?? ""} />
+      <UnlockSheet
+        open={unlockOpen}
+        onOpenChange={handleUnlockOpenChange}
+        defaultEmail={user?.email ?? ""}
+        onSuccess={runPendingAction}
+      />
       {/* Change password sheet */}
       <ChangePasswordSheet open={changePwOpen} onOpenChange={setChangePwOpen} />
       {/* Disable confirm */}
@@ -379,37 +430,51 @@ function SetupSheet({
   open,
   onOpenChange,
   defaultEmail,
+  onSuccess,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   defaultEmail: string;
+  onSuccess?: () => void;
 }) {
   const sync = useSync();
   const [email, setEmail] = useState(defaultEmail);
   const [pw, setPw] = useState("");
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const ranEmail = useRef(defaultEmail);
 
   useEffect(() => {
-    if (open && ranEmail.current !== defaultEmail) {
-      setEmail(defaultEmail);
-      ranEmail.current = defaultEmail;
+    if (open) {
+      setError(null);
+      if (ranEmail.current !== defaultEmail) {
+        setEmail(defaultEmail);
+        ranEmail.current = defaultEmail;
+      }
     }
   }, [open, defaultEmail]);
 
   const submit = async () => {
-    if (!email.trim()) return toast.error("Enter your email");
-    if (pw.length < 8) return toast.error("Backup password must be at least 8 characters");
-    if (pw !== confirm) return toast.error("Passwords do not match");
+    if (busy) return;
+    if (!email.trim()) return setError("Enter your email.");
+    if (pw.length < 8) return setError("Backup password must be at least 8 characters.");
+    if (pw !== confirm) return setError("Passwords do not match.");
     setBusy(true);
-    const ok = await sync.setupCloud(email.trim().toLowerCase(), pw);
+    setError(null);
+    const result = await sync.setupCloud(email.trim().toLowerCase(), pw);
     setBusy(false);
-    if (ok) {
-      onOpenChange(false);
-      setPw("");
-      setConfirm("");
+    // Explicit literal comparison so TS narrows the union without strict mode.
+    if (result.ok === false) {
+      setError(result.error);
+      toast.error(result.error);
+      return;
     }
+    toast.success("Cloud backup enabled");
+    setPw("");
+    setConfirm("");
+    onSuccess?.();
+    onOpenChange(false);
   };
 
   return (
@@ -457,6 +522,12 @@ function SetupSheet({
             If you forget this password, your cloud backup cannot be recovered.
           </p>
         </div>
+        {error && (
+          <div className="flex items-start gap-2 rounded-xl bg-destructive/10 p-3 ring-1 ring-destructive/25" role="alert">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+            <p className="text-[12.5px] font-semibold leading-relaxed text-destructive">{error}</p>
+          </div>
+        )}
         <Button
           onClick={submit}
           disabled={busy}
@@ -473,33 +544,50 @@ function UnlockSheet({
   open,
   onOpenChange,
   defaultEmail,
+  onSuccess,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   defaultEmail: string;
+  onSuccess?: () => void;
 }) {
   const sync = useSync();
   const [email, setEmail] = useState(defaultEmail);
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const ranEmail = useRef(defaultEmail);
 
   useEffect(() => {
-    if (open && ranEmail.current !== defaultEmail) {
-      setEmail(defaultEmail);
-      ranEmail.current = defaultEmail;
+    if (open) {
+      setError(null);
+      if (ranEmail.current !== defaultEmail) {
+        setEmail(defaultEmail);
+        ranEmail.current = defaultEmail;
+      }
     }
   }, [open, defaultEmail]);
 
   const submit = async () => {
-    if (!email.trim() || !pw) return toast.error("Enter your email and backup password");
-    setBusy(true);
-    const ok = await sync.unlockCloud(email.trim().toLowerCase(), pw);
-    setBusy(false);
-    if (ok) {
-      onOpenChange(false);
-      setPw("");
+    if (busy) return;
+    if (!email.trim() || !pw) {
+      setError("Enter your email and backup password.");
+      return;
     }
+    setBusy(true);
+    setError(null);
+    const result = await sync.unlockCloud(email.trim().toLowerCase(), pw);
+    setBusy(false);
+    // Explicit literal comparison so TS narrows the union without strict mode.
+    if (result.ok === false) {
+      setError(result.error);
+      toast.error(result.error);
+      return;
+    }
+    toast.success("Cloud backup unlocked");
+    setPw("");
+    onSuccess?.();
+    onOpenChange(false);
   };
 
   return (
@@ -521,7 +609,7 @@ function UnlockSheet({
             className="h-12 rounded-xl"
           />
         </Field>
-        <Field label="Backup password">
+        <Field label="Backup password" hint="The password you chose when enabling cloud backup.">
           <Input
             type="password"
             autoComplete="current-password"
@@ -534,6 +622,12 @@ function UnlockSheet({
             }}
           />
         </Field>
+        {error && (
+          <div className="flex items-start gap-2 rounded-xl bg-destructive/10 p-3 ring-1 ring-destructive/25" role="alert">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+            <p className="text-[12.5px] font-semibold leading-relaxed text-destructive">{error}</p>
+          </div>
+        )}
         <Button
           onClick={submit}
           disabled={busy}
@@ -558,20 +652,32 @@ function ChangePasswordSheet({
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open) setError(null);
+  }, [open]);
 
   const submit = async () => {
-    if (!current || !next) return toast.error("Fill in both passwords");
-    if (next.length < 8) return toast.error("New password must be at least 8 characters");
-    if (next !== confirm) return toast.error("New passwords do not match");
+    if (busy) return;
+    if (!current || !next) return setError("Fill in both passwords.");
+    if (next.length < 8) return setError("New password must be at least 8 characters.");
+    if (next !== confirm) return setError("New passwords do not match.");
     setBusy(true);
-    const ok = await sync.changeBackupPassword(current, next);
+    setError(null);
+    const result = await sync.changeBackupPassword(current, next);
     setBusy(false);
-    if (ok) {
-      onOpenChange(false);
-      setCurrent("");
-      setNext("");
-      setConfirm("");
+    // Explicit literal comparison so TS narrows the union without strict mode.
+    if (result.ok === false) {
+      setError(result.error);
+      toast.error(result.error);
+      return;
     }
+    toast.success("Backup password changed and data re-encrypted");
+    setCurrent("");
+    setNext("");
+    setConfirm("");
+    onOpenChange(false);
   };
 
   return (
@@ -606,6 +712,12 @@ function ChangePasswordSheet({
             className="h-12 rounded-xl"
           />
         </Field>
+        {error && (
+          <div className="flex items-start gap-2 rounded-xl bg-destructive/10 p-3 ring-1 ring-destructive/25" role="alert">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+            <p className="text-[12.5px] font-semibold leading-relaxed text-destructive">{error}</p>
+          </div>
+        )}
         <Button
           onClick={submit}
           disabled={busy}

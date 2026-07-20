@@ -106,6 +106,7 @@ export async function getSyncMetadata(): Promise<SyncMetadata | null> {
       .from(TABLE_RECORDS)
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
+      .neq("id", SALT_ID)
       .is("deleted_at", null);
 
     return {
@@ -215,6 +216,7 @@ export async function restoreAll(
       .from(TABLE_RECORDS)
       .select("id, kind, ciphertext, iv, updated_at, deleted_at")
       .eq("user_id", userId)
+      .neq("id", SALT_ID)
       .order("updated_at", { ascending: true });
 
     if (error) throw new Error(error.message);
@@ -222,6 +224,8 @@ export async function restoreAll(
 
     const records: VaultRecord[] = [];
     let done = 0;
+    let attempted = 0;
+    let decryptFailures = 0;
     for (const row of rows) {
       // Skip stale tombstones older than the TTL.
       if (row.deleted_at && Date.now() - row.deleted_at > TOMBSTONE_TTL_MS) {
@@ -229,6 +233,7 @@ export async function restoreAll(
         onProgress?.(done, rows.length);
         continue;
       }
+      attempted++;
       try {
         const payload = await decryptRecord<unknown>(key, {
           ciphertext: row.ciphertext,
@@ -244,9 +249,21 @@ export async function restoreAll(
       } catch {
         // A single undecryptable row (e.g. from an old password) should
         // not abort the whole restore. Skip it; the user can re-back-up.
+        decryptFailures++;
       }
       done++;
       onProgress?.(done, rows.length);
+    }
+
+    // Every row failed to decrypt → the derived key is wrong for this data.
+    if (attempted > 0 && records.length === 0 && decryptFailures === attempted) {
+      return {
+        ok: false,
+        disabled: false,
+        records: [],
+        error:
+          "Couldn't decrypt your backup with this password. It was encrypted with a different backup password.",
+      };
     }
 
     // Update sync_state so future syncs are incremental from this point.
@@ -322,11 +339,12 @@ export async function syncIncremental(
       .maybeSingle();
     const lastSyncedAt = (stateRow as SyncStateRow | null)?.last_synced_at ?? 0;
 
-    // 2. Pull all remote rows newer than lastSyncedAt.
+    // 2. Pull all remote rows newer than lastSyncedAt (excluding the salt row).
     const { data: remoteRows, error: pullErr } = await sb
       .from(TABLE_RECORDS)
       .select("id, kind, ciphertext, iv, updated_at, deleted_at")
       .eq("user_id", userId)
+      .neq("id", SALT_ID)
       .gt("updated_at", lastSyncedAt);
     if (pullErr) throw new Error(pullErr.message);
     const remote = (remoteRows ?? []) as VaultRecordRow[];
@@ -453,11 +471,11 @@ export async function wipeCloudData(): Promise<{ ok: boolean; error?: string }> 
 const SALT_ID = "__salt__";
 
 /** Store the salt for this user (called during initial backup setup). */
-export async function storeSalt(salt: string): Promise<boolean> {
-  if (!supabaseConfigured) return false;
+export async function storeSalt(salt: string): Promise<{ ok: boolean; error?: string }> {
+  if (!supabaseConfigured) return { ok: false, error: "Cloud backup is not configured." };
   const sb = getSupabase();
   const userId = await getSupabaseUserId();
-  if (!sb || !userId) return false;
+  if (!sb || !userId) return { ok: false, error: "Not signed in to cloud." };
   try {
     const { error } = await sb
       .from(TABLE_STATE)
@@ -470,7 +488,7 @@ export async function storeSalt(salt: string): Promise<boolean> {
         },
         { onConflict: "user_id" },
       );
-    if (error) return false;
+    if (error) return { ok: false, error: error.message };
     // Store salt in its own row so it's fetchable before key derivation.
     const { error: saltErr } = await sb
       .from(TABLE_RECORDS)
@@ -486,41 +504,59 @@ export async function storeSalt(salt: string): Promise<boolean> {
         },
         { onConflict: "user_id,id" },
       );
-    return !saltErr;
-  } catch {
-    return false;
+    return saltErr ? { ok: false, error: saltErr.message } : { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Could not store encryption salt." };
   }
 }
 
-/** Retrieve the stored salt for this user (called on a new device). */
-export async function fetchSalt(): Promise<string | null> {
-  if (!supabaseConfigured) return null;
+export interface SaltFetchResult {
+  /** False when the request itself failed (network / missing tables). */
+  ok: boolean;
+  /** The stored salt, or null when the user has never set up cloud backup. */
+  salt: string | null;
+  error?: string;
+}
+
+/**
+ * Retrieve the stored salt for this user (called on a new device).
+ * Distinguishes "no salt stored" (ok: true, salt: null) from request
+ * failures (ok: false) so callers never rotate an existing salt just
+ * because the network hiccuped.
+ */
+export async function fetchSalt(): Promise<SaltFetchResult> {
+  if (!supabaseConfigured) return { ok: false, salt: null, error: "Cloud backup is not configured." };
   const sb = getSupabase();
   const userId = await getSupabaseUserId();
-  if (!sb || !userId) return null;
+  if (!sb || !userId) return { ok: false, salt: null, error: "Not signed in to cloud." };
   try {
-    const { data } = await sb
+    const { data, error } = await sb
       .from(TABLE_RECORDS)
       .select("ciphertext")
       .eq("user_id", userId)
       .eq("id", SALT_ID)
       .maybeSingle();
+    if (error) return { ok: false, salt: null, error: error.message };
     const row = data as { ciphertext?: string } | null;
-    return row?.ciphertext ?? null;
-  } catch {
-    return null;
+    return { ok: true, salt: row?.ciphertext ?? null };
+  } catch (err) {
+    return {
+      ok: false,
+      salt: null,
+      error: err instanceof Error ? err.message : "Could not fetch encryption salt.",
+    };
   }
 }
 
 /** True if the user already has a salt (i.e. has set up cloud backup before). */
 export async function hasCloudBackup(): Promise<boolean> {
-  const salt = await fetchSalt();
-  return salt !== null;
+  const res = await fetchSalt();
+  return res.ok && res.salt !== null;
 }
 
 /** Generate a fresh salt and store it. Used during first-time setup. */
-export async function initCloudSalt(): Promise<string | null> {
+export async function initCloudSalt(): Promise<{ salt: string | null; error?: string }> {
   const salt = generateSalt();
-  const ok = await storeSalt(salt);
-  return ok ? salt : null;
+  const res = await storeSalt(salt);
+  return res.ok ? { salt } : { salt: null, error: res.error };
 }

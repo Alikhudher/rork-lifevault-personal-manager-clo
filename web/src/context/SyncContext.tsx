@@ -7,6 +7,8 @@
  *  - Expose metadata (last backup/sync, record count, status) to the UI.
  *  - Run debounced auto-sync after local mutations and on app foreground.
  *  - Provide backup/restore/setup/change-password/disable actions.
+ *  - Track per-record change stamps so incremental sync pushes exactly
+ *    what changed (and deletions propagate as tombstones).
  *
  * Lives OUTSIDE AppContext so it can read AppContext state without a
  * circular provider dependency. Wrapped in App.tsx around AppProvider.
@@ -23,12 +25,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { getSupabase, getSupabaseSession, supabaseConfigured } from "@/lib/supabase";
-import {
-  deriveKey,
-  generateSalt,
-  getSessionKey,
-  setSessionKey,
-} from "@/lib/crypto";
+import { deriveKey, getSessionKey, setSessionKey } from "@/lib/crypto";
 import {
   backupAll,
   fetchSalt,
@@ -43,7 +40,7 @@ import {
   type SyncMetadata,
   type VaultRecord,
 } from "@/lib/sync";
-import { useApp } from "@/context/AppContext";
+import { useApp, type RestoredRecord } from "@/context/AppContext";
 import type {
   AppNotification,
   Appointment,
@@ -55,6 +52,9 @@ import type {
 } from "@/lib/types";
 
 export type SyncStatus = "idle" | "syncing" | "error" | "disabled";
+
+/** Result of a cloud auth action, with a user-displayable error on failure. */
+export type CloudAuthResult = { ok: true } | { ok: false; error: string };
 
 interface SyncContextValue {
   /** True when Supabase env vars are present. */
@@ -72,22 +72,22 @@ interface SyncContextValue {
   /** Last error message, or null. */
   lastError: string | null;
 
-  /** Create a Supabase account + store a fresh salt. */
-  setupCloud: (email: string, backupPassword: string) => Promise<boolean>;
+  /** Create a Supabase account (or sign in) + prepare the encryption salt. */
+  setupCloud: (email: string, backupPassword: string) => Promise<CloudAuthResult>;
   /** Sign in to Supabase + derive the encryption key from the stored salt. */
-  unlockCloud: (email: string, backupPassword: string) => Promise<boolean>;
+  unlockCloud: (email: string, backupPassword: string) => Promise<CloudAuthResult>;
   /** Forget the in-memory encryption key (lock cloud access). */
   lockCloud: () => void;
   /** Full back up now. */
   backupNow: () => Promise<boolean>;
   /** Full restore now. Returns the restored records. */
   restoreNow: () => Promise<RestoreResult>;
-  /** Run incremental sync. */
-  syncNow: () => Promise<boolean>;
+  /** Run incremental sync. Pass { silent: true } to suppress toasts (auto-sync). */
+  syncNow: (opts?: { silent?: boolean }) => Promise<boolean>;
   /** Wipe all cloud data + sign out of Supabase. */
   disableCloud: () => Promise<boolean>;
   /** Change the backup password (re-derives key with new salt, re-encrypts). */
-  changeBackupPassword: (current: string, next: string) => Promise<boolean>;
+  changeBackupPassword: (current: string, next: string) => Promise<CloudAuthResult>;
   /** Refresh metadata from the server. */
   refreshMetadata: () => Promise<void>;
 }
@@ -95,6 +95,84 @@ interface SyncContextValue {
 const SyncContext = createContext<SyncContextValue | null>(null);
 
 const AUTO_SYNC_DELAY_MS = 4000;
+
+/* ------------------------------------------------------------------ */
+/* Error mapping                                                       */
+/* ------------------------------------------------------------------ */
+
+/** Map raw Supabase/auth/network errors to clear, actionable messages. */
+function friendlyAuthError(err: unknown): string {
+  const msg =
+    err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  if (/invalid login credentials|invalid_credentials/i.test(msg)) {
+    return "Incorrect email or backup password. If you haven't enabled cloud backup yet, use “Enable cloud backup” instead.";
+  }
+  if (/email not confirmed/i.test(msg)) {
+    return "Your email isn't confirmed yet. Tap the confirmation link we sent to your inbox, then try again.";
+  }
+  if (/rate limit|too many requests/i.test(msg)) {
+    return "Too many attempts. Please wait a minute and try again.";
+  }
+  if (/failed to fetch|network|fetch failed|load failed|timed? ?out/i.test(msg)) {
+    return "Couldn't reach the cloud. Check your internet connection and try again.";
+  }
+  if (/password should be at least|weak password/i.test(msg)) {
+    return "Backup password is too weak — use at least 8 characters.";
+  }
+  if (/invalid email|unable to validate email|is invalid/i.test(msg)) {
+    return "That email address doesn't look valid. Double-check it and try again.";
+  }
+  return msg || "Something went wrong. Please try again.";
+}
+
+/** Map storage-layer errors (salt/table access) to actionable messages. */
+function cloudStorageError(raw?: string): string {
+  if (raw && /does not exist|schema cache|relation/i.test(raw)) {
+    return "Your Supabase project is missing the vault tables. Apply the migration in web/supabase/migrations via the Supabase SQL editor, then try again.";
+  }
+  return raw
+    ? `Cloud error: ${raw}`
+    : "Couldn't reach the cloud. Check your connection and try again.";
+}
+
+/* ------------------------------------------------------------------ */
+/* Change stamps — true mutation timestamps + delete tombstones        */
+/* ------------------------------------------------------------------ */
+
+interface ChangeStamp {
+  /** Hash of the record's JSON payload at the last detected change. */
+  h: number;
+  /** ms timestamp of the last detected change (used as updatedAt). */
+  t: number;
+  /** Record kind, kept so tombstones can be emitted after local deletion. */
+  k: VaultRecord["kind"];
+  /** ms timestamp of local deletion (tombstone), if any. */
+  d?: number;
+}
+
+const STAMPS_KEY = "lv-sync-stamps-v1";
+const STAMP_TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+/** Fast djb2-xor hash of a record payload. */
+function hashPayload(data: unknown): number {
+  const str = JSON.stringify(data) ?? "null";
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) {
+    h = (((h << 5) + h) ^ str.charCodeAt(i)) >>> 0;
+  }
+  return h;
+}
+
+function loadStamps(): Record<string, ChangeStamp> {
+  try {
+    const raw = localStorage.getItem(STAMPS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, ChangeStamp>;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 
 /** Build the flat list of VaultRecords to upload from current app state. */
 function buildRecordSet(args: {
@@ -106,30 +184,30 @@ function buildRecordSet(args: {
   settings: Settings;
   security: SecuritySettings;
 }): VaultRecord[] {
-  const now = Date.now();
   const recs: VaultRecord[] = [];
   for (const d of args.documents) {
-    recs.push({ id: d.id, kind: "document", data: d, updatedAt: new Date(d.createdAt).getTime() || now, deletedAt: null });
+    recs.push({ id: d.id, kind: "document", data: d, updatedAt: 0, deletedAt: null });
   }
   for (const e of args.expenses) {
-    recs.push({ id: e.id, kind: "expense", data: e, updatedAt: new Date(e.date).getTime() || now, deletedAt: null });
+    recs.push({ id: e.id, kind: "expense", data: e, updatedAt: 0, deletedAt: null });
   }
   for (const s of args.subscriptions) {
-    recs.push({ id: s.id, kind: "subscription", data: s, updatedAt: new Date(s.nextPaymentDate).getTime() || now, deletedAt: null });
+    recs.push({ id: s.id, kind: "subscription", data: s, updatedAt: 0, deletedAt: null });
   }
   for (const a of args.appointments) {
-    recs.push({ id: a.id, kind: "appointment", data: a, updatedAt: new Date(`${a.date}T${a.time || "00:00"}`).getTime() || now, deletedAt: null });
+    recs.push({ id: a.id, kind: "appointment", data: a, updatedAt: 0, deletedAt: null });
   }
   for (const n of args.notifications) {
-    recs.push({ id: n.id, kind: "notification", data: n, updatedAt: new Date(n.date).getTime() || now, deletedAt: n.read ? null : null });
+    recs.push({ id: n.id, kind: "notification", data: n, updatedAt: 0, deletedAt: null });
   }
-  recs.push({ id: "__settings__", kind: "settings", data: args.settings, updatedAt: now, deletedAt: null });
-  recs.push({ id: "__security__", kind: "security", data: args.security, updatedAt: now, deletedAt: null });
+  recs.push({ id: "__settings__", kind: "settings", data: args.settings, updatedAt: 0, deletedAt: null });
+  recs.push({ id: "__security__", kind: "security", data: args.security, updatedAt: 0, deletedAt: null });
   return recs;
 }
 
 export function SyncProvider({ children }: { children: ReactNode }) {
   const app = useApp();
+  const { mergeRestoredRecords } = app;
   const [cloudSignedIn, setCloudSignedIn] = useState<boolean>(false);
   const [cloudUnlocked, setCloudUnlocked] = useState<boolean>(false);
   const [hasExistingBackup, setHasExistingBackup] = useState<boolean>(false);
@@ -140,6 +218,43 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
   const autoSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionEmail = useRef<string | null>(null);
+  const stampsRef = useRef<Record<string, ChangeStamp> | null>(null);
+
+  /* ---------------------------------------------------------------- */
+  /* Change-stamp helpers                                              */
+  /* ---------------------------------------------------------------- */
+  const getStamps = useCallback((): Record<string, ChangeStamp> => {
+    if (!stampsRef.current) stampsRef.current = loadStamps();
+    return stampsRef.current;
+  }, []);
+
+  const persistStamps = useCallback(() => {
+    try {
+      localStorage.setItem(STAMPS_KEY, JSON.stringify(getStamps()));
+    } catch {
+      // Non-fatal — stamps rebuild from scratch on next load.
+    }
+  }, [getStamps]);
+
+  /**
+   * Record server-known state so freshly restored/merged rows aren't
+   * immediately re-uploaded as "changed" by the next sync pass.
+   */
+  const seedStamps = useCallback(
+    (records: VaultRecord[]) => {
+      const stamps = getStamps();
+      for (const r of records) {
+        stamps[r.id] = {
+          h: hashPayload(r.data),
+          t: r.updatedAt,
+          k: r.kind,
+          ...(r.deletedAt ? { d: r.deletedAt } : {}),
+        };
+      }
+      persistStamps();
+    },
+    [getStamps, persistStamps],
+  );
 
   /* ---------------------------------------------------------------- */
   /* Cloud session bootstrap                                          */
@@ -155,6 +270,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     const session = await getSupabaseSession();
     setCloudSignedIn(Boolean(session));
     if (session) {
+      sessionEmail.current = session.user?.email ?? sessionEmail.current;
       const exists = await hasCloudBackup();
       setHasExistingBackup(exists);
       await refreshMetadata();
@@ -169,70 +285,130 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   }, [checkSession]);
 
   /* ---------------------------------------------------------------- */
-  /* Setup / unlock / lock                                            */
+  /* Shared post-sign-in step: fetch/create salt and derive the key   */
   /* ---------------------------------------------------------------- */
-  const setupCloud = useCallback(
-    async (email: string, backupPassword: string): Promise<boolean> => {
-      const sb = getSupabase();
-      if (!sb) return false;
-      try {
-        // Sign up (or sign in if the account already exists).
-        const { error: signUpErr } = await sb.auth.signUp({ email, password: backupPassword });
-        if (signUpErr && !/already registered/i.test(signUpErr.message)) {
-          // Try sign-in instead (account may already exist).
-          const { error: signInErr } = await sb.auth.signInWithPassword({ email, password: backupPassword });
-          if (signInErr) throw signInErr;
-        }
-        setCloudSignedIn(true);
-        sessionEmail.current = email;
-
-        // Fresh salt → new key. Wipe any prior salt so the new key wins.
-        const salt = await initCloudSalt();
-        if (!salt) throw new Error("Could not initialise cloud encryption salt.");
-        const key = await deriveKey(backupPassword, salt);
-        setSessionKey(key);
-        setCloudUnlocked(true);
-        setHasExistingBackup(false);
-        setStatus("idle");
-        setLastError(null);
-        await refreshMetadata();
-        return true;
-      } catch (err) {
-        setLastError(err instanceof Error ? err.message : "Cloud setup failed.");
+  const prepareEncryptionKey = useCallback(
+    async (backupPassword: string): Promise<CloudAuthResult> => {
+      const saltRes = await fetchSalt();
+      if (!saltRes.ok) {
+        const error = cloudStorageError(saltRes.error);
+        setLastError(error);
         setStatus("error");
-        return false;
+        return { ok: false, error };
       }
+      let salt = saltRes.salt;
+      const existed = salt !== null;
+      if (!salt) {
+        // Account exists but cloud backup was never initialised — finish
+        // setup now with a fresh salt. Never reached when a salt exists,
+        // so an established backup's salt is never rotated accidentally.
+        const created = await initCloudSalt();
+        if (!created.salt) {
+          const error = cloudStorageError(created.error);
+          setLastError(error);
+          setStatus("error");
+          return { ok: false, error };
+        }
+        salt = created.salt;
+      }
+      const key = await deriveKey(backupPassword, salt);
+      setSessionKey(key);
+      setCloudUnlocked(true);
+      setHasExistingBackup(existed);
+      setStatus("idle");
+      setLastError(null);
+      await refreshMetadata();
+      return { ok: true };
     },
     [refreshMetadata],
   );
 
-  const unlockCloud = useCallback(
-    async (email: string, backupPassword: string): Promise<boolean> => {
+  /* ---------------------------------------------------------------- */
+  /* Setup / unlock / lock                                            */
+  /* ---------------------------------------------------------------- */
+  const setupCloud = useCallback(
+    async (email: string, backupPassword: string): Promise<CloudAuthResult> => {
       const sb = getSupabase();
-      if (!sb) return false;
+      if (!sb) return { ok: false, error: "Cloud backup is not configured for this build." };
       try {
-        const { error } = await sb.auth.signInWithPassword({ email, password: backupPassword });
-        if (error) throw error;
+        const { data: signUpData, error: signUpErr } = await sb.auth.signUp({
+          email,
+          password: backupPassword,
+        });
+
+        if (signUpErr) {
+          // The account may already exist — try signing in with the same
+          // credentials so "Enable" is idempotent for returning users.
+          const { error: signInErr } = await sb.auth.signInWithPassword({
+            email,
+            password: backupPassword,
+          });
+          if (signInErr) {
+            if (/already registered|already exists/i.test(signUpErr.message)) {
+              const error =
+                "An account with this email already exists, but this backup password doesn't match. Use “Unlock cloud backup” with your original backup password.";
+              setLastError(error);
+              setStatus("error");
+              return { ok: false, error };
+            }
+            const error = friendlyAuthError(signInErr);
+            setLastError(error);
+            setStatus("error");
+            return { ok: false, error };
+          }
+        } else if (!signUpData.session) {
+          // Email confirmation is enabled on the Supabase project, so
+          // sign-up returned no session. Try a direct sign-in (covers
+          // auto-confirmed addresses); otherwise ask the user to confirm.
+          const { error: signInErr } = await sb.auth.signInWithPassword({
+            email,
+            password: backupPassword,
+          });
+          if (signInErr) {
+            const error =
+              "Almost there — we sent a confirmation link to your inbox. Tap it, then come back and unlock cloud backup.";
+            setLastError(error);
+            setStatus("error");
+            return { ok: false, error };
+          }
+        }
+
         setCloudSignedIn(true);
         sessionEmail.current = email;
-
-        const salt = await fetchSalt();
-        if (!salt) throw new Error("No cloud backup found for this account.");
-        const key = await deriveKey(backupPassword, salt);
-        setSessionKey(key);
-        setCloudUnlocked(true);
-        setHasExistingBackup(true);
-        setStatus("idle");
-        setLastError(null);
-        await refreshMetadata();
-        return true;
+        return await prepareEncryptionKey(backupPassword);
       } catch (err) {
-        setLastError(err instanceof Error ? err.message : "Cloud unlock failed.");
+        const error = friendlyAuthError(err);
+        setLastError(error);
         setStatus("error");
-        return false;
+        return { ok: false, error };
       }
     },
-    [refreshMetadata],
+    [prepareEncryptionKey],
+  );
+
+  const unlockCloud = useCallback(
+    async (email: string, backupPassword: string): Promise<CloudAuthResult> => {
+      const sb = getSupabase();
+      if (!sb) return { ok: false, error: "Cloud backup is not configured for this build." };
+      try {
+        const { error } = await sb.auth.signInWithPassword({ email, password: backupPassword });
+        if (error) {
+          const friendly = friendlyAuthError(error);
+          setLastError(friendly);
+          setStatus("error");
+          return { ok: false, error: friendly };
+        }
+        setCloudSignedIn(true);
+        sessionEmail.current = email;
+        return await prepareEncryptionKey(backupPassword);
+      } catch (err) {
+        const friendly = friendlyAuthError(err);
+        setLastError(friendly);
+        setStatus("error");
+        return { ok: false, error: friendly };
+      }
+    },
+    [prepareEncryptionKey],
   );
 
   const lockCloud = useCallback(() => {
@@ -244,24 +420,72 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   /* ---------------------------------------------------------------- */
   /* Backup / restore / sync                                          */
   /* ---------------------------------------------------------------- */
-  const buildCurrentRecords = useCallback(
-    () =>
-      buildRecordSet({
-        documents: app.documents,
-        expenses: app.expenses,
-        subscriptions: app.subscriptions,
-        appointments: app.appointments,
-        notifications: app.notifications,
-        settings: app.settings,
-        security: app.security,
-      }),
-    [app.documents, app.expenses, app.subscriptions, app.appointments, app.notifications, app.settings, app.security],
-  );
+
+  /**
+   * Build the current record set with real mutation timestamps:
+   *  - each record's payload is hashed; changed/new payloads are stamped
+   *    with "now" so incremental sync pushes them,
+   *  - ids that disappeared locally become tombstones so deletions
+   *    propagate to other devices (kept for 30 days, then pruned).
+   */
+  const buildCurrentRecords = useCallback((): VaultRecord[] => {
+    const raw = buildRecordSet({
+      documents: app.documents,
+      expenses: app.expenses,
+      subscriptions: app.subscriptions,
+      appointments: app.appointments,
+      notifications: app.notifications,
+      settings: app.settings,
+      security: app.security,
+    });
+    const stamps = getStamps();
+    const now = Date.now();
+    const seen = new Set<string>();
+    const out: VaultRecord[] = [];
+
+    for (const rec of raw) {
+      seen.add(rec.id);
+      const h = hashPayload(rec.data);
+      const prev = stamps[rec.id];
+      if (!prev || prev.h !== h || prev.d !== undefined) {
+        stamps[rec.id] = { h, t: now, k: rec.kind };
+      }
+      out.push({ ...rec, updatedAt: stamps[rec.id].t, deletedAt: null });
+    }
+
+    // Tombstones for records that existed before but are gone locally.
+    for (const id of Object.keys(stamps)) {
+      if (seen.has(id)) continue;
+      const st = stamps[id];
+      if (st.d === undefined) {
+        st.d = now;
+        st.t = now;
+      } else if (now - st.d > STAMP_TOMBSTONE_TTL_MS) {
+        delete stamps[id];
+        continue;
+      }
+      out.push({ id, kind: st.k, data: null, updatedAt: st.t, deletedAt: st.d });
+    }
+
+    persistStamps();
+    return out;
+  }, [
+    app.documents,
+    app.expenses,
+    app.subscriptions,
+    app.appointments,
+    app.notifications,
+    app.settings,
+    app.security,
+    getStamps,
+    persistStamps,
+  ]);
 
   const backupNow = useCallback(async (): Promise<boolean> => {
     if (!syncReady()) {
       setLastError("Cloud backup is not unlocked.");
       setStatus("error");
+      toast.error("Unlock cloud backup first.");
       return false;
     }
     setStatus("syncing");
@@ -299,7 +523,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
         ok: false,
         disabled: !supabaseConfigured,
         records: [],
-        error: "Cloud restore is not unlocked.",
+        error: "Cloud restore is not unlocked. Enter your backup password first.",
       };
       setLastError(disabled.error ?? null);
       setStatus("error");
@@ -311,6 +535,9 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       setProgress(total > 0 ? Math.round((done / total) * 100) : 100);
     });
     if (result.ok && !result.disabled) {
+      // Stamp restored rows with their server timestamps so the next
+      // auto-sync doesn't re-upload everything that was just pulled.
+      seedStamps(result.records);
       setStatus("idle");
       setProgress(100);
       setLastError(null);
@@ -320,25 +547,45 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       setStatus("error");
     }
     return result;
-  }, [refreshMetadata]);
+  }, [refreshMetadata, seedStamps]);
 
-  const syncNow = useCallback(async (): Promise<boolean> => {
-    if (!syncReady()) return false;
-    setStatus("syncing");
-    const records = buildCurrentRecords();
-    const result = await syncIncremental(records);
-    if (result.ok && !result.disabled) {
-      setStatus("idle");
-      setLastError(null);
-      await refreshMetadata();
-      return true;
-    }
-    if (!result.ok) {
-      setLastError(result.error ?? null);
-      setStatus("error");
-    }
-    return result.ok;
-  }, [buildCurrentRecords, refreshMetadata]);
+  const syncNow = useCallback(
+    async (opts?: { silent?: boolean }): Promise<boolean> => {
+      if (!syncReady()) {
+        if (!opts?.silent) toast.error("Unlock cloud backup first.");
+        return false;
+      }
+      setStatus("syncing");
+      const records = buildCurrentRecords();
+      const result = await syncIncremental(records);
+      if (result.ok && !result.disabled) {
+        if (result.remoteNewer.length > 0) {
+          // Stamp remote rows BEFORE merging so the merge doesn't get
+          // re-detected as a local change and echoed back up.
+          seedStamps(result.remoteNewer);
+          mergeRestoredRecords(result.remoteNewer as RestoredRecord[]);
+        }
+        setStatus("idle");
+        setLastError(null);
+        await refreshMetadata();
+        if (!opts?.silent) {
+          toast.success(
+            result.uploaded > 0 || result.downloaded > 0
+              ? `Synced — ${result.uploaded} pushed, ${result.downloaded} pulled`
+              : "Everything is up to date",
+          );
+        }
+        return true;
+      }
+      if (!result.ok) {
+        setLastError(result.error ?? null);
+        setStatus("error");
+        if (!opts?.silent) toast.error(result.error ?? "Sync failed.");
+      }
+      return result.ok;
+    },
+    [buildCurrentRecords, mergeRestoredRecords, refreshMetadata, seedStamps],
+  );
 
   const disableCloud = useCallback(async (): Promise<boolean> => {
     const sb = getSupabase();
@@ -350,6 +597,13 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     }
     await sb.auth.signOut();
     setSessionKey(null);
+    // Reset change stamps — they describe the wiped cloud account.
+    stampsRef.current = {};
+    try {
+      localStorage.removeItem(STAMPS_KEY);
+    } catch {
+      // ignore
+    }
     setCloudSignedIn(false);
     setCloudUnlocked(false);
     setHasExistingBackup(false);
@@ -360,25 +614,42 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const changeBackupPassword = useCallback(
-    async (_current: string, next: string): Promise<boolean> => {
+    async (_current: string, next: string): Promise<CloudAuthResult> => {
       const sb = getSupabase();
-      if (!sb || !sessionEmail.current) return false;
+      if (!sb) return { ok: false, error: "Cloud backup is not configured for this build." };
+      if (!sessionEmail.current) return { ok: false, error: "Unlock cloud backup first." };
       try {
         const { error } = await sb.auth.updateUser({ password: next });
-        if (error) throw error;
+        if (error) {
+          const friendly = friendlyAuthError(error);
+          setLastError(friendly);
+          setStatus("error");
+          return { ok: false, error: friendly };
+        }
         // Re-derive the key with a fresh salt and re-back-up.
-        const salt = await initCloudSalt();
-        if (!salt) throw new Error("Could not rotate encryption salt.");
-        const key = await deriveKey(next, salt);
+        const created = await initCloudSalt();
+        if (!created.salt) {
+          const friendly = cloudStorageError(created.error);
+          setLastError(friendly);
+          setStatus("error");
+          return { ok: false, error: friendly };
+        }
+        const key = await deriveKey(next, created.salt);
         setSessionKey(key);
         setCloudUnlocked(true);
-        await backupNow();
-        toast.success("Backup password changed and data re-encrypted");
-        return true;
+        const backedUp = await backupNow();
+        if (!backedUp) {
+          return {
+            ok: false,
+            error: "Password changed, but re-encrypting your backup failed. Tap “Back up now” to finish.",
+          };
+        }
+        return { ok: true };
       } catch (err) {
-        setLastError(err instanceof Error ? err.message : "Could not change password.");
+        const friendly = friendlyAuthError(err);
+        setLastError(friendly);
         setStatus("error");
-        return false;
+        return { ok: false, error: friendly };
       }
     },
     [backupNow],
@@ -391,7 +662,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     if (!cloudUnlocked) return;
     if (autoSyncTimer.current) clearTimeout(autoSyncTimer.current);
     autoSyncTimer.current = setTimeout(() => {
-      void syncNow();
+      void syncNow({ silent: true });
     }, AUTO_SYNC_DELAY_MS);
     return () => {
       if (autoSyncTimer.current) clearTimeout(autoSyncTimer.current);

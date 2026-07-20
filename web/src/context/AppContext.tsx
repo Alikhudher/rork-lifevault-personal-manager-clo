@@ -129,6 +129,11 @@ interface AppContextValue extends PersistedState {
   /* ---- Cloud restore ---- */
   /** Replace all local state with the given restored records (cloud restore). */
   applyRestoredRecords: (records: RestoredRecord[]) => void;
+  /**
+   * Merge cloud records into local state (incremental sync pull).
+   * Upserts records by id; tombstoned records (deletedAt set) are removed.
+   */
+  mergeRestoredRecords: (records: RestoredRecord[]) => void;
   /** Wipe all local data (used when disabling cloud backup). */
   clearLocalData: () => void;
 }
@@ -603,6 +608,63 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }));
   }, [state.settings, state.security]);
 
+  const mergeRestoredRecords = useCallback((records: RestoredRecord[]) => {
+    if (records.length === 0) return;
+    setState((s) => {
+      const docs = new Map(s.documents.map((d) => [d.id, d]));
+      const exps = new Map(s.expenses.map((e) => [e.id, e]));
+      const subs = new Map(s.subscriptions.map((x) => [x.id, x]));
+      const apts = new Map(s.appointments.map((a) => [a.id, a]));
+      const notifs = new Map(s.notifications.map((n) => [n.id, n]));
+      let settings = s.settings;
+      let security = s.security;
+      for (const r of records) {
+        const isDeleted = r.deletedAt !== null && r.deletedAt !== undefined;
+        const hasData = !isDeleted && r.data !== null && typeof r.data === "object";
+        switch (r.kind) {
+          case "document":
+            if (isDeleted) docs.delete(r.id);
+            else if (hasData) docs.set(r.id, r.data as VaultDocument);
+            break;
+          case "expense":
+            if (isDeleted) exps.delete(r.id);
+            else if (hasData) exps.set(r.id, r.data as Expense);
+            break;
+          case "subscription":
+            if (isDeleted) subs.delete(r.id);
+            else if (hasData) subs.set(r.id, r.data as Subscription);
+            break;
+          case "appointment":
+            if (isDeleted) apts.delete(r.id);
+            else if (hasData) apts.set(r.id, r.data as Appointment);
+            break;
+          case "notification":
+            if (isDeleted) notifs.delete(r.id);
+            else if (hasData) notifs.set(r.id, r.data as AppNotification);
+            break;
+          case "settings":
+            if (hasData) settings = { ...settings, ...(r.data as Partial<Settings>) };
+            break;
+          case "security":
+            if (hasData) security = { ...security, ...(r.data as Partial<SecuritySettings>) };
+            break;
+          default:
+            break;
+        }
+      }
+      return {
+        ...s,
+        documents: [...docs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+        expenses: [...exps.values()].sort((a, b) => b.date.localeCompare(a.date)),
+        subscriptions: [...subs.values()],
+        appointments: [...apts.values()].sort((a, b) => b.date.localeCompare(a.date)),
+        notifications: [...notifs.values()].sort((a, b) => b.date.localeCompare(a.date)),
+        settings,
+        security,
+      };
+    });
+  }, []);
+
   const clearLocalData = useCallback(() => {
     setState((s) => ({
       ...s,
@@ -662,6 +724,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       markAllNotificationsRead,
       unreadCount,
       applyRestoredRecords,
+      mergeRestoredRecords,
       clearLocalData,
     }),
     [
@@ -705,6 +768,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       markAllNotificationsRead,
       unreadCount,
       applyRestoredRecords,
+      mergeRestoredRecords,
       clearLocalData,
     ],
   );

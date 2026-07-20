@@ -6,6 +6,7 @@ import {
   CloudDownload,
   CloudUpload,
   KeyRound,
+  Loader2,
   Lock,
   RefreshCw,
   ShieldCheck,
@@ -95,6 +96,23 @@ function formatTime(ms: number | null | undefined): string {
 }
 
 type PendingAction = "backup" | "restore" | null;
+
+/**
+ * True once `busy` has been active for a while — used to reassure the
+ * user that the operation is still running and WILL end with a result.
+ */
+function useSlowHint(busy: boolean): boolean {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!busy) {
+      setSlow(false);
+      return;
+    }
+    const t = setTimeout(() => setSlow(true), 8000);
+    return () => clearTimeout(t);
+  }, [busy]);
+  return slow;
+}
 
 export default function BackupSync() {
   const navigate = useNavigate();
@@ -443,6 +461,7 @@ function SetupSheet({
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const slowHint = useSlowHint(busy);
   const ranEmail = useRef(defaultEmail);
 
   useEffect(() => {
@@ -462,19 +481,28 @@ function SetupSheet({
     if (pw !== confirm) return setError("Passwords do not match.");
     setBusy(true);
     setError(null);
-    const result = await sync.setupCloud(email.trim().toLowerCase(), pw);
-    setBusy(false);
-    // Explicit literal comparison so TS narrows the union without strict mode.
-    if (result.ok === false) {
-      setError(result.error);
-      toast.error(result.error);
-      return;
+    try {
+      const result = await sync.setupCloud(email.trim().toLowerCase(), pw);
+      // Explicit literal comparison so TS narrows the union without strict mode.
+      if (result.ok === false) {
+        setError(result.error);
+        toast.error(result.error);
+        return;
+      }
+      toast.success("Cloud backup enabled");
+      setPw("");
+      setConfirm("");
+      onSuccess?.();
+      onOpenChange(false);
+    } catch (err) {
+      // Defensive: setupCloud resolves with a result, but the button must
+      // never be left spinning even if something unexpected throws.
+      const msg = err instanceof Error ? err.message : "Unexpected error. Please try again.";
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setBusy(false);
     }
-    toast.success("Cloud backup enabled");
-    setPw("");
-    setConfirm("");
-    onSuccess?.();
-    onOpenChange(false);
   };
 
   return (
@@ -494,6 +522,7 @@ function SetupSheet({
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             className="h-12 rounded-xl"
+            disabled={busy}
           />
         </Field>
         <Field label="Backup password" hint="At least 8 characters. You'll need this to restore on a new device.">
@@ -504,6 +533,7 @@ function SetupSheet({
             value={pw}
             onChange={(e) => setPw(e.target.value)}
             className="h-12 rounded-xl"
+            disabled={busy}
           />
         </Field>
         <Field label="Confirm backup password">
@@ -514,6 +544,7 @@ function SetupSheet({
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             className="h-12 rounded-xl"
+            disabled={busy}
           />
         </Field>
         <div className="flex items-start gap-2 rounded-xl bg-warning/10 p-3">
@@ -533,8 +564,20 @@ function SetupSheet({
           disabled={busy}
           className="h-[52px] w-full rounded-2xl text-[15px] font-bold"
         >
-          {busy ? "Setting up…" : "Enable backup"}
+          {busy ? (
+            <>
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Setting up…
+            </>
+          ) : (
+            "Enable backup"
+          )}
         </Button>
+        {busy && slowHint && (
+          <p className="text-center text-[12px] text-muted-foreground" role="status">
+            Still working — the cloud can take a few seconds to respond. You'll get a result or an
+            exact error shortly.
+          </p>
+        )}
       </div>
     </FormSheet>
   );
@@ -556,6 +599,7 @@ function UnlockSheet({
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const slowHint = useSlowHint(busy);
   const ranEmail = useRef(defaultEmail);
 
   useEffect(() => {
@@ -576,18 +620,27 @@ function UnlockSheet({
     }
     setBusy(true);
     setError(null);
-    const result = await sync.unlockCloud(email.trim().toLowerCase(), pw);
-    setBusy(false);
-    // Explicit literal comparison so TS narrows the union without strict mode.
-    if (result.ok === false) {
-      setError(result.error);
-      toast.error(result.error);
-      return;
+    try {
+      const result = await sync.unlockCloud(email.trim().toLowerCase(), pw);
+      // Explicit literal comparison so TS narrows the union without strict mode.
+      if (result.ok === false) {
+        setError(result.error);
+        toast.error(result.error);
+        return;
+      }
+      toast.success("Cloud backup unlocked");
+      setPw("");
+      onSuccess?.();
+      onOpenChange(false);
+    } catch (err) {
+      // Defensive: unlockCloud resolves with a result, but the button must
+      // never be left spinning even if something unexpected throws.
+      const msg = err instanceof Error ? err.message : "Unexpected error. Please try again.";
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setBusy(false);
     }
-    toast.success("Cloud backup unlocked");
-    setPw("");
-    onSuccess?.();
-    onOpenChange(false);
   };
 
   return (
@@ -607,6 +660,7 @@ function UnlockSheet({
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             className="h-12 rounded-xl"
+            disabled={busy}
           />
         </Field>
         <Field label="Backup password" hint="The password you chose when enabling cloud backup.">
@@ -617,6 +671,7 @@ function UnlockSheet({
             value={pw}
             onChange={(e) => setPw(e.target.value)}
             className="h-12 rounded-xl"
+            disabled={busy}
             onKeyDown={(e) => {
               if (e.key === "Enter") void submit();
             }}
@@ -633,8 +688,20 @@ function UnlockSheet({
           disabled={busy}
           className="h-[52px] w-full rounded-2xl text-[15px] font-bold"
         >
-          {busy ? "Unlocking…" : "Unlock"}
+          {busy ? (
+            <>
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Unlocking…
+            </>
+          ) : (
+            "Unlock"
+          )}
         </Button>
+        {busy && slowHint && (
+          <p className="text-center text-[12px] text-muted-foreground" role="status">
+            Still working — the cloud can take a few seconds to respond. You'll get a result or an
+            exact error shortly.
+          </p>
+        )}
       </div>
     </FormSheet>
   );
@@ -653,6 +720,7 @@ function ChangePasswordSheet({
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const slowHint = useSlowHint(busy);
 
   useEffect(() => {
     if (open) setError(null);
@@ -665,19 +733,26 @@ function ChangePasswordSheet({
     if (next !== confirm) return setError("New passwords do not match.");
     setBusy(true);
     setError(null);
-    const result = await sync.changeBackupPassword(current, next);
-    setBusy(false);
-    // Explicit literal comparison so TS narrows the union without strict mode.
-    if (result.ok === false) {
-      setError(result.error);
-      toast.error(result.error);
-      return;
+    try {
+      const result = await sync.changeBackupPassword(current, next);
+      // Explicit literal comparison so TS narrows the union without strict mode.
+      if (result.ok === false) {
+        setError(result.error);
+        toast.error(result.error);
+        return;
+      }
+      toast.success("Backup password changed and data re-encrypted");
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+      onOpenChange(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unexpected error. Please try again.";
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setBusy(false);
     }
-    toast.success("Backup password changed and data re-encrypted");
-    setCurrent("");
-    setNext("");
-    setConfirm("");
-    onOpenChange(false);
   };
 
   return (
@@ -694,6 +769,7 @@ function ChangePasswordSheet({
             value={current}
             onChange={(e) => setCurrent(e.target.value)}
             className="h-12 rounded-xl"
+            disabled={busy}
           />
         </Field>
         <Field label="New backup password">
@@ -702,6 +778,7 @@ function ChangePasswordSheet({
             value={next}
             onChange={(e) => setNext(e.target.value)}
             className="h-12 rounded-xl"
+            disabled={busy}
           />
         </Field>
         <Field label="Confirm new password">
@@ -710,6 +787,7 @@ function ChangePasswordSheet({
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             className="h-12 rounded-xl"
+            disabled={busy}
           />
         </Field>
         {error && (
@@ -723,8 +801,20 @@ function ChangePasswordSheet({
           disabled={busy}
           className="h-[52px] w-full rounded-2xl text-[15px] font-bold"
         >
-          {busy ? "Re-encrypting…" : "Change password"}
+          {busy ? (
+            <>
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Re-encrypting…
+            </>
+          ) : (
+            "Change password"
+          )}
         </Button>
+        {busy && slowHint && (
+          <p className="text-center text-[12px] text-muted-foreground" role="status">
+            Still working — re-encrypting and re-uploading your data. You'll get a result or an
+            exact error shortly.
+          </p>
+        )}
       </div>
     </FormSheet>
   );

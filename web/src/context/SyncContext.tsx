@@ -24,7 +24,7 @@ import {
   type ReactNode,
 } from "react";
 import { toast } from "sonner";
-import { getSupabase, getSupabaseSession, supabaseConfigured } from "@/lib/supabase";
+import { getSupabase, getSupabaseSession, supabaseConfigured, withTimeout } from "@/lib/supabase";
 import { deriveKey, getSessionKey, setSessionKey } from "@/lib/crypto";
 import {
   backupAll,
@@ -96,6 +96,35 @@ const SyncContext = createContext<SyncContextValue | null>(null);
 
 const AUTO_SYNC_DELAY_MS = 4000;
 
+/**
+ * Total wall-clock budget for a setup/unlock operation. Individual
+ * requests are already capped at 30s by the Supabase fetch wrapper;
+ * this watchdog is the absolute guarantee that the UI always gets a
+ * result — success or a clear error — never an infinite spinner.
+ */
+const CLOUD_OP_TIMEOUT_MS = 60_000;
+
+/* ------------------------------------------------------------------ */
+/* Diagnostics — step logging. Never logs passwords, keys, or salts.   */
+/* ------------------------------------------------------------------ */
+
+function maskEmail(email: string): string {
+  const [name, domain] = email.split("@");
+  if (!domain) return "***";
+  return `${name.slice(0, 2)}${"*".repeat(Math.max(1, name.length - 2))}@${domain}`;
+}
+
+function cloudLog(step: string): void {
+  console.log(`[CloudBackup] ${step}`);
+}
+
+function cloudError(step: string, err: unknown): void {
+  console.error(
+    `[CloudBackup] ${step}:`,
+    err instanceof Error ? `${err.name}: ${err.message}` : err,
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Error mapping                                                       */
 /* ------------------------------------------------------------------ */
@@ -104,6 +133,12 @@ const AUTO_SYNC_DELAY_MS = 4000;
 function friendlyAuthError(err: unknown): string {
   const msg =
     err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  if (/timed out|didn.t finish|aborted/i.test(msg)) {
+    // Our own timeout messages already carry guidance — pass them through.
+    return /check your internet/i.test(msg)
+      ? msg
+      : "The cloud request timed out. Check your internet connection and try again.";
+  }
   if (/invalid login credentials|invalid_credentials/i.test(msg)) {
     return "Incorrect email or backup password. If you haven't enabled cloud backup yet, use “Enable cloud backup” instead.";
   }
@@ -129,6 +164,11 @@ function friendlyAuthError(err: unknown): string {
 function cloudStorageError(raw?: string): string {
   if (raw && /does not exist|schema cache|relation/i.test(raw)) {
     return "Your Supabase project is missing the vault tables. Apply the migration in web/supabase/migrations via the Supabase SQL editor, then try again.";
+  }
+  if (raw && /timed out|aborted/i.test(raw)) {
+    return /check your internet/i.test(raw)
+      ? raw
+      : "The cloud request timed out. Check your internet connection and try again.";
   }
   return raw
     ? `Cloud error: ${raw}`
@@ -268,6 +308,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   const checkSession = useCallback(async () => {
     if (!supabaseConfigured) return;
     const session = await getSupabaseSession();
+    cloudLog(`Session check: ${session ? "signed in" : "signed out"}`);
     setCloudSignedIn(Boolean(session));
     if (session) {
       sessionEmail.current = session.user?.email ?? sessionEmail.current;
@@ -289,8 +330,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   /* ---------------------------------------------------------------- */
   const prepareEncryptionKey = useCallback(
     async (backupPassword: string): Promise<CloudAuthResult> => {
+      const t0 = Date.now();
+      cloudLog("Fetching encryption salt…");
       const saltRes = await fetchSalt();
       if (!saltRes.ok) {
+        cloudError("Salt fetch failed", saltRes.error);
         const error = cloudStorageError(saltRes.error);
         setLastError(error);
         setStatus("error");
@@ -298,26 +342,52 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       }
       let salt = saltRes.salt;
       const existed = salt !== null;
+      cloudLog(`Salt ${existed ? "found" : "not found — first-time setup"} (${Date.now() - t0}ms)`);
       if (!salt) {
         // Account exists but cloud backup was never initialised — finish
         // setup now with a fresh salt. Never reached when a salt exists,
         // so an established backup's salt is never rotated accidentally.
         const created = await initCloudSalt();
         if (!created.salt) {
+          cloudError("Salt creation failed", created.error);
           const error = cloudStorageError(created.error);
           setLastError(error);
           setStatus("error");
           return { ok: false, error };
         }
         salt = created.salt;
+        cloudLog("New encryption salt stored");
       }
-      const key = await deriveKey(backupPassword, salt);
+      if (typeof crypto === "undefined" || !crypto.subtle) {
+        const error =
+          "Encryption is unavailable in this environment (a secure context is required). Please update the app and try again.";
+        cloudError("Web Crypto unavailable", error);
+        setLastError(error);
+        setStatus("error");
+        return { ok: false, error };
+      }
+      let key: CryptoKey;
+      try {
+        const tKey = Date.now();
+        key = await deriveKey(backupPassword, salt);
+        cloudLog(`Encryption key derived (${Date.now() - tKey}ms)`);
+      } catch (err) {
+        cloudError("Key derivation failed", err);
+        const error = `Could not derive the encryption key: ${
+          err instanceof Error ? err.message : "unknown crypto error"
+        }`;
+        setLastError(error);
+        setStatus("error");
+        return { ok: false, error };
+      }
       setSessionKey(key);
       setCloudUnlocked(true);
       setHasExistingBackup(existed);
       setStatus("idle");
       setLastError(null);
-      await refreshMetadata();
+      // Metadata refresh is cosmetic — never let it block or fail the unlock.
+      void refreshMetadata().catch((err) => cloudError("Metadata refresh failed", err));
+      cloudLog(`Cloud unlocked in ${Date.now() - t0}ms`);
       return { ok: true };
     },
     [refreshMetadata],
@@ -330,7 +400,10 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     async (email: string, backupPassword: string): Promise<CloudAuthResult> => {
       const sb = getSupabase();
       if (!sb) return { ok: false, error: "Cloud backup is not configured for this build." };
-      try {
+
+      const run = async (): Promise<CloudAuthResult> => {
+        cloudLog(`Setup started for ${maskEmail(email)}`);
+        const t0 = Date.now();
         const { data: signUpData, error: signUpErr } = await sb.auth.signUp({
           email,
           password: backupPassword,
@@ -339,44 +412,57 @@ export function SyncProvider({ children }: { children: ReactNode }) {
         if (signUpErr) {
           // The account may already exist — try signing in with the same
           // credentials so "Enable" is idempotent for returning users.
+          cloudLog(`Sign-up rejected (${signUpErr.message}) — trying sign-in for existing account`);
           const { error: signInErr } = await sb.auth.signInWithPassword({
             email,
             password: backupPassword,
           });
           if (signInErr) {
+            cloudError("Sign-in fallback failed", signInErr);
             if (/already registered|already exists/i.test(signUpErr.message)) {
-              const error =
-                "An account with this email already exists, but this backup password doesn't match. Use “Unlock cloud backup” with your original backup password.";
-              setLastError(error);
-              setStatus("error");
-              return { ok: false, error };
+              return {
+                ok: false,
+                error:
+                  "An account with this email already exists, but this backup password doesn't match. Use “Unlock cloud backup” with your original backup password.",
+              };
             }
-            const error = friendlyAuthError(signInErr);
-            setLastError(error);
-            setStatus("error");
-            return { ok: false, error };
+            return { ok: false, error: friendlyAuthError(signInErr) };
           }
+          cloudLog("Signed in to existing account");
         } else if (!signUpData.session) {
           // Email confirmation is enabled on the Supabase project, so
           // sign-up returned no session. Try a direct sign-in (covers
           // auto-confirmed addresses); otherwise ask the user to confirm.
+          cloudLog("Sign-up returned no session — email confirmation likely required, trying direct sign-in");
           const { error: signInErr } = await sb.auth.signInWithPassword({
             email,
             password: backupPassword,
           });
           if (signInErr) {
-            const error =
-              "Almost there — we sent a confirmation link to your inbox. Tap it, then come back and unlock cloud backup.";
-            setLastError(error);
-            setStatus("error");
-            return { ok: false, error };
+            cloudError("Post-sign-up sign-in failed", signInErr);
+            return {
+              ok: false,
+              error:
+                "Almost there — we sent a confirmation link to your inbox. Tap it, then come back and unlock cloud backup.",
+            };
           }
         }
 
+        cloudLog(`Authenticated (${Date.now() - t0}ms)`);
         setCloudSignedIn(true);
         sessionEmail.current = email;
         return await prepareEncryptionKey(backupPassword);
+      };
+
+      try {
+        const result = await withTimeout(run(), CLOUD_OP_TIMEOUT_MS, "Cloud backup setup");
+        if (result.ok === false) {
+          setLastError(result.error);
+          setStatus("error");
+        }
+        return result;
       } catch (err) {
+        cloudError("Setup failed", err);
         const error = friendlyAuthError(err);
         setLastError(error);
         setStatus("error");
@@ -390,28 +476,41 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     async (email: string, backupPassword: string): Promise<CloudAuthResult> => {
       const sb = getSupabase();
       if (!sb) return { ok: false, error: "Cloud backup is not configured for this build." };
-      try {
+
+      const run = async (): Promise<CloudAuthResult> => {
+        cloudLog(`Unlock started for ${maskEmail(email)}`);
+        const t0 = Date.now();
         const { error } = await sb.auth.signInWithPassword({ email, password: backupPassword });
         if (error) {
-          const friendly = friendlyAuthError(error);
-          setLastError(friendly);
-          setStatus("error");
-          return { ok: false, error: friendly };
+          cloudError("Sign-in failed", error);
+          return { ok: false, error: friendlyAuthError(error) };
         }
+        cloudLog(`Signed in (${Date.now() - t0}ms)`);
         setCloudSignedIn(true);
         sessionEmail.current = email;
         return await prepareEncryptionKey(backupPassword);
+      };
+
+      try {
+        const result = await withTimeout(run(), CLOUD_OP_TIMEOUT_MS, "Cloud unlock");
+        if (result.ok === false) {
+          setLastError(result.error);
+          setStatus("error");
+        }
+        return result;
       } catch (err) {
-        const friendly = friendlyAuthError(err);
-        setLastError(friendly);
+        cloudError("Unlock failed", err);
+        const error = friendlyAuthError(err);
+        setLastError(error);
         setStatus("error");
-        return { ok: false, error: friendly };
+        return { ok: false, error };
       }
     },
     [prepareEncryptionKey],
   );
 
   const lockCloud = useCallback(() => {
+    cloudLog("Cloud locked by user");
     setSessionKey(null);
     setCloudUnlocked(false);
     setStatus("idle");

@@ -114,7 +114,8 @@ export async function getSyncMetadata(): Promise<SyncMetadata | null> {
       lastBackupAt: (state as SyncStateRow | null)?.last_backup_at ?? null,
       cloudRecordCount: count ?? 0,
     };
-  } catch {
+  } catch (err) {
+    console.warn("[CloudBackup] getSyncMetadata failed:", err instanceof Error ? err.message : err);
     return null;
   }
 }
@@ -173,6 +174,10 @@ export async function backupAll(
 
     return { ok: true, disabled: false, uploaded: total, downloaded: 0, conflicts: 0 };
   } catch (err) {
+    console.error(
+      `[CloudBackup] backupAll failed after ${done}/${total} records:`,
+      err instanceof Error ? err.message : err,
+    );
     return {
       ok: false,
       error: err instanceof Error ? err.message : "Backup failed.",
@@ -274,8 +279,12 @@ export async function restoreAll(
         { onConflict: "user_id" },
       );
 
+    if (decryptFailures > 0) {
+      console.warn(`[CloudBackup] restoreAll: ${decryptFailures}/${attempted} rows could not be decrypted`);
+    }
     return { ok: true, disabled: false, records };
   } catch (err) {
+    console.error("[CloudBackup] restoreAll failed:", err instanceof Error ? err.message : err);
     return {
       ok: false,
       disabled: false,
@@ -427,6 +436,7 @@ export async function syncIncremental(
       remoteNewer,
     };
   } catch (err) {
+    console.error("[CloudBackup] syncIncremental failed:", err instanceof Error ? err.message : err);
     return {
       ok: false,
       disabled: false,
@@ -488,7 +498,10 @@ export async function storeSalt(salt: string): Promise<{ ok: boolean; error?: st
         },
         { onConflict: "user_id" },
       );
-    if (error) return { ok: false, error: error.message };
+    if (error) {
+      console.error("[CloudBackup] storeSalt (sync_state) failed:", error.message);
+      return { ok: false, error: error.message };
+    }
     // Store salt in its own row so it's fetchable before key derivation.
     const { error: saltErr } = await sb
       .from(TABLE_RECORDS)
@@ -504,8 +517,13 @@ export async function storeSalt(salt: string): Promise<{ ok: boolean; error?: st
         },
         { onConflict: "user_id,id" },
       );
-    return saltErr ? { ok: false, error: saltErr.message } : { ok: true };
+    if (saltErr) {
+      console.error("[CloudBackup] storeSalt (vault_records) failed:", saltErr.message);
+      return { ok: false, error: saltErr.message };
+    }
+    return { ok: true };
   } catch (err) {
+    console.error("[CloudBackup] storeSalt threw:", err instanceof Error ? err.message : err);
     return { ok: false, error: err instanceof Error ? err.message : "Could not store encryption salt." };
   }
 }
@@ -536,10 +554,14 @@ export async function fetchSalt(): Promise<SaltFetchResult> {
       .eq("user_id", userId)
       .eq("id", SALT_ID)
       .maybeSingle();
-    if (error) return { ok: false, salt: null, error: error.message };
+    if (error) {
+      console.error("[CloudBackup] fetchSalt query failed:", error.message);
+      return { ok: false, salt: null, error: error.message };
+    }
     const row = data as { ciphertext?: string } | null;
     return { ok: true, salt: row?.ciphertext ?? null };
   } catch (err) {
+    console.error("[CloudBackup] fetchSalt threw:", err instanceof Error ? err.message : err);
     return {
       ok: false,
       salt: null,

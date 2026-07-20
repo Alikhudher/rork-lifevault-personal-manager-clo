@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { PageHeader, SectionTitle } from "@/components/lifevault/PageHeader";
 import { ChipPicker, Field, FormSheet } from "@/components/lifevault/FormSheet";
+import { ReminderDaysPicker } from "@/components/lifevault/ReminderPicker";
 import { SubStatusBadge } from "@/components/lifevault/StatusBadge";
 import { CategoryBubble, EXPENSE_META, PAYMENT_META } from "@/components/lifevault/category-meta";
 import { useApp } from "@/context/AppContext";
@@ -31,7 +32,6 @@ import {
   BILLING_FREQUENCIES,
   EXPENSE_CATEGORIES,
   PAYMENT_METHODS,
-  REMINDER_OPTIONS,
   type BillingFrequency,
   type ExpenseCategory,
   type PaymentMethod,
@@ -312,11 +312,9 @@ export default function Subscriptions() {
           </Field>
 
           <Field label="Remind me before renewal">
-            <ChipPicker
-              options={REMINDER_OPTIONS}
+            <ReminderDaysPicker
               value={form.reminderDays}
               onChange={(reminderDays) => setForm((f) => ({ ...f, reminderDays }))}
-              render={(days) => `${days} days`}
             />
           </Field>
 

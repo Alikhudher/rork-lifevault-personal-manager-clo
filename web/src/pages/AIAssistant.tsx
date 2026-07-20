@@ -52,6 +52,7 @@ import {
 } from "@/lib/ai";
 import { captureImage } from "@/lib/native-camera";
 import { ChipPicker, Field, FormSheet } from "@/components/lifevault/FormSheet";
+import { ReminderDaysPicker } from "@/components/lifevault/ReminderPicker";
 import { DOCUMENT_META } from "@/components/lifevault/category-meta";
 import type {
   Appointment,
@@ -59,7 +60,7 @@ import type {
   Expense,
   VaultDocument,
 } from "@/lib/types";
-import { DOCUMENT_CATEGORIES, REMINDER_OPTIONS, type ReminderDays } from "@/lib/types";
+import { DOCUMENT_CATEGORIES, type ReminderDays } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Tab = "scan" | "search";
@@ -1162,11 +1163,9 @@ function ScanResultCard({
           </Field>
 
           <Field label={t("review.remind")}>
-            <ChipPicker
-              options={REMINDER_OPTIONS}
+            <ReminderDaysPicker
               value={saveReminderDays}
               onChange={(days) => setSaveReminderDays(days)}
-              render={(days) => t("common.daysCount", { count: days })}
             />
           </Field>
 

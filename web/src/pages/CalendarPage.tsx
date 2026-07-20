@@ -30,10 +30,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { PageHeader } from "@/components/lifevault/PageHeader";
-import { ChipPicker, Field, FormSheet } from "@/components/lifevault/FormSheet";
+import { Field, FormSheet } from "@/components/lifevault/FormSheet";
+import { AppointmentReminderPicker } from "@/components/lifevault/ReminderPicker";
 import { useApp } from "@/context/AppContext";
 import { daysUntil, formatTime12, relativeDayLabel } from "@/lib/format";
-import { APPOINTMENT_REMINDERS, type Appointment } from "@/lib/types";
+import { normalizeAppointmentReminder, type Appointment } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 interface AptFormState {
@@ -102,7 +103,7 @@ export default function CalendarPage() {
       time: apt.time,
       location: apt.location,
       notes: apt.notes,
-      reminder: apt.reminder,
+      reminder: normalizeAppointmentReminder(apt.reminder),
     });
     setSheetOpen(true);
   };
@@ -352,8 +353,7 @@ export default function CalendarPage() {
           </Field>
 
           <Field label="Reminder">
-            <ChipPicker
-              options={APPOINTMENT_REMINDERS}
+            <AppointmentReminderPicker
               value={form.reminder}
               onChange={(reminder) => setForm((f) => ({ ...f, reminder }))}
             />

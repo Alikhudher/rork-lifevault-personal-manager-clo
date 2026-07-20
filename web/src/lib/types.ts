@@ -95,9 +95,23 @@ export type BillingFrequency = "weekly" | "monthly" | "quarterly" | "yearly";
 
 export const BILLING_FREQUENCIES: BillingFrequency[] = ["weekly", "monthly", "quarterly", "yearly"];
 
-export type ReminderDays = 7 | 14 | 30 | 60 | 90;
+/**
+ * Days before an expiry/renewal/event to remind the user. Preset choices
+ * live in REMINDER_OPTIONS; any whole number between MIN_REMINDER_DAYS and
+ * MAX_REMINDER_DAYS is valid via the "Custom" picker option.
+ */
+export type ReminderDays = number;
 
-export const REMINDER_OPTIONS: ReminderDays[] = [7, 14, 30, 60, 90];
+export const REMINDER_OPTIONS: ReminderDays[] = [1, 2, 3, 7, 14, 30, 60, 90];
+
+export const MIN_REMINDER_DAYS = 1;
+export const MAX_REMINDER_DAYS = 365;
+
+/** Clamps arbitrary input to a valid whole number of reminder days. */
+export function clampReminderDays(days: number, fallback: ReminderDays = 30): ReminderDays {
+  if (!Number.isFinite(days)) return fallback;
+  return Math.min(MAX_REMINDER_DAYS, Math.max(MIN_REMINDER_DAYS, Math.round(days)));
+}
 
 export type DocumentStatus = "active" | "expiring" | "expired";
 
@@ -160,8 +174,45 @@ export const APPOINTMENT_REMINDERS: string[] = [
   "3 hours before",
   "1 day before",
   "2 days before",
-  "1 week before",
+  "3 days before",
+  "7 days before",
+  "14 days before",
+  "30 days before",
+  "60 days before",
+  "90 days before",
 ];
+
+/** Canonical "N day(s) before" reminder string for a custom day count. */
+export function appointmentReminderForDays(days: number): string {
+  const d = clampReminderDays(days, 1);
+  return d === 1 ? "1 day before" : `${d} days before`;
+}
+
+/**
+ * Parses a day-based appointment reminder ("3 days before", legacy
+ * "1 week before") into a day count. Time-of-day options return null.
+ */
+export function parseAppointmentReminderDays(reminder: string): number | null {
+  const norm = reminder.trim().toLowerCase();
+  if (norm === "1 week before") return 7;
+  const match = norm.match(/^(\d+)\s+days?\s+before$/);
+  if (!match) return null;
+  const days = Number.parseInt(match[1], 10);
+  return Number.isFinite(days) && days >= MIN_REMINDER_DAYS
+    ? Math.min(days, MAX_REMINDER_DAYS)
+    : null;
+}
+
+/**
+ * Maps legacy stored values (e.g. "1 week before") to their canonical form
+ * so old appointments select the right picker option. Unknown values pass
+ * through untouched so no stored data is ever lost.
+ */
+export function normalizeAppointmentReminder(reminder: string): string {
+  const days = parseAppointmentReminderDays(reminder);
+  if (days !== null) return appointmentReminderForDays(days);
+  return reminder.trim() || "1 day before";
+}
 
 export type NotificationType = "document" | "subscription" | "bill" | "appointment" | "budget";
 

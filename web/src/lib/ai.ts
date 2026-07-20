@@ -36,11 +36,13 @@ import {
   EXPENSE_CATEGORIES,
   PAYMENT_METHODS,
   REMINDER_OPTIONS,
+  clampReminderDays,
   type Appointment,
   type DocumentCategory,
   type Expense,
   type ExpenseCategory,
   type PaymentMethod,
+  type ReminderDays,
   type Subscription,
   type VaultDocument,
 } from "./types";
@@ -430,7 +432,7 @@ export type SuggestedAction =
       issueDate: string | null;
       expiryDate: string | null;
       notes: string;
-      reminderDays: (typeof REMINDER_OPTIONS)[number];
+      reminderDays: ReminderDays;
     }
   | {
       kind: "reminder";
@@ -736,7 +738,7 @@ Return ONLY a JSON object (no markdown, no prose) with this exact shape:
       "paymentMethod": "<one of: ${PAYMENT_METHODS.join(", ")}">,
       "time": "HH:mm" | null,
       "location": "<text or empty string>",
-      "reminderDays": <one of: ${REMINDER_OPTIONS.join(", ")}>
+      "reminderDays": <integer number of days before expiry to remind (1-365); prefer one of: ${REMINDER_OPTIONS.join(", ")}>
       "text": "<the full OCR'd / understood text of the document, preserve line breaks, include handwritten content verbatim>"
     }
   ]
@@ -785,7 +787,7 @@ interface RawScanDoc {
   paymentMethod?: PaymentMethod;
   time?: string | null;
   location?: string;
-  reminderDays?: (typeof REMINDER_OPTIONS)[number];
+  reminderDays?: number;
   text?: string;
 }
 
@@ -814,9 +816,9 @@ function coercePaymentMethod(p: string | undefined): PaymentMethod {
   return "Debit Card";
 }
 
-function coerceReminderDays(r: number | undefined): (typeof REMINDER_OPTIONS)[number] {
-  if (r !== undefined && (REMINDER_OPTIONS as readonly number[]).includes(r)) {
-    return r as (typeof REMINDER_OPTIONS)[number];
+function coerceReminderDays(r: number | undefined): ReminderDays {
+  if (typeof r === "number" && Number.isFinite(r) && r >= 1) {
+    return clampReminderDays(r);
   }
   return 30;
 }

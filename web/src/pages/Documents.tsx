@@ -17,13 +17,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { PageHeader } from "@/components/lifevault/PageHeader";
 import { ChipPicker, Field, FormSheet } from "@/components/lifevault/FormSheet";
+import { ReminderDaysPicker } from "@/components/lifevault/ReminderPicker";
 import { DocStatusBadge } from "@/components/lifevault/StatusBadge";
 import { CategoryBubble, DOCUMENT_META } from "@/components/lifevault/category-meta";
 import { useApp } from "@/context/AppContext";
 import { daysUntil, daysUntilLabel, documentStatus, formatDate } from "@/lib/format";
 import {
   DOCUMENT_CATEGORIES,
-  REMINDER_OPTIONS,
   type DocumentCategory,
   type DocumentStatus,
   type FileKind,
@@ -356,11 +356,9 @@ export default function Documents() {
           </div>
 
           <Field label="Remind me before expiry">
-            <ChipPicker
-              options={REMINDER_OPTIONS}
+            <ReminderDaysPicker
               value={form.reminderDays}
               onChange={(reminderDays) => setForm((f) => ({ ...f, reminderDays }))}
-              render={(days) => `${days} days`}
             />
           </Field>
 

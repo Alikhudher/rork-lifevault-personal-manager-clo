@@ -750,7 +750,7 @@ const FAQ_ITEMS: { q: string; a: string }[] = [
   },
   {
     q: "How do reminders work?",
-    a: "You can set reminders 7, 14, 30, 60 or 90 days before a document expires, a subscription renews, or an appointment is coming up. Reminders appear in your notification centre.",
+    a: "Pick a preset — 1, 2, 3, 7, 14, 30, 60 or 90 days before a document expires or a subscription renews — or choose Custom and enter any number of days (1-365). Appointments can also remind you at the time of the event or 1 hour before. Reminders appear in your notification centre.",
   },
   {
     q: "Can I change my currency?",

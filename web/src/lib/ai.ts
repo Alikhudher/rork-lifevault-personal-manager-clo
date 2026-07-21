@@ -29,6 +29,8 @@
  * + `x-rork-app-key` header, endpoint `/v2/vercel/v1/chat/completions`.
  */
 import { Capacitor } from "@capacitor/core";
+
+import { enhanceForOCR } from "./enhance-image";
 import {
   APPOINTMENT_REMINDERS,
   BILLING_FREQUENCIES,
@@ -1059,9 +1061,10 @@ export async function scanDocuments(pages: string[]): Promise<ScanOutcome> {
   if (pages.length === 0) {
     throw new Error("AI_NO_PAGES");
   }
-  const { enhanceForOCR } = await import("./enhance-image");
   // Enhance each page in parallel; enhancement falls back to the original
   // image on any internal error, so this never throws.
+  // (Static import — a lazy chunk here used to break scanning whenever a
+  // redeploy rotated the hashed chunk filenames mid-session.)
   const enhanced = await Promise.all(
     pages.map((p) => enhanceForOCR(p, 3_000_000).catch(() => ({ dataUrl: p, base64: "", mimeType: "image/jpeg" as const }))),
   );

@@ -236,6 +236,29 @@ workflows:
           fi
           bunx cap sync ios
 
+          # Make the app iPhone-only. Capacitor generates a universal
+          # Xcode project (TARGETED_DEVICE_FAMILY = "1,2") by default, which
+          # allows iPad. We force it to "1" (iPhone/iPod only) in the
+          # generated project.pbxproj so the archived IPA targets iPhone
+          # exclusively and iPad is no longer listed as a supported device.
+          PBXPROJ="ios/App/App.xcodeproj/project.pbxproj"
+          if [ ! -f "$PBXPROJ" ]; then
+            echo "ERROR: project.pbxproj not found at $PBXPROJ after cap sync"
+            exit 1
+          fi
+          # Capacitor writes TARGETED_DEVICE_FAMILY = "1,2"; replace every
+          # occurrence with "1" (iPhone-only). This is safe to run repeatedly.
+          sed -i '' 's/TARGETED_DEVICE_FAMILY = "1,2"/TARGETED_DEVICE_FAMILY = "1"/g' "$PBXPROJ"
+          # Hard-verify: no build setting may still reference iPad family "2".
+          if grep -q 'TARGETED_DEVICE_FAMILY = "1,2"' "$PBXPROJ" \
+             || grep -q 'TARGETED_DEVICE_FAMILY = "2"' "$PBXPROJ"; then
+            echo "FAIL: iPad device family still present in $PBXPROJ"
+            grep -n 'TARGETED_DEVICE_FAMILY' "$PBXPROJ" || true
+            exit 1
+          fi
+          echo "OK: TARGETED_DEVICE_FAMILY set to iPhone-only (1)"
+          grep -n 'TARGETED_DEVICE_FAMILY' "$PBXPROJ" || true
+
           # Inject camera, photo library & Face ID permission strings into the
           # generated iOS Info.plist. Capacitor's Camera plugin requires
           # ALL THREE keys to be present, otherwise iOS terminates the app
@@ -294,15 +317,12 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Bump to 13 for the next App Store Connect upload — build 12 is
-          # already uploaded. This build fixes the three Build 12 issues
-          # (live E2E passed 2026-07-21): resend now always emails a FRESH
-          # code with a unique subject (Gmail no longer hides resends in a
-          # thread) and invalidates the old one; codes expire in 10 minutes;
-          # the code-entry sheet stays above the iPhone keyboard; and sign-up
-          # requires verifying the email with a 6-digit code before the
-          # account is created.
-          agvtool new-version -all 13
+          # Bump to 14 for the next App Store Connect upload. Build 13 is
+          # already uploaded. This build restricts the app to iPhone only
+          # (TARGETED_DEVICE_FAMILY = 1); iPad is no longer a supported
+          # device. No feature, design, data, authentication, or behavior
+          # changes.
+          agvtool new-version -all 14
 
       - name: Apply iOS signing
         script: |

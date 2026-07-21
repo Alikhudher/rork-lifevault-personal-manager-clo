@@ -294,10 +294,12 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Bump to 11 for the next App Store Connect upload — build 10 was
-          # already uploaded (the TestFlight build that surfaced the AI
-          # ACCESS_DENIED error, now fixed with real AI Cloud credentials).
-          agvtool new-version -all 11
+          # Bump to 12 for the next App Store Connect upload — build 11 is
+          # already uploaded. This build ships the verified email recovery
+          # + cloud backup flows (full live E2E passed 2026-07-21: real
+          # verification codes delivered via Brevo, server-side code checks,
+          # backup reset/unlock/restore, truthful delivery reporting).
+          agvtool new-version -all 12
 
       - name: Apply iOS signing
         script: |

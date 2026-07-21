@@ -2,6 +2,9 @@
   "files": [],
   "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }],
   "compilerOptions": {
+    // Mirror of tsconfig.app.json's alias so non-Vite runners (e.g.
+    // `bun scripts/*.ts`) resolve "@/…" imports; builds use Vite's alias.
+    "paths": { "@/*": ["./src/*"] },
     "noImplicitAny": false,
     "noUnusedParameters": false,
     "skipLibCheck": true,

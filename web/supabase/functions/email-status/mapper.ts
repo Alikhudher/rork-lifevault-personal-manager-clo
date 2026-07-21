@@ -38,15 +38,19 @@ function eventAt(e: BrevoEventLike): string | null {
   return e.date ?? e.time ?? null;
 }
 
-/** The recipient's mail server accepted the message (or the user saw it). */
+/**
+ * The recipient's mail server confirmed it accepted the message for
+ * delivery to the inbox. ONLY a real "delivered" event counts — never
+ * opens/clicks/proxyopens. Gmail's spam scanner prefetches the tracking
+ * pixel the same second Brevo accepts the send (firing an "opened" event
+ * in Brevo's log) even while Gmail is actively DEFERRING the message
+ * with a 421 throttle. Treating that scanner prefetch as "delivered"
+ * made the app say "Email delivered" for messages that never reached
+ * the inbox. Opens/clicks are kept only as a tie-breaker once we already
+ * know the message landed, never as primary proof.
+ */
 function isDelivered(n: string): boolean {
-  return (
-    n.includes("delivered") ||
-    n.includes("open") ||
-    n.includes("click") ||
-    n === "uniqueopened" ||
-    n.includes("proxyopen")
-  );
+  return n === "delivered";
 }
 
 /** Permanent failure — the message will never arrive. */
@@ -65,9 +69,22 @@ function isDelayed(n: string): boolean {
   return n.includes("defer") || n.includes("softbounce");
 }
 
-/** Brevo's API accepted the send request. */
+/** Brevo's API accepted the send request. Opens/clicks/proxyopens are
+ * treated as accepted (NOT delivered): Gmail's spam scanner prefetches
+ * the tracking pixel immediately, firing an "opened" event even while
+ * Gmail is actively deferring the message — so an open alone never
+ * proves the message reached the inbox, but it does prove Brevo
+ * accepted and attempted the send. */
 function isAccepted(n: string): boolean {
-  return n.includes("request") || n === "sent" || n.includes("queued");
+  return (
+    n.includes("request") ||
+    n === "sent" ||
+    n.includes("queued") ||
+    n.includes("open") ||
+    n.includes("click") ||
+    n.includes("proxyopen") ||
+    n === "uniqueopened"
+  );
 }
 
 /**

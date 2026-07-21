@@ -8,7 +8,11 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { describeSendFailure, extractAuthErrorDetail } from "@/lib/account-recovery";
+import {
+  describeSendFailure,
+  extractAuthErrorDetail,
+  parseRetryAfterSeconds,
+} from "@/lib/account-recovery";
 
 /** Mirrors supabase-js AuthRetryableFetchError (gateway 5xx → message "{}"). */
 class RetryableFetchError extends Error {
@@ -66,8 +70,24 @@ describe("extractAuthErrorDetail", () => {
   });
 });
 
+describe("parseRetryAfterSeconds", () => {
+  it("extracts the server's wait time from GoTrue rate-limit messages", () => {
+    expect(
+      parseRetryAfterSeconds("For security purposes, you can only request this after 27 seconds."),
+    ).toBe(27);
+  });
+
+  it("returns undefined when no wait time is present", () => {
+    expect(parseRetryAfterSeconds("email rate limit exceeded")).toBeUndefined();
+  });
+
+  it("rejects absurd values", () => {
+    expect(parseRetryAfterSeconds("after 999999 seconds")).toBeUndefined();
+  });
+});
+
 describe("describeSendFailure", () => {
-  it("maps rate limits to rate_limited", () => {
+  it("maps rate limits to rate_limited and carries the retry-after seconds", () => {
     const r = describeSendFailure(
       new ApiError(
         "For security purposes, you can only request this after 15 seconds.",
@@ -76,7 +96,16 @@ describe("describeSendFailure", () => {
       ),
     );
     expect(r.code).toBe("rate_limited");
-    expect(r.error).toContain("security purposes");
+    expect(r.retryAfterS).toBe(15);
+    expect(r.error).toContain("15 seconds");
+  });
+
+  it("maps hourly rate limits without a wait time to rate_limited", () => {
+    const r = describeSendFailure(
+      new ApiError("email rate limit exceeded", 429, "over_email_send_rate_limit"),
+    );
+    expect(r.code).toBe("rate_limited");
+    expect(r.retryAfterS).toBeUndefined();
   });
 
   it("maps transient gateway failures to a retry message instead of '{}'", () => {

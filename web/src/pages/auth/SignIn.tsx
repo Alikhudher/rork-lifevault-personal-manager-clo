@@ -31,7 +31,9 @@ export default function SignIn() {
         toast.error(
           result.error === "wrong_password"
             ? "Incorrect password. Please try again."
-            : "No account found with that email.",
+            : result.error === "email_unverified"
+              ? "This account's email was never verified. Use “Forgot password?” to verify your email and set a password."
+              : "No account found with that email.",
         );
         return;
       }

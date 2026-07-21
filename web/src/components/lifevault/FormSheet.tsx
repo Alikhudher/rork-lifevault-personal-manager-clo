@@ -108,11 +108,15 @@ export function FormSheet({ open, onOpenChange, title, description, children, fo
         side="bottom"
         className="mx-auto flex w-full max-w-md flex-col gap-0 rounded-t-3xl border-border p-0"
         style={{
-          // Raise the sheet above the keyboard and clamp its height to the
-          // visible (un-occluded) viewport so the header never scrolls away.
-          transform: raised ? `translateY(-${keyboardHeight + liftMargin}px)` : undefined,
-          maxHeight: raised ? `${Math.max(0, viewportHeight - liftMargin)}px` : "92dvh",
-          transition: "transform 0.25s ease, max-height 0.25s ease",
+          // Raise the sheet above the keyboard by moving its anchored bottom
+          // edge (NOT a transform — the open/close slide animation also
+          // animates transform and would override an inline transform on
+          // real devices, leaving the sheet behind the keyboard), and clamp
+          // its height to the visible area so the header never scrolls away
+          // and the body stays scrollable on small iPhones.
+          bottom: raised ? keyboardHeight + liftMargin : 0,
+          maxHeight: raised ? `${Math.max(240, viewportHeight - liftMargin - 8)}px` : "92dvh",
+          transition: "bottom 0.25s ease, max-height 0.25s ease",
         }}
       >
         {/* Drag handle */}

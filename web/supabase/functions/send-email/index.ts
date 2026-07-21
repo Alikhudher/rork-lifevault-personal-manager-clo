@@ -92,36 +92,49 @@ function verifyUrl(data: HookEmailData, tokenHash: string): string {
  * than HTML-only mail (relevant here because the sender is a personal
  * gmail.com address, which Gmail already treats with suspicion when
  * relayed through Brevo).
+ *
+ * SUBJECT UNIQUENESS (the "resent code never arrives" fix)
+ * The code is part of the subject, so every send has a UNIQUE subject.
+ * With a fixed subject, Gmail collapsed each resend into the same
+ * conversation thread as the first email — delivered, but invisible
+ * unless the user expanded the thread, which read exactly like "the
+ * second email never arrived". Unique subjects always show up as a
+ * fresh message (and let the user read the code from the inbox list).
+ *
+ * Expiry copy matches the server config (mailer_otp_exp = 600 → 10
+ * minutes). Requesting a new code always invalidates the previous one
+ * (GoTrue keeps only the latest token per user).
  */
 function buildEmail(data: HookEmailData): { subject: string; html: string; text: string } {
   const expiry = note(
-    "The code expires in 60 minutes. If you didn&#8217;t request it, you can safely ignore this email.",
+    "The code expires in 10 minutes. Only the newest code works — requesting another cancels this one. If you didn&#8217;t request it, you can safely ignore this email.",
   );
-  const expiryText = "The code expires in 60 minutes. If you didn't request it, you can safely ignore this email.";
+  const expiryText =
+    "The code expires in 10 minutes. Only the newest code works — requesting another cancels this one. If you didn't request it, you can safely ignore this email.";
   switch (data.email_action_type) {
     case "signup":
       return {
-        subject: "Confirm your LifeVault email",
+        subject: `${data.token} — confirm your LifeVault email`,
         html: card(
           lead("Confirm this email address to activate cloud backup.") +
             `<p style='margin:18px 0 6px;font-size:13px;color:#6b7280'>If the app asks for a code, enter:</p>` +
             codeBlock(data.token) +
             button(verifyUrl(data, data.token_hash), "Confirm email") +
-            `<p style='margin:18px 0 0;font-size:13px;color:#6b7280'>The code and link expire in 60 minutes. If you didn&#8217;t request this, you can safely ignore this email.</p>`,
+            `<p style='margin:18px 0 0;font-size:13px;color:#6b7280'>The code and link expire in 10 minutes. If you didn&#8217;t request this, you can safely ignore this email.</p>`,
         ),
         text: `LifeVault\n\nConfirm this email address to activate cloud backup.\n\nIf the app asks for a code, enter: ${data.token}\n\nOr confirm via this link:\n${verifyUrl(data, data.token_hash)}\n\n${expiryText}`,
       };
     case "recovery":
       return {
-        subject: "Your LifeVault password reset code",
+        subject: `${data.token} is your LifeVault password reset code`,
         html: card(
           lead("Enter this code to reset your password:") +
             codeBlock(data.token) +
             note(
-              "The code expires in 60 minutes. If you didn&#8217;t request a reset, you can safely ignore this email &#8212; your password stays unchanged.",
+              "The code expires in 10 minutes. Only the newest code works. If you didn&#8217;t request a reset, you can safely ignore this email &#8212; your password stays unchanged.",
             ),
         ),
-        text: `LifeVault\n\nEnter this code to reset your password: ${data.token}\n\nThe code expires in 60 minutes. If you didn't request a reset, you can safely ignore this email — your password stays unchanged.`,
+        text: `LifeVault\n\nEnter this code to reset your password: ${data.token}\n\nThe code expires in 10 minutes. Only the newest code works. If you didn't request a reset, you can safely ignore this email — your password stays unchanged.`,
       };
     case "invite":
       return {
@@ -146,7 +159,7 @@ function buildEmail(data: HookEmailData): { subject: string; html: string; text:
     case "email_change_new": {
       const token = data.email_action_type === "email_change_new" && data.token_new ? data.token_new : data.token;
       return {
-        subject: "Confirm your new email address",
+        subject: `${token} — confirm your new LifeVault email`,
         html: card(
           lead("Confirm the change to your LifeVault email address with this code:") + codeBlock(token) + expiry,
         ),
@@ -156,7 +169,7 @@ function buildEmail(data: HookEmailData): { subject: string; html: string; text:
     // "magiclink" — also the safe default for any future action type.
     default:
       return {
-        subject: "Your LifeVault verification code",
+        subject: `${data.token} is your LifeVault verification code`,
         html: card(lead("Enter this verification code in the app:") + codeBlock(data.token) + expiry),
         text: `LifeVault\n\nEnter this verification code in the app: ${data.token}\n\n${expiryText}`,
       };
@@ -192,6 +205,9 @@ async function sendViaBrevo(
       subject,
       htmlContent: html,
       textContent: text,
+      // A unique reference header per send stops Gmail from grouping
+      // resends into one thread (belt-and-braces with unique subjects).
+      headers: { "X-Entity-Ref-ID": crypto.randomUUID() },
       // Tags make every auth email identifiable in Brevo's logs by flow.
       tags: ["lifevault-auth", action.replace(/[^a-z0-9_-]/gi, "").slice(0, 40) || "unknown"],
     }),

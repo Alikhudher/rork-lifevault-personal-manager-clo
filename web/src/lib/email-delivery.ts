@@ -83,25 +83,49 @@ export async function checkEmailDelivery(
 const activeTrackers = new Map<string, number>();
 let trackerSeq = 0;
 
+/** Live delivery snapshot pushed to UI surfaces via `onUpdate`. */
+export interface DeliveryUpdate {
+  status: EmailDeliveryStatus;
+  /** True once tracking has stopped — the status won't change further. */
+  final: boolean;
+  /** Provider reason for deferrals/failures, when known. */
+  reason: string | null;
+}
+
+export type DeliveryUpdateHandler = (update: DeliveryUpdate) => void;
+
 /**
  * Fire-and-forget delivery watcher. Shows a small progress toast and
- * resolves it with the REAL outcome from Brevo's logs:
- *  - delivered → success ("check Spam if you don't see it")
- *  - delayed   → explains the inbox provider is throttling (Gmail 421)
+ * resolves it with the REAL outcome from Brevo's logs — it NEVER
+ * claims delivery unless Brevo confirms it:
+ *  - delivered → success (only on Brevo's own delivery receipt)
+ *  - delayed   → "accepted and may be delayed" (Gmail 421 throttling)
  *  - failed    → the provider's exact rejection reason
  * If the status service can't be reached at all, the toast is
  * dismissed quietly — the send itself was already confirmed accepted.
+ *
+ * `onUpdate` (optional) receives every status change so screens can
+ * render an inline delivery line next to the code input.
  */
-export async function trackEmailDelivery(email: string, sinceMs: number): Promise<EmailDeliveryStatus> {
+export async function trackEmailDelivery(
+  email: string,
+  sinceMs: number,
+  onUpdate?: DeliveryUpdateHandler,
+): Promise<EmailDeliveryStatus> {
   const me = ++trackerSeq;
   activeTrackers.set(email, me);
-  const toastId = toast.loading("Confirming delivery…", {
+  const toastId = toast.loading("Email accepted — confirming delivery…", {
     description: `Checking with the mail service that the email to ${email} arrived.`,
   });
   const isStale = (): boolean => activeTrackers.get(email) !== me;
+  const push = (update: DeliveryUpdate): void => {
+    if (!isStale()) onUpdate?.(update);
+  };
+  push({ status: "accepted", final: false, reason: null });
 
   const deadline = Date.now() + POLL_BUDGET_MS;
   let last: EmailDeliveryStatus = "unknown";
+  let lastReason: string | null = null;
   let anyResponse = false;
 
   while (Date.now() < deadline) {
@@ -118,8 +142,10 @@ export async function trackEmailDelivery(email: string, sinceMs: number): Promis
     if (!report) continue;
     anyResponse = true;
     last = report.status;
+    lastReason = report.reason;
     if (report.status === "delivered") {
       console.log("[EmailDelivery] Delivery confirmed by the mail service");
+      push({ status: "delivered", final: true, reason: null });
       toast.success("Email delivered", {
         id: toastId,
         description: `The mail service confirmed delivery to ${email}. If you don't see it, check Spam.`,
@@ -129,6 +155,7 @@ export async function trackEmailDelivery(email: string, sinceMs: number): Promis
     }
     if (report.status === "failed") {
       console.warn("[EmailDelivery] Provider rejected delivery:", report.reason ?? "no reason given");
+      push({ status: "failed", final: true, reason: report.reason });
       toast.error("The email could not be delivered", {
         id: toastId,
         description: report.reason
@@ -138,12 +165,13 @@ export async function trackEmailDelivery(email: string, sinceMs: number): Promis
       });
       return last;
     }
+    push({ status: report.status, final: false, reason: report.reason });
     if (report.status === "delayed") {
-      toast.loading("Your inbox is delaying the email…", {
+      toast.loading("Email accepted and may be delayed", {
         id: toastId,
         description: report.reason
-          ? `The receiving server said: “${report.reason.slice(0, 140)}”. It usually arrives within a few minutes — check Spam too.`
-          : "It was accepted, but the receiving server is throttling. It usually arrives within a few minutes — check Spam too.",
+          ? `Your inbox provider is throttling it: “${report.reason.slice(0, 140)}”. It usually arrives within a few minutes — check Spam too.`
+          : "It was accepted, but your inbox provider is throttling delivery. It usually arrives within a few minutes — check Spam too.",
       });
     }
   }
@@ -155,16 +183,19 @@ export async function trackEmailDelivery(email: string, sinceMs: number): Promis
     return last;
   }
   if (last === "delayed") {
-    toast.warning("Delivery is delayed by your inbox provider", {
+    push({ status: "delayed", final: true, reason: lastReason });
+    toast.warning("Email accepted and may be delayed", {
       id: toastId,
       description:
-        "The email was sent and accepted, but your mail provider is throttling it. It can take a few minutes — check Spam as well, then use Resend if it never arrives.",
+        "The email was accepted by the mail service, but your inbox provider is throttling delivery. It can take a few minutes — check Spam as well, then use Resend if it never arrives.",
       duration: 12000,
     });
   } else {
-    toast.info("Sent — waiting on the delivery receipt", {
+    push({ status: last === "unknown" ? "unknown" : "accepted", final: true, reason: lastReason });
+    toast.info("Email accepted — delivery not confirmed yet", {
       id: toastId,
-      description: "The email was accepted by the mail service. Give it a minute and check Spam too.",
+      description:
+        "The mail service accepted the email but hasn't confirmed delivery yet. Give it a minute and check Spam too.",
       duration: 8000,
     });
   }

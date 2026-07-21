@@ -294,12 +294,15 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Bump to 12 for the next App Store Connect upload — build 11 is
-          # already uploaded. This build ships the verified email recovery
-          # + cloud backup flows (full live E2E passed 2026-07-21: real
-          # verification codes delivered via Brevo, server-side code checks,
-          # backup reset/unlock/restore, truthful delivery reporting).
-          agvtool new-version -all 12
+          # Bump to 13 for the next App Store Connect upload — build 12 is
+          # already uploaded. This build fixes the three Build 12 issues
+          # (live E2E passed 2026-07-21): resend now always emails a FRESH
+          # code with a unique subject (Gmail no longer hides resends in a
+          # thread) and invalidates the old one; codes expire in 10 minutes;
+          # the code-entry sheet stays above the iPhone keyboard; and sign-up
+          # requires verifying the email with a 6-digit code before the
+          # account is created.
+          agvtool new-version -all 13
 
       - name: Apply iOS signing
         script: |

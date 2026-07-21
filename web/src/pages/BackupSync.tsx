@@ -1077,13 +1077,19 @@ function ResetBackupPasswordSheet({
       if (result.ok === false) {
         setError(result.error);
         toast.error(result.error);
+        // Server refused a rapid repeat — sync the countdown with its wait.
+        if (result.code === "rate_limited" && result.retryAfterS) {
+          setResendIn(result.retryAfterS);
+        }
         return;
       }
       setCode("");
       setResendIn(60);
       setStep("code");
       toast.success(isResend ? "A new code is on its way" : "Verification code sent", {
-        description: `Check ${normalizedEmail} (and Spam) for a 6-digit code.`,
+        description: isResend
+          ? `A fresh code was emailed to ${normalizedEmail} — the previous code no longer works.`
+          : `Check ${normalizedEmail} (and Spam) for a 6-digit code.`,
       });
       // Follow the message all the way to the inbox via Brevo's logs.
       void trackEmailDelivery(normalizedEmail, sentAt);

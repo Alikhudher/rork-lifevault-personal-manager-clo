@@ -20,6 +20,7 @@ import {
   InputOTPSeparator,
   InputOTPSlot,
 } from "@/components/ui/input-otp";
+import { DeliveryStatusLine } from "@/components/lifevault/DeliveryStatus";
 import { Field } from "@/components/lifevault/FormSheet";
 import { useApp } from "@/context/AppContext";
 import {
@@ -29,7 +30,7 @@ import {
   verifyEmailCode,
   type VerifiedEmailSession,
 } from "@/lib/account-recovery";
-import { trackEmailDelivery } from "@/lib/email-delivery";
+import { trackEmailDelivery, type DeliveryUpdate } from "@/lib/email-delivery";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const RESEND_COOLDOWN_S = 60;
@@ -56,6 +57,7 @@ export default function ForgotPassword() {
   const [busy, setBusy] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [resendIn, setResendIn] = useState<number>(0);
+  const [delivery, setDelivery] = useState<DeliveryUpdate | null>(null);
   const verifiedRef = useRef<VerifiedEmailSession | null>(null);
 
   // Resend countdown ticker.
@@ -86,16 +88,25 @@ export default function ForgotPassword() {
       if (result.ok === false) {
         setError(result.error);
         toast.error(result.error);
+        // The server refused a rapid repeat — sync the countdown with its
+        // exact wait time so the button re-enables when a send will work.
+        if (result.code === "rate_limited" && result.retryAfterS) {
+          setResendIn(result.retryAfterS);
+        }
         return;
       }
       setResendIn(RESEND_COOLDOWN_S);
       setCode("");
       setStep("code");
       toast.success(isResend ? "A new code is on its way" : "Verification code sent", {
-        description: `Check ${normalizedEmail} (and Spam) for a 6-digit code.`,
+        description: isResend
+          ? `A fresh code was emailed to ${normalizedEmail} — the previous code no longer works.`
+          : `Check ${normalizedEmail} (and Spam) for a 6-digit code.`,
       });
-      // Follow the message all the way to the inbox via Brevo's logs.
-      void trackEmailDelivery(normalizedEmail, sentAt);
+      // Follow the message all the way to the inbox via Brevo's logs and
+      // mirror the truthful status inline next to the code input.
+      setDelivery(null);
+      void trackEmailDelivery(normalizedEmail, sentAt, setDelivery);
     } finally {
       setBusy(false);
     }
@@ -230,7 +241,8 @@ export default function ForgotPassword() {
           <h1 className="text-[28px] font-extrabold tracking-tight">Check your inbox</h1>
           <p className="mt-1 text-[15px] text-muted-foreground">
             Enter the 6-digit code we sent to{" "}
-            <span className="font-bold text-foreground">{normalizedEmail}</span>.
+            <span className="font-bold text-foreground">{normalizedEmail}</span>. It expires in 10
+            minutes — only the newest code works.
           </p>
 
           <div className="mt-8 space-y-4">
@@ -264,6 +276,8 @@ export default function ForgotPassword() {
                 </button>
               )}
             </div>
+
+            <DeliveryStatusLine state={delivery} />
 
             {errorBox}
 

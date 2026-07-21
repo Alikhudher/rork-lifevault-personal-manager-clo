@@ -34,7 +34,13 @@ export type RecoveryFailureCode =
 
 export type RecoveryResult =
   | { ok: true }
-  | { ok: false; error: string; code?: RecoveryFailureCode };
+  | {
+      ok: false;
+      error: string;
+      code?: RecoveryFailureCode;
+      /** Seconds the server asks to wait before another send (rate limits). */
+      retryAfterS?: number;
+    };
 
 const NOT_CONFIGURED =
   "Email verification isn't available in this build — cloud services are not configured.";
@@ -45,6 +51,18 @@ function messageOf(err: unknown): string {
 
 function isRateLimit(msg: string): boolean {
   return /rate limit|too many|frequency|security purposes|after \d+ seconds/i.test(msg);
+}
+
+/**
+ * Extracts the wait time from GoTrue's rate-limit message ("For
+ * security purposes, you can only request this after N seconds.") so
+ * the UI can restart its resend countdown with the server's number.
+ */
+export function parseRetryAfterSeconds(msg: string): number | undefined {
+  const m = /after (\d+) seconds?/i.exec(msg);
+  if (!m) return undefined;
+  const s = Number.parseInt(m[1], 10);
+  return Number.isFinite(s) && s > 0 && s <= 3600 ? s : undefined;
 }
 
 function isNetwork(msg: string): boolean {
@@ -117,12 +135,16 @@ export function extractAuthErrorDetail(err: unknown): AuthErrorDetail {
 export function describeSendFailure(
   err: unknown,
   emailKind: string = "verification email",
-): { error: string; code?: RecoveryFailureCode } {
+): { error: string; code?: RecoveryFailureCode; retryAfterS?: number } {
   const { detail, transient } = extractAuthErrorDetail(err);
   if (isRateLimit(detail)) {
+    const retryAfterS = parseRetryAfterSeconds(detail);
     return {
-      error: `The email service refused to send: “${detail}”. The mailer allows only a few emails per hour — wait a bit, then try again.`,
+      error: retryAfterS
+        ? `Please wait ${retryAfterS} seconds before requesting another code — rapid repeat requests are blocked for security.`
+        : `The email service refused to send: “${detail}”. The mailer allows only a few emails per hour — wait a bit, then try again.`,
       code: "rate_limited",
+      retryAfterS,
     };
   }
   if (transient) {
@@ -143,6 +165,11 @@ export function describeSendFailure(
 /**
  * Send a 6-digit verification code to the given email. Creates a cloud
  * identity for brand-new emails so ownership can always be verified.
+ *
+ * Resend semantics (server-enforced by Supabase Auth): every call
+ * generates a FRESH 6-digit code and INVALIDATES the previous one —
+ * only the newest code verifies. Rapid repeats are refused with a
+ * rate-limit error carrying `retryAfterS` for the UI countdown.
  */
 export async function requestEmailCode(email: string): Promise<RecoveryResult> {
   const client = createEphemeralClient();

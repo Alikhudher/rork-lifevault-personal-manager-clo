@@ -44,6 +44,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { DeliveryStatusLine } from "@/components/lifevault/DeliveryStatus";
 import { FormSheet, Field } from "@/components/lifevault/FormSheet";
 import { PhotoPicker } from "@/components/lifevault/PhotoPicker";
 import { accountHasPassword, useApp } from "@/context/AppContext";
@@ -54,7 +55,7 @@ import {
   verifyEmailCode,
   type VerifiedEmailSession,
 } from "@/lib/account-recovery";
-import { trackEmailDelivery } from "@/lib/email-delivery";
+import { trackEmailDelivery, type DeliveryUpdate } from "@/lib/email-delivery";
 import type { DeviceSession } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -94,6 +95,7 @@ export function EditProfileSheet({
   const [busy, setBusy] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [resendIn, setResendIn] = useState<number>(0);
+  const [delivery, setDelivery] = useState<DeliveryUpdate | null>(null);
 
   // Sync form state whenever the sheet opens.
   useEffect(() => {
@@ -108,6 +110,7 @@ export function EditProfileSheet({
       setBusy(false);
       setError(null);
       setResendIn(0);
+      setDelivery(null);
     }
   }, [open, user]);
 
@@ -148,6 +151,9 @@ export function EditProfileSheet({
     if (result.ok === false) {
       setError(result.error);
       toast.error(result.error);
+      if (result.code === "rate_limited" && result.retryAfterS) {
+        setResendIn(result.retryAfterS);
+      }
       return false;
     }
     setCode("");
@@ -155,8 +161,10 @@ export function EditProfileSheet({
     toast.success("Verification code sent", {
       description: `Check ${normalizedEmail} (and Spam) for a 6-digit code.`,
     });
-    // Follow the message all the way to the inbox via Brevo's logs.
-    void trackEmailDelivery(normalizedEmail, sentAt);
+    // Follow the message all the way to the inbox via Brevo's logs and
+    // mirror the truthful status inline next to the code input.
+    setDelivery(null);
+    void trackEmailDelivery(normalizedEmail, sentAt, setDelivery);
     return true;
   }, [normalizedEmail]);
 
@@ -448,6 +456,8 @@ export function EditProfileSheet({
             )}
           </div>
 
+          <DeliveryStatusLine state={delivery} />
+
           {errorBox}
 
           <div className="flex gap-3">
@@ -539,6 +549,7 @@ export function ChangePasswordSheet({
   const [resetConfirm, setResetConfirm] = useState<string>("");
   const [showResetPw, setShowResetPw] = useState<boolean>(false);
   const [resendIn, setResendIn] = useState<number>(0);
+  const [delivery, setDelivery] = useState<DeliveryUpdate | null>(null);
   const verifiedRef = useRef<VerifiedEmailSession | null>(null);
 
   useEffect(() => {
@@ -557,6 +568,7 @@ export function ChangePasswordSheet({
       setResetConfirm("");
       setShowResetPw(false);
       setResendIn(0);
+      setDelivery(null);
     } else {
       // Sheet dismissed mid-recovery — discard any verified email session.
       const session = verifiedRef.current;
@@ -644,16 +656,25 @@ export function ChangePasswordSheet({
       if (result.ok === false) {
         setError(result.error);
         toast.error(result.error);
+        // The server refused a rapid repeat — sync the countdown with its
+        // exact wait time so the button re-enables when a send will work.
+        if (result.code === "rate_limited" && result.retryAfterS) {
+          setResendIn(result.retryAfterS);
+        }
         return;
       }
       setCode("");
       setResendIn(60);
       setStep("recoverCode");
       toast.success(isResend ? "A new code is on its way" : "Verification code sent", {
-        description: `Check ${normalizedRecoveryEmail} (and Spam) for a 6-digit code.`,
+        description: isResend
+          ? `A fresh code was emailed to ${normalizedRecoveryEmail} — the previous code no longer works.`
+          : `Check ${normalizedRecoveryEmail} (and Spam) for a 6-digit code.`,
       });
-      // Follow the message all the way to the inbox via Brevo's logs.
-      void trackEmailDelivery(normalizedRecoveryEmail, sentAt);
+      // Follow the message all the way to the inbox via Brevo's logs and
+      // mirror the truthful status inline next to the code input.
+      setDelivery(null);
+      void trackEmailDelivery(normalizedRecoveryEmail, sentAt, setDelivery);
     } finally {
       setSaving(false);
     }
@@ -741,7 +762,7 @@ export function ChangePasswordSheet({
       : step === "recoverEmail"
         ? "Forgot your current password? Verify your email to set a new one — no logout needed."
         : step === "recoverCode"
-          ? `We sent a 6-digit code to ${normalizedRecoveryEmail}.`
+          ? `We sent a 6-digit code to ${normalizedRecoveryEmail}. It expires in 10 minutes — only the newest code works.`
           : "Email verified. Choose a new password for your account.";
 
   return (
@@ -952,6 +973,8 @@ export function ChangePasswordSheet({
               </button>
             )}
           </div>
+
+          <DeliveryStatusLine state={delivery} />
 
           {errorBox}
 

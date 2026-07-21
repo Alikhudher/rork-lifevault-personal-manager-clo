@@ -202,7 +202,7 @@ test("newly registered account persists after logout", async () => {
   expect(result.current.user?.email).toBe(TEST_EMAIL);
 });
 
-test("duplicate email signup is rejected", async () => {
+test("duplicate email signup is rejected with a clear email_taken error", async () => {
   const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
   await signUpTestUser(result);
 
@@ -211,6 +211,69 @@ test("duplicate email signup is rejected", async () => {
     res = await result.current.signUp("Imposter", TEST_EMAIL, "hacked");
   });
   expect(res.ok).toBe(false);
+  if (!res.ok) {
+    expect(res.error).toBe("email_taken");
+  }
+});
+
+test("unverified accounts cannot sign in; Forgot Password recovery verifies and unblocks them", async () => {
+  // Seed an account whose email was never verified (no such account can
+  // be created by the verified sign-up flow — this is the defense rail).
+  localStorage.setItem(
+    "lifevault-state-v1",
+    JSON.stringify({
+      onboarded: true,
+      user: null,
+      lastEmail: null,
+      accounts: [
+        {
+          email: "unverified@example.com",
+          name: "Unverified User",
+          photo: null,
+          password: "secret123",
+          createdAt: new Date().toISOString(),
+          emailVerified: false,
+        },
+      ],
+    }),
+  );
+  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+
+  // Even the CORRECT password is refused while the email is unverified.
+  let res: AuthResult = { ok: true, error: null };
+  await act(async () => {
+    res = await result.current.signIn("unverified@example.com", "secret123");
+  });
+  expect(res.ok).toBe(false);
+  if (!res.ok) {
+    expect(res.error).toBe("email_unverified");
+  }
+  expect(result.current.user).toBeNull();
+
+  // Recovery (which requires a real emailed code before it is called)
+  // sets a new password AND marks the email verified.
+  let ok = false;
+  await act(async () => {
+    ok = await result.current.resetAccountPassword("unverified@example.com", "newpass123");
+  });
+  expect(ok).toBe(true);
+
+  await act(async () => {
+    res = await result.current.signIn("unverified@example.com", "newpass123");
+  });
+  expect(res.ok).toBe(true);
+  expect(result.current.user?.emailVerified).toBe(true);
+});
+
+test("resetAccountPassword marks the account's email verified", async () => {
+  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await signUpTestUser(result);
+
+  await act(async () => {
+    await result.current.resetAccountPassword(TEST_EMAIL, "resetpass123");
+  });
+  const account = result.current.accounts.find((a) => a.email === TEST_EMAIL);
+  expect(account?.emailVerified).toBe(true);
 });
 
 test("changePassword requires correct current password", async () => {

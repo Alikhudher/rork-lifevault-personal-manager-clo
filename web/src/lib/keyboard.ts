@@ -41,6 +41,20 @@ let state: KeyboardState = {
 let trackingStarted = false;
 let dismissInstalled = false;
 
+/**
+ * Last state reported by the NATIVE keyboard events. On iOS with
+ * `Keyboard.resize = None` the WKWebView is never resized, so
+ * `visualViewport` frequently does NOT shrink when the keyboard opens —
+ * but it still fires resize/scroll events (focus scrolling, relayout).
+ * If those events were allowed to overwrite the inset, they would
+ * clobber the correct native height with 0 and drop keyboard-avoiding
+ * sheets back BEHIND the keyboard (the exact Build 12 bug on iPhone).
+ * While the native plugin says the keyboard is visible, its height is
+ * authoritative; visualViewport can only ever refine it upward.
+ */
+let nativeKeyboardVisible = false;
+let nativeKeyboardHeight = 0;
+
 function isNative(): boolean {
   try {
     return Capacitor.isNativePlatform();
@@ -53,6 +67,14 @@ function insetFromViewport(): number {
   if (typeof window === "undefined" || !window.visualViewport) return 0;
   const vv = window.visualViewport;
   return Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+}
+
+/** Merge the native and visualViewport signals into one truthful state. */
+function computeState(): KeyboardState {
+  if (typeof window === "undefined") return { inset: 0, viewportHeight: 0 };
+  const vvInset = insetFromViewport();
+  const inset = nativeKeyboardVisible ? Math.max(nativeKeyboardHeight, vvInset) : vvInset;
+  return { inset, viewportHeight: Math.max(0, window.innerHeight - inset) };
 }
 
 function publish(next: KeyboardState): void {
@@ -71,40 +93,38 @@ function startTracking(): void {
   if (trackingStarted || typeof window === "undefined") return;
   trackingStarted = true;
 
-  const updateFromViewport = () => {
-    const vv = window.visualViewport;
-    publish({
-      inset: insetFromViewport(),
-      viewportHeight: vv ? vv.height : window.innerHeight,
-    });
-  };
+  const republish = () => publish(computeState());
 
   const vv = window.visualViewport;
   if (vv) {
-    vv.addEventListener("resize", updateFromViewport);
-    vv.addEventListener("scroll", updateFromViewport);
+    vv.addEventListener("resize", republish);
+    vv.addEventListener("scroll", republish);
   }
-  window.addEventListener("resize", updateFromViewport);
+  window.addEventListener("resize", republish);
 
   if (isNative()) {
     // Native events fire before the animation, giving the exact height even
-    // when visualViewport updates are delayed or batched by WKWebView.
+    // when visualViewport never reflects the keyboard (WKWebView with
+    // resize=None). They flip the authoritative flags; every publish path
+    // goes through computeState so later viewport events can never zero
+    // out the inset while the keyboard is still open.
     Keyboard.addListener("keyboardWillShow", (info) => {
-      publish({
-        inset: info.keyboardHeight,
-        viewportHeight: Math.max(0, window.innerHeight - info.keyboardHeight),
-      });
+      nativeKeyboardVisible = true;
+      nativeKeyboardHeight = Math.max(0, info.keyboardHeight);
+      republish();
     }).catch(() => {
       // Plugin unavailable — visualViewport covers it.
     });
     Keyboard.addListener("keyboardWillHide", () => {
-      publish({ inset: 0, viewportHeight: window.innerHeight });
+      nativeKeyboardVisible = false;
+      nativeKeyboardHeight = 0;
+      republish();
     }).catch(() => {
       // Plugin unavailable — visualViewport covers it.
     });
   }
 
-  updateFromViewport();
+  republish();
 }
 
 /** Current keyboard state (synchronous snapshot). */

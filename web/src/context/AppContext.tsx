@@ -66,7 +66,10 @@ interface PersistedState {
 
 export type AuthResult =
   | { ok: true; error: null }
-  | { ok: false; error: "not_found" | "wrong_password" };
+  | {
+      ok: false;
+      error: "not_found" | "wrong_password" | "email_taken" | "email_unverified";
+    };
 
 interface AppContextValue extends PersistedState {
   completeOnboarding: () => void;
@@ -74,6 +77,11 @@ interface AppContextValue extends PersistedState {
   signIn: (email: string, password: string) => Promise<AuthResult>;
   /** Convenience for Face ID unlock — skips password validation. */
   signInWithBiometric: () => AuthResult;
+  /**
+   * Create and sign in a new account. Call ONLY after the email address
+   * has been verified with a real emailed 6-digit code — the Sign Up
+   * screen enforces this, so every stored account is email-verified.
+   */
   signUp: (name: string, email: string, password: string) => Promise<AuthResult>;
   signOut: () => void;
   deleteAccount: () => void;
@@ -391,6 +399,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!matches) {
       return { ok: false, error: "wrong_password" };
     }
+    // Unverified accounts can never log in. Accounts created by the
+    // verified sign-up flow are always verified; this guards any account
+    // left in an unverified state (recovery via Forgot Password verifies
+    // the email and lifts the block).
+    if (account.emailVerified === false) {
+      return { ok: false, error: "email_unverified" };
+    }
     // Opportunistic upgrade: a legacy plaintext account is re-stored as
     // a salted hash on its first successful sign-in.
     let upgraded: RegisteredAccount | null = null;
@@ -437,7 +452,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const normalized = email.trim().toLowerCase();
     const existing = findAccount(stateRef.current.accounts, normalized);
     if (existing) {
-      return { ok: false, error: "not_found" };
+      return { ok: false, error: "email_taken" };
     }
     const rec = await hashPassword(password);
     const s = stateRef.current;
@@ -530,8 +545,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const nextState: PersistedState = {
       ...s,
       accounts: s.accounts.map((a) =>
-        a.email.toLowerCase() === normalized ? withCredentials(a, rec.hash, rec.salt, changedAt) : a,
+        a.email.toLowerCase() === normalized
+          ? // Ownership of the email was just proven with a real code —
+            // mark it verified (this also re-activates a blocked account).
+            { ...withCredentials(a, rec.hash, rec.salt, changedAt), emailVerified: true }
+          : a,
       ),
+      user:
+        affectsSignedInUser && s.user ? { ...s.user, emailVerified: true } : s.user,
       sessions: affectsSignedInUser ? s.sessions.filter((session) => session.current) : s.sessions,
     };
     stateRef.current = nextState;

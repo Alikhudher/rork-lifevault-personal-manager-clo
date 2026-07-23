@@ -1,5 +1,5 @@
 /**
- * Premium subscription infrastructure.
+ * Premium subscription infrastructure — connected to real Apple/Google IAP.
  *
  * Design philosophy: the free version is genuinely useful so users
  * love the app and choose to upgrade naturally — no forced paywalls.
@@ -11,10 +11,14 @@
  * Assistant, document export (ZIP/PDF), advanced reminders &
  * automation, family sharing, and priority support.
  *
- * For now every feature stays free: `isPremium` defaults to `true`
- * and no screen checks a paywall. The feature-flag map and free-tier
- * limits exist so that when Premium is activated, gating a feature
- * or enforcing a limit is a one-liner change.
+ * Premium is unlocked ONLY when Apple/Google confirms a successful
+ * purchase and RevenueCat's server-side receipt validation returns
+ * an active entitlement. On web (no IAP), all features remain free.
+ *
+ * The actual purchase/restore/status-check logic lives in
+ * `@/lib/iap.ts` which wraps the RevenueCat Capacitor plugin.
+ * This file defines the types, plan metadata, feature flags, and
+ * free-tier limits that the IAP layer and UI share.
  */
 
 /** Identifiers for features that may be gated behind Premium in the future. */
@@ -38,9 +42,12 @@ export type PremiumFeature =
  *   - Basic AI scanning (up to FREE_TIER_LIMITS.monthlyAiScans per month)
  *   - Basic cloud backup (up to FREE_TIER_LIMITS.cloudBackupItems items)
  *
- * When Premium is activated, these flags control which features show
- * an upgrade prompt for free users. For now `isPremium` is `true` for
- * everyone, so no flag is actually enforced.
+ * These flags control which features show an upgrade prompt for free
+ * users. On native platforms with IAP configured, `hasFeature()` in
+ * PremiumContext checks these flags for non-premium users. On web
+ * (no IAP), `isPremium` defaults to `false` but `hasFeature()` still
+ * returns `true` for all features so the web preview stays fully
+ * functional.
  */
 export const FREE_FEATURE_FLAGS: Record<PremiumFeature, boolean> = {
   unlimitedScans: false,
@@ -53,11 +60,11 @@ export const FREE_FEATURE_FLAGS: Record<PremiumFeature, boolean> = {
 };
 
 /**
- * Free-tier usage limits. When Premium is activated, free users are
- * subject to these limits; Premium users have no limits.
+ * Free-tier usage limits. Free users are subject to these limits;
+ * Premium users have no limits.
  *
- * For now these are not enforced (isPremium = true for all users),
- * but they're defined here so enforcement is a one-liner later.
+ * These are not currently enforced in the UI — they're defined here
+ * so enforcement can be added per-screen when ready.
  */
 export const FREE_TIER_LIMITS = {
   /** Maximum AI document scans per month for free users. */
@@ -73,7 +80,7 @@ export interface PremiumPlan {
   id: PlanId;
   /** Product ID for App Store Connect / Google Play. */
   productId: string;
-  /** Localised price label (placeholder until StoreKit / Billing supplies the real value). */
+  /** Fallback price label — replaced with the store's localized price when available. */
   priceLabel: string;
   /** Price per period, numeric — used for savings calculation only. */
   price: number;
@@ -105,11 +112,11 @@ export const PREMIUM_PLANS: PremiumPlan[] = [
   },
 ];
 
-/** Subscription status as tracked locally. */
+/** Subscription status as reported by RevenueCat's server-side validation. */
 export type SubscriptionStatus = "active" | "expired" | "none";
 
 export interface PremiumState {
-  /** Whether the user currently has Premium. Defaults to `true` (everything free for now). */
+  /** Whether the user has an active Premium subscription (verified by Apple/Google). */
   isPremium: boolean;
   /** Which plan is active, if any. */
   plan: PlanId | null;
@@ -121,8 +128,14 @@ export interface PremiumState {
   expiryDate: string | null;
 }
 
+/**
+ * Default state: no Premium. On native platforms, the PremiumContext
+ * checks RevenueCat on launch and updates this. On web (no IAP),
+ * `hasFeature()` returns `true` for everything so the app stays
+ * fully functional without a subscription.
+ */
 export const DEFAULT_PREMIUM_STATE: PremiumState = {
-  isPremium: true,
+  isPremium: false,
   plan: null,
   status: "none",
   purchaseDate: null,
@@ -223,9 +236,10 @@ export const FREE_FEATURES: FreeFeature[] = [
 /**
  * Check whether a feature is available for the current user.
  *
- * While everything is free, this always returns `true`.
- * When Premium is activated, it returns `true` for premium users and
- * falls back to the feature-flag map for free users.
+ * Premium users get everything. Free users get features listed in
+ * `FREE_FEATURE_FLAGS`. The PremiumContext's `hasFeature()` wraps
+ * this with an additional web fallback so the web preview stays
+ * fully functional even without IAP.
  */
 export function isFeatureAvailable(
   feature: PremiumFeature,
@@ -240,8 +254,6 @@ export function isFeatureAvailable(
  *
  * Returns `true` if the user can still perform the action (under the
  * limit), `false` if they've hit the cap and need Premium.
- *
- * While everything is free (isPremium = true), always returns `true`.
  */
 export function isWithinFreeLimit(
   limitType: keyof typeof FREE_TIER_LIMITS,
@@ -252,34 +264,6 @@ export function isWithinFreeLimit(
   return currentCount < FREE_TIER_LIMITS[limitType];
 }
 
-/**
- * Purchase a plan.
- *
- * STUB — replace with StoreKit (iOS) / Billing Bridge (Android) call
- * when in-app purchases are activated. The signature mirrors what a
- * real implementation would need: it returns a promise that resolves
- * to the updated PremiumState.
- */
-export async function purchasePlan(
-  _planId: PlanId,
-): Promise<PremiumState> {
-  // When IAP is activated:
-  // 1. Call the native purchase flow (Capacitor plugin or custom bridge).
-  // 2. Verify the receipt server-side.
-  // 3. Update the persisted PremiumState.
-  // 4. Return the new state.
-  throw new Error(
-    "In-app purchases are not yet activated. Premium is currently free for all users.",
-  );
-}
-
-/**
- * Restore previous purchases.
- *
- * STUB — replace with StoreKit / Billing restore when IAP is activated.
- */
-export async function restorePurchases(): Promise<PremiumState> {
-  throw new Error(
-    "In-app purchases are not yet activated. Premium is currently free for all users.",
-  );
-}
+// Purchase and restore logic now lives in `@/lib/iap.ts` which wraps
+// the RevenueCat Capacitor plugin for real Apple/Google IAP.
+// Import `purchasePlan` and `restoreIAPPurchases` from there.

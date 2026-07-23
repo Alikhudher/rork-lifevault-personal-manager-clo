@@ -225,6 +225,28 @@ workflows:
           echo "  VITE_RORK_APP_KEY            = present (len ${#RESOLVED_APP_KEY})"
           echo "  VITE_RORK_TOOLKIT_SECRET_KEY = present (len ${#RESOLVED_TK_SECRET})"
 
+          # --- RevenueCat (required for in-app purchases / subscriptions) ---
+          # RevenueCat PUBLIC API keys — safe to ship in the app bundle.
+          # Get them from: RevenueCat Dashboard → Project Settings → API Keys.
+          # iOS key starts with "appl_", Android key starts with "goog_".
+          # Set VITE_RC_IOS_API_KEY and VITE_RC_ANDROID_API_KEY in the
+          # Codemagic dashboard (Environment Variables → encrypted).
+          RC_IOS="${VITE_RC_IOS_API_KEY:-}"
+          RC_ANDROID="${VITE_RC_ANDROID_API_KEY:-}"
+          sed -i '' '/^VITE_RC_IOS_API_KEY=/d; /^VITE_RC_ANDROID_API_KEY=/d' .env || true
+          if [ -n "$RC_IOS" ]; then
+            echo "VITE_RC_IOS_API_KEY=$RC_IOS" >> .env
+            echo "  VITE_RC_IOS_API_KEY          = present (len ${#RC_IOS})"
+          else
+            echo "  VITE_RC_IOS_API_KEY          = missing (IAP will be unavailable on iOS)"
+          fi
+          if [ -n "$RC_ANDROID" ]; then
+            echo "VITE_RC_ANDROID_API_KEY=$RC_ANDROID" >> .env
+            echo "  VITE_RC_ANDROID_API_KEY      = present (len ${#RC_ANDROID})"
+          else
+            echo "  VITE_RC_ANDROID_API_KEY      = missing (IAP will be unavailable on Android)"
+          fi
+
           bun run build
 
       - name: Create and sync iOS project
@@ -322,7 +344,7 @@ workflows:
           # (TARGETED_DEVICE_FAMILY = 1); iPad is no longer a supported
           # device. No feature, design, data, authentication, or behavior
           # changes.
-          agvtool new-version -all 14
+          agvtool new-version -all 15
 
       - name: Apply iOS signing
         script: |

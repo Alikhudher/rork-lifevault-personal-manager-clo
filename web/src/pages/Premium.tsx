@@ -1,30 +1,50 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  Bell,
+  BellRing,
+  CalendarDays,
   Check,
   Cloud,
   Crown,
+  Download,
   FileText,
   Headphones,
-  Palette,
+  Receipt,
   ScanLine,
   ShieldCheck,
   Sparkles,
+  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { PageHeader, SectionTitle } from "@/components/lifevault/PageHeader";
 import { usePremium } from "@/context/PremiumContext";
-import { PREMIUM_PLANS, PREMIUM_PERKS, type PlanId } from "@/lib/premium";
+import {
+  PREMIUM_PLANS,
+  PREMIUM_PERKS,
+  FREE_FEATURES,
+  type PlanId,
+} from "@/lib/premium";
 import { cn } from "@/lib/utils";
 
 const PERK_ICONS: Record<string, typeof Crown> = {
-  FileText,
   ScanLine,
   Cloud,
   Sparkles,
-  Palette,
+  Download,
+  BellRing,
+  Users,
   Headphones,
+};
+
+const FREE_ICONS: Record<string, typeof Crown> = {
+  FileText,
+  Bell,
+  Receipt,
+  CalendarDays,
+  ScanLine,
+  Cloud,
 };
 
 export default function Premium() {
@@ -64,7 +84,7 @@ export default function Premium() {
     <div className="animate-fade-in">
       <PageHeader
         title="LifeVault Premium"
-        subtitle="Unlock everything"
+        subtitle="Unlock advanced features"
         back
       />
 
@@ -81,7 +101,7 @@ export default function Premium() {
               Upgrade to Premium
             </h2>
             <p className="mt-1.5 text-[14px] font-semibold text-white/80">
-              One subscription. Every feature. No limits.
+              Advanced tools for power users. Free forever for the basics.
             </p>
             {isPremium && (
               <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-4 py-2 text-[13px] font-bold ring-1 ring-white/30 backdrop-blur-sm">
@@ -110,9 +130,39 @@ export default function Premium() {
         </div>
       </section>
 
-      {/* Perks */}
+      {/* Free features — what you already enjoy */}
       <section className="px-4 pt-6">
-        <SectionTitle>What you get</SectionTitle>
+        <SectionTitle>Free forever</SectionTitle>
+        <p className="mb-3 text-[13px] text-muted-foreground">
+          Everything below is yours to keep — no subscription needed.
+        </p>
+        <div className="grid grid-cols-1 gap-2.5">
+          {FREE_FEATURES.map((feature) => {
+            const Icon = FREE_ICONS[feature.icon] ?? FileText;
+            return (
+              <div
+                key={feature.title}
+                className="flex items-center gap-3 rounded-2xl bg-card p-4 shadow-sm ring-1 ring-border"
+              >
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                  <Icon className="h-[20px] w-[20px]" strokeWidth={2.2} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[14px] font-bold">{feature.title}</p>
+                  <p className="text-[12.5px] text-muted-foreground">{feature.description}</p>
+                </div>
+                <span className="shrink-0 rounded-full bg-success/10 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide text-success">
+                  Free
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* Premium perks — what upgrading unlocks */}
+      <section className="px-4 pt-6">
+        <SectionTitle>Premium unlocks</SectionTitle>
         <div className="grid grid-cols-1 gap-2.5">
           {PREMIUM_PERKS.map((perk) => {
             const Icon = PERK_ICONS[perk.icon] ?? Sparkles;
@@ -128,7 +178,7 @@ export default function Premium() {
                   <p className="text-[14px] font-bold">{perk.title}</p>
                   <p className="text-[12.5px] text-muted-foreground">{perk.description}</p>
                 </div>
-                <Check className="h-5 w-5 shrink-0 text-success" strokeWidth={2.5} />
+                <Check className="h-5 w-5 shrink-0 text-amber-500" strokeWidth={2.5} />
               </div>
             );
           })}

@@ -1,44 +1,70 @@
 /**
  * Premium subscription infrastructure.
  *
- * Everything here is designed so that activating real in-app purchases
- * (Apple App Store / Google Play) later requires only swapping the
- * `purchasePlan` / `restorePurchases` stubs for the native StoreKit /
- * Billing Bridge calls — no UI or state-management changes needed.
+ * Design philosophy: the free version is genuinely useful so users
+ * love the app and choose to upgrade naturally — no forced paywalls.
  *
- * For now every feature stays completely free: `isPremium` defaults to
- * `true` and no screen checks a paywall. The feature-flag map exists so
- * that when Premium is activated, gating a feature is a one-liner.
+ * Free tier includes: document storage, basic reminders, expense
+ * tracking, calendar, limited AI scans, and basic cloud backup.
+ *
+ * Premium adds: unlimited AI scans, unlimited cloud backup, AI
+ * Assistant, document export (ZIP/PDF), advanced reminders &
+ * automation, family sharing, and priority support.
+ *
+ * For now every feature stays free: `isPremium` defaults to `true`
+ * and no screen checks a paywall. The feature-flag map and free-tier
+ * limits exist so that when Premium is activated, gating a feature
+ * or enforcing a limit is a one-liner change.
  */
 
 /** Identifiers for features that may be gated behind Premium in the future. */
 export type PremiumFeature =
-  | "unlimitedDocuments"
-  | "unlimitedExpenses"
   | "unlimitedScans"
-  | "cloudBackup"
+  | "unlimitedCloudBackup"
   | "aiAssistant"
-  | "customThemes"
   | "exportData"
+  | "advancedReminders"
+  | "familySharing"
   | "prioritySupport";
 
 /**
- * Feature-flag map. `true` = available to everyone (free).
- * When Premium is activated, set the relevant flags to `false` and the
- * corresponding screens will show an upgrade prompt instead.
+ * Feature-flag map. `true` = available to free users. `false` = Premium only.
  *
- * Until then, every flag is `true` so nothing is locked.
+ * Free tier (always available, no flag needed):
+ *   - Save & organise documents
+ *   - Basic reminders
+ *   - Expense tracking
+ *   - Calendar
+ *   - Basic AI scanning (up to FREE_TIER_LIMITS.monthlyAiScans per month)
+ *   - Basic cloud backup (up to FREE_TIER_LIMITS.cloudBackupItems items)
+ *
+ * When Premium is activated, these flags control which features show
+ * an upgrade prompt for free users. For now `isPremium` is `true` for
+ * everyone, so no flag is actually enforced.
  */
 export const FREE_FEATURE_FLAGS: Record<PremiumFeature, boolean> = {
-  unlimitedDocuments: true,
-  unlimitedExpenses: true,
-  unlimitedScans: true,
-  cloudBackup: true,
-  aiAssistant: true,
-  customThemes: true,
-  exportData: true,
-  prioritySupport: true,
+  unlimitedScans: false,
+  unlimitedCloudBackup: false,
+  aiAssistant: false,
+  exportData: false,
+  advancedReminders: false,
+  familySharing: false,
+  prioritySupport: false,
 };
+
+/**
+ * Free-tier usage limits. When Premium is activated, free users are
+ * subject to these limits; Premium users have no limits.
+ *
+ * For now these are not enforced (isPremium = true for all users),
+ * but they're defined here so enforcement is a one-liner later.
+ */
+export const FREE_TIER_LIMITS = {
+  /** Maximum AI document scans per month for free users. */
+  monthlyAiScans: 10,
+  /** Maximum items in cloud backup for free users. */
+  cloudBackupItems: 50,
+} as const;
 
 /** Plan identifiers — must match the product IDs configured in App Store Connect / Google Play. */
 export type PlanId = "monthly" | "yearly";
@@ -115,34 +141,82 @@ export interface PremiumPerk {
 
 export const PREMIUM_PERKS: PremiumPerk[] = [
   {
-    icon: "FileText",
-    title: "Unlimited documents",
-    description: "Store as many documents as you need — no limits.",
-  },
-  {
     icon: "ScanLine",
     title: "Unlimited AI scans",
-    description: "Scan and extract data from documents without restrictions.",
+    description: "Scan and extract data from unlimited documents — no monthly cap.",
   },
   {
     icon: "Cloud",
-    title: "Encrypted cloud backup",
-    description: "Sync securely across all your devices with end-to-end encryption.",
+    title: "Unlimited cloud backup",
+    description: "Back up unlimited documents and sync across all your devices.",
   },
   {
     icon: "Sparkles",
     title: "AI Assistant",
-    description: "Ask questions about your vault in natural language.",
+    description: "Ask questions about your vault and get instant AI-powered answers.",
   },
   {
-    icon: "Palette",
-    title: "Custom themes",
-    description: "Personalise LifeVault with exclusive colour themes.",
+    icon: "Download",
+    title: "Export all documents",
+    description: "Download everything as ZIP or PDF in one tap.",
+  },
+  {
+    icon: "BellRing",
+    title: "Advanced reminders & automation",
+    description: "Smart recurring reminders, auto-renew alerts, and custom rules.",
+  },
+  {
+    icon: "Users",
+    title: "Family sharing",
+    description: "Share selected documents with family members securely.",
   },
   {
     icon: "Headphones",
     title: "Priority support",
-    description: "Get faster responses from our support team.",
+    description: "Get faster responses from our dedicated support team.",
+  },
+];
+
+/**
+ * Free-tier features shown on the Upgrade screen to highlight what
+ * users already enjoy — builds trust and shows the value of upgrading.
+ */
+export interface FreeFeature {
+  icon: string;
+  title: string;
+  description: string;
+}
+
+export const FREE_FEATURES: FreeFeature[] = [
+  {
+    icon: "FileText",
+    title: "Document storage",
+    description: "Save and organise all your important documents.",
+  },
+  {
+    icon: "Bell",
+    title: "Basic reminders",
+    description: "Never miss a renewal or appointment deadline.",
+  },
+  {
+    icon: "Receipt",
+    title: "Expense tracking",
+    description: "Track spending and manage your budget effortlessly.",
+  },
+  {
+    icon: "CalendarDays",
+    title: "Calendar",
+    description: "View appointments and reminders in one place.",
+  },
+  {
+    icon: "ScanLine",
+    title: "Basic AI scanning",
+    description: `Up to ${FREE_TIER_LIMITS.monthlyAiScans} AI document scans per month.`,
+  },
+  {
+    icon: "Cloud",
+    title: "Basic cloud backup",
+    description: `Back up up to ${FREE_TIER_LIMITS.cloudBackupItems} items to the cloud securely.`,
   },
 ];
 
@@ -159,6 +233,23 @@ export function isFeatureAvailable(
 ): boolean {
   if (isPremium) return true;
   return FREE_FEATURE_FLAGS[feature];
+}
+
+/**
+ * Check whether a free-tier usage limit has been exceeded.
+ *
+ * Returns `true` if the user can still perform the action (under the
+ * limit), `false` if they've hit the cap and need Premium.
+ *
+ * While everything is free (isPremium = true), always returns `true`.
+ */
+export function isWithinFreeLimit(
+  limitType: keyof typeof FREE_TIER_LIMITS,
+  currentCount: number,
+  isPremium: boolean,
+): boolean {
+  if (isPremium) return true;
+  return currentCount < FREE_TIER_LIMITS[limitType];
 }
 
 /**

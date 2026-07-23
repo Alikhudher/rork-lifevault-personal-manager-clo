@@ -23,6 +23,7 @@ import {
   Shield,
   ShieldCheck,
   Smartphone,
+  Crown,
   Sparkles,
   Star,
   Trash2,
@@ -489,6 +490,27 @@ export default function Profile() {
             />
           </div>
         </div>
+      </section>
+
+      {/* Premium */}
+      <section className="px-4 pt-6">
+        <button
+          type="button"
+          onClick={() => navigate("/premium")}
+          className="relative flex w-full items-center gap-4 overflow-hidden rounded-2xl bg-gradient-to-br from-[hsl(43,90%,55%)] via-[hsl(38,85%,50%)] to-[hsl(28,80%,45%)] p-4 text-left text-white shadow-lg shadow-amber-500/20 transition-transform active:scale-[0.99]"
+        >
+          <div className="absolute -right-8 -top-8 h-28 w-28 rounded-full bg-white/15 blur-2xl" aria-hidden />
+          <span className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/20 ring-1 ring-white/30">
+            <Crown className="h-6 w-6" strokeWidth={2.2} />
+          </span>
+          <div className="relative min-w-0 flex-1">
+            <p className="text-[15px] font-extrabold tracking-tight">LifeVault Premium</p>
+            <p className="truncate text-[12.5px] font-semibold text-white/80">
+              All features currently free — upgrade coming soon
+            </p>
+          </div>
+          <ChevronRight className="relative h-5 w-5 shrink-0 text-white/70 rtl:rotate-180" />
+        </button>
       </section>
 
       {/* Account */}

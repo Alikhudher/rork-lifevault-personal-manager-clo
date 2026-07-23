@@ -1,0 +1,234 @@
+import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import {
+  Check,
+  Cloud,
+  Crown,
+  FileText,
+  Headphones,
+  Palette,
+  ScanLine,
+  ShieldCheck,
+  Sparkles,
+} from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { PageHeader, SectionTitle } from "@/components/lifevault/PageHeader";
+import { usePremium } from "@/context/PremiumContext";
+import { PREMIUM_PLANS, PREMIUM_PERKS, type PlanId } from "@/lib/premium";
+import { cn } from "@/lib/utils";
+
+const PERK_ICONS: Record<string, typeof Crown> = {
+  FileText,
+  ScanLine,
+  Cloud,
+  Sparkles,
+  Palette,
+  Headphones,
+};
+
+export default function Premium() {
+  const navigate = useNavigate();
+  const { isPremium, plan, purchase, restore } = usePremium();
+  const [selectedPlan, setSelectedPlan] = useState<PlanId>("yearly");
+  const [purchasing, setPurchasing] = useState<boolean>(false);
+  const [restoring, setRestoring] = useState<boolean>(false);
+
+  const handlePurchase = async () => {
+    setPurchasing(true);
+    try {
+      await purchase(selectedPlan);
+      toast.success("Welcome to LifeVault Premium!", {
+        description: "All features are now unlocked.",
+      });
+    } catch {
+      // IAP not activated yet — no error toast since Premium is free.
+    } finally {
+      setPurchasing(false);
+    }
+  };
+
+  const handleRestore = async () => {
+    setRestoring(true);
+    try {
+      await restore();
+      toast.success("Purchases restored");
+    } catch {
+      // IAP not activated yet.
+    } finally {
+      setRestoring(false);
+    }
+  };
+
+  return (
+    <div className="animate-fade-in">
+      <PageHeader
+        title="LifeVault Premium"
+        subtitle="Unlock everything"
+        back
+      />
+
+      {/* Hero */}
+      <section className="px-4 pt-4">
+        <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[hsl(43,90%,55%)] via-[hsl(38,85%,50%)] to-[hsl(28,80%,45%)] p-6 text-center text-white shadow-xl shadow-amber-500/20">
+          <div className="absolute -right-12 -top-12 h-40 w-40 rounded-full bg-white/15 blur-2xl" aria-hidden />
+          <div className="absolute -bottom-16 -left-8 h-44 w-44 rounded-full bg-white/10 blur-2xl" aria-hidden />
+          <div className="relative">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-white/20 ring-1 ring-white/30 backdrop-blur-sm">
+              <Crown className="h-8 w-8" strokeWidth={2.2} />
+            </div>
+            <h2 className="mt-4 text-[24px] font-extrabold tracking-tight">
+              Upgrade to Premium
+            </h2>
+            <p className="mt-1.5 text-[14px] font-semibold text-white/80">
+              One subscription. Every feature. No limits.
+            </p>
+            {isPremium && (
+              <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-4 py-2 text-[13px] font-bold ring-1 ring-white/30 backdrop-blur-sm">
+                <ShieldCheck className="h-4 w-4" />
+                {plan ? `Active · ${plan === "yearly" ? "Yearly" : "Monthly"}` : "All features unlocked"}
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* Current status banner — everything free for now */}
+      <section className="px-4 pt-4">
+        <div className="flex items-center gap-3 rounded-2xl bg-success/10 px-4 py-3 ring-1 ring-success/20">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-success/15 text-success">
+            <ShieldCheck className="h-5 w-5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] font-bold text-success">
+              All features are currently free
+            </p>
+            <p className="text-[12px] text-muted-foreground">
+              Premium subscription will be available soon. Enjoy everything at no cost.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* Perks */}
+      <section className="px-4 pt-6">
+        <SectionTitle>What you get</SectionTitle>
+        <div className="grid grid-cols-1 gap-2.5">
+          {PREMIUM_PERKS.map((perk) => {
+            const Icon = PERK_ICONS[perk.icon] ?? Sparkles;
+            return (
+              <div
+                key={perk.title}
+                className="flex items-center gap-3 rounded-2xl bg-card p-4 shadow-sm ring-1 ring-border"
+              >
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-500/12 text-amber-600 dark:text-amber-400">
+                  <Icon className="h-[20px] w-[20px]" strokeWidth={2.2} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[14px] font-bold">{perk.title}</p>
+                  <p className="text-[12.5px] text-muted-foreground">{perk.description}</p>
+                </div>
+                <Check className="h-5 w-5 shrink-0 text-success" strokeWidth={2.5} />
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* Plan picker */}
+      <section className="px-4 pt-6">
+        <SectionTitle>Choose your plan</SectionTitle>
+        <div className="grid grid-cols-1 gap-3">
+          {PREMIUM_PLANS.map((p) => {
+            const isSelected = selectedPlan === p.id;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setSelectedPlan(p.id)}
+                className={cn(
+                  "relative flex items-center gap-4 overflow-hidden rounded-2xl p-4 text-left shadow-sm ring-1 transition-all active:scale-[0.99]",
+                  isSelected
+                    ? "bg-gradient-to-br from-[hsl(219,60%,15%)] to-[hsl(216,55%,28%)] text-white ring-primary shadow-lg shadow-primary/20"
+                    : "bg-card text-foreground ring-border",
+                )}
+              >
+                <div
+                  className={cn(
+                    "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 transition-colors",
+                    isSelected ? "border-white bg-white" : "border-muted-foreground/40",
+                  )}
+                >
+                  {isSelected && <Check className="h-4 w-4 text-primary" strokeWidth={3} />}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className={cn("text-[16px] font-extrabold", isSelected ? "text-white" : "text-foreground")}>
+                      {p.id === "yearly" ? "Yearly" : "Monthly"}
+                    </p>
+                    {p.recommended && (
+                      <span
+                        className={cn(
+                          "rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wide",
+                          isSelected ? "bg-white/20 text-white" : "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+                        )}
+                      >
+                        Best value
+                      </span>
+                    )}
+                  </div>
+                  <p className={cn("mt-0.5 text-[13px]", isSelected ? "text-white/70" : "text-muted-foreground")}>
+                    {p.periodLabel}
+                  </p>
+                  {p.savingsLabel && (
+                    <p className={cn("mt-0.5 text-[12px] font-bold", isSelected ? "text-emerald-300" : "text-success")}>
+                      {p.savingsLabel}
+                    </p>
+                  )}
+                </div>
+                <div className="text-right">
+                  <p className={cn("text-[22px] font-extrabold tabular", isSelected ? "text-white" : "text-foreground")}>
+                    {p.priceLabel}
+                  </p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* CTA buttons */}
+      <section className="px-4 pt-6">
+        <Button
+          onClick={handlePurchase}
+          disabled={purchasing}
+          className="h-13 w-full rounded-2xl bg-gradient-to-r from-[hsl(43,90%,55%)] to-[hsl(33,85%,48%)] py-3.5 text-[15px] font-extrabold text-white shadow-lg shadow-amber-500/25 transition-transform active:scale-[0.98]"
+          style={{ height: "52px" }}
+        >
+          <Crown className="mr-2 h-5 w-5" />
+          {purchasing ? "Processing…" : `Continue with ${selectedPlan === "yearly" ? "Yearly" : "Monthly"}`}
+        </Button>
+        <button
+          type="button"
+          onClick={handleRestore}
+          disabled={restoring}
+          className="mt-3 w-full text-center text-[13px] font-bold text-muted-foreground transition-colors hover:text-foreground active:scale-95"
+        >
+          {restoring ? "Restoring…" : "Restore purchases"}
+        </button>
+      </section>
+
+      {/* Fine print */}
+      <section className="px-4 pt-6 pb-6">
+        <p className="text-center text-[11.5px] leading-relaxed text-muted-foreground">
+          Subscriptions auto-renew unless cancelled at least 24 hours before the end of the current period.
+          Manage or cancel anytime from your App Store or Google Play account settings.
+        </p>
+        <div className="mt-4 flex items-center justify-center gap-2 text-[12px] font-bold text-muted-foreground">
+          <ShieldCheck className="h-4 w-4" />
+          Secure payment via Apple App Store & Google Play
+        </div>
+      </section>
+    </div>
+  );
+}

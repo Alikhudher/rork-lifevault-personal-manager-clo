@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppProvider, useApp } from "@/context/AppContext";
 import { I18nProvider } from "@/context/I18nContext";
+import { PremiumProvider } from "@/context/PremiumContext";
 import { SyncProvider } from "@/context/SyncContext";
 import { AppShell, PublicShell } from "@/components/lifevault/AppShell";
 
@@ -22,6 +23,7 @@ import CalendarPage from "./pages/CalendarPage";
 import Notifications from "./pages/Notifications";
 import NotificationSettings from "./pages/NotificationSettings";
 import Profile from "./pages/Profile";
+import Premium from "./pages/Premium";
 import Security from "./pages/Security";
 import BackupSync from "./pages/BackupSync";
 import Restore from "./pages/Restore";
@@ -83,6 +85,7 @@ const AppRoutes = () => (
       <Route path="/notifications" element={<Notifications />} />
       <Route path="/notifications/settings" element={<NotificationSettings />} />
       <Route path="/profile" element={<Profile />} />
+      <Route path="/premium" element={<Premium />} />
       <Route path="/security" element={<Security />} />
       <Route path="/backup" element={<BackupSync />} />
       <Route path="/restore" element={<Restore />} />
@@ -97,6 +100,7 @@ const App = () => (
   <QueryClientProvider client={queryClient}>
     <AppProvider>
       <I18nProvider>
+        <PremiumProvider>
         <SyncProvider>
           <TooltipProvider>
             <Toaster position="top-center" />
@@ -105,6 +109,7 @@ const App = () => (
             </BrowserRouter>
           </TooltipProvider>
         </SyncProvider>
+        </PremiumProvider>
       </I18nProvider>
     </AppProvider>
   </QueryClientProvider>

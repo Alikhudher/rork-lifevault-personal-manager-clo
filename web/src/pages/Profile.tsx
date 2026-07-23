@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { isSameMonth, parseISO } from "date-fns";
 import {
@@ -10,6 +10,7 @@ import {
   Cloud,
   Download,
   FileText,
+  Upload,
   HelpCircle,
   Info,
   KeyRound,
@@ -63,7 +64,9 @@ import {
   SupportSheet,
   WhatsNewSheet,
 } from "@/components/lifevault/AccountSheets";
-import { accountHasPassword, useApp } from "@/context/AppContext";
+import { accountHasPassword, useApp, type RestoredRecord } from "@/context/AppContext";
+import { loadAllFileData, saveFileData } from "@/lib/file-store";
+import { shareText } from "@/lib/share";
 import { useI18n } from "@/context/I18nContext";
 import { formatCurrency, initials } from "@/lib/format";
 import { isLanguageCode, LANGUAGES } from "@/lib/i18n";
@@ -331,6 +334,8 @@ export default function Profile() {
     subscriptions,
     appointments,
     sessions,
+    clearLocalData,
+    applyRestoredRecords,
   } = useApp();
   const { t, language, setLanguage } = useI18n();
   const navigate = useNavigate();
@@ -377,30 +382,171 @@ export default function Profile() {
   const openSheet = (kind: Exclude<SheetKind, null>) => setSheet(kind);
   const closeSheet = () => setSheet(null);
 
-  const handleExport = () => {
-    const data = JSON.stringify({ user, settings, documents, expenses, subscriptions, appointments }, null, 2);
-    const blob = new Blob([data], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "lifevault-export.json";
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success(t("profile.exported"));
+  const [exporting, setExporting] = useState<boolean>(false);
+  const [importing, setImporting] = useState<boolean>(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
+
+  const handleExport = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      // Load file data from IndexedDB to ensure actual file content is included.
+      // In-memory documents may have fileData already (hydrated on mount), but
+      // we load from IndexedDB as the authoritative source to be safe.
+      const fileMap = await loadAllFileData();
+      const docsWithFiles = documents.map((d) => ({
+        ...d,
+        fileData: d.fileData ?? fileMap.get(d.id) ?? null,
+      }));
+      const exportPayload = {
+        _format: "lifevault-export",
+        _version: 1,
+        _exportedAt: new Date().toISOString(),
+        user,
+        settings,
+        documents: docsWithFiles,
+        expenses,
+        subscriptions,
+        appointments,
+      };
+      const data = JSON.stringify(exportPayload, null, 2);
+      const blob = new Blob([data], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `lifevault-export-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      const fileCount = docsWithFiles.filter((d) => d.fileData).length;
+      toast.success(t("profile.exported"), {
+        description: fileCount > 0 ? `${fileCount} file(s) included` : undefined,
+      });
+    } catch {
+      toast.error("Export failed");
+    } finally {
+      setExporting(false);
+    }
   };
 
-  const handleShare = async () => {
-    const shareUrl = "https://lifevault.app";
-    const shareText = "Check out LifeVault — one secure place for your documents, payments and appointments.";
-    if (navigator.share) {
-      try {
-        await navigator.share({ title: "LifeVault", text: shareText, url: shareUrl });
-      } catch {
-        // user cancelled
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as {
+        _format?: string;
+        user?: typeof user;
+        settings?: typeof settings;
+        documents?: typeof documents;
+        expenses?: typeof expenses;
+        subscriptions?: typeof subscriptions;
+        appointments?: typeof appointments;
+      };
+
+      if (!parsed || typeof parsed !== "object") {
+        toast.error("Invalid file format");
+        return;
       }
-    } else {
-      setSheet("share");
+
+      // Restore file data to IndexedDB first so it's available immediately.
+      if (Array.isArray(parsed.documents)) {
+        for (const doc of parsed.documents) {
+          if (doc.id && doc.fileData) {
+            await saveFileData(doc.id, doc.fileData);
+          }
+        }
+      }
+
+      // Apply the imported state via clearLocalData + direct state replacement.
+      // We use a batch approach: clear existing data, then set imported data.
+      // The AppContext doesn't expose a direct "replace all" for local import,
+      // so we use clearLocalData + individual add calls through the context.
+      // Actually, let's use applyRestoredRecords which is designed for this.
+      const records: RestoredRecord[] = [];
+
+      if (Array.isArray(parsed.documents)) {
+        for (const doc of parsed.documents) {
+          records.push({
+            id: doc.id,
+            kind: "document",
+            data: doc,
+            updatedAt: Date.now(),
+            deletedAt: null,
+          });
+        }
+      }
+      if (Array.isArray(parsed.expenses)) {
+        for (const exp of parsed.expenses) {
+          records.push({
+            id: exp.id,
+            kind: "expense",
+            data: exp,
+            updatedAt: Date.now(),
+            deletedAt: null,
+          });
+        }
+      }
+      if (Array.isArray(parsed.subscriptions)) {
+        for (const sub of parsed.subscriptions) {
+          records.push({
+            id: sub.id,
+            kind: "subscription",
+            data: sub,
+            updatedAt: Date.now(),
+            deletedAt: null,
+          });
+        }
+      }
+      if (Array.isArray(parsed.appointments)) {
+        for (const apt of parsed.appointments) {
+          records.push({
+            id: apt.id,
+            kind: "appointment",
+            data: apt,
+            updatedAt: Date.now(),
+            deletedAt: null,
+          });
+        }
+      }
+      if (parsed.settings) {
+        records.push({
+          id: "__settings__",
+          kind: "settings",
+          data: parsed.settings,
+          updatedAt: Date.now(),
+          deletedAt: null,
+        });
+      }
+
+      // Clear existing local data and apply imported records.
+      clearLocalData();
+      applyRestoredRecords(records);
+
+      // Update settings if provided
+      if (parsed.settings) {
+        updateSettings(parsed.settings);
+      }
+
+      const docCount = parsed.documents?.length ?? 0;
+      const fileCount = parsed.documents?.filter((d: { fileData?: string }) => d.fileData).length ?? 0;
+      toast.success("Import complete", {
+        description: `${docCount} document(s) restored${fileCount > 0 ? `, ${fileCount} with files` : ""}`,
+      });
+    } catch {
+      toast.error("Could not read this file. Make sure it's a valid LifeVault export.");
+    } finally {
+      setImporting(false);
     }
+  };
+
+  const handleShareApp = async () => {
+    const shareUrl = "https://lifevault.app";
+    const shareTextMsg = "Check out LifeVault — one secure place for your documents, payments and appointments.";
+    await shareText("LifeVault", shareTextMsg, shareUrl);
   };
 
   const activeSessionsCount = sessions.length;
@@ -611,7 +757,7 @@ export default function Profile() {
             icon={Share2}
             bubble="bg-info/12 text-info"
             title={t("profile.shareApp")}
-            onClick={handleShare}
+            onClick={handleShareApp}
             isLast
           />
         </SettingsCard>
@@ -722,6 +868,13 @@ export default function Profile() {
             title={t("profile.exportData")}
             subtitle={t("profile.exportDataSub")}
             onClick={handleExport}
+          />
+          <SettingRow
+            icon={Upload}
+            bubble="bg-violet-500/12 text-violet-600 dark:text-violet-400"
+            title="Import Data"
+            subtitle="Restore from a JSON backup file"
+            onClick={() => importInputRef.current?.click()}
             isLast
           />
         </SettingsCard>
@@ -789,6 +942,28 @@ export default function Profile() {
       <RateAppSheet open={sheet === "rate"} onOpenChange={closeSheet} />
       <ShareAppSheet open={sheet === "share"} onOpenChange={closeSheet} />
       <BudgetSheet open={budgetOpen} onOpenChange={setBudgetOpen} />
+
+      {/* Hidden file input for JSON import */}
+      <input
+        ref={importInputRef}
+        type="file"
+        accept="application/json,.json"
+        onChange={(e) => void handleImport(e)}
+        aria-hidden
+        tabIndex={-1}
+        style={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          padding: 0,
+          margin: -1,
+          overflow: "hidden",
+          clip: "rect(0,0,0,0)",
+          border: 0,
+          opacity: 0,
+          pointerEvents: "none",
+        }}
+      />
 
       {/* Delete confirm — requires the current password */}
       <AlertDialog

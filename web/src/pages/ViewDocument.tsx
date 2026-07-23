@@ -44,6 +44,7 @@ import {
   type VaultDocument,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { shareDocument } from "@/lib/share";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -89,17 +90,6 @@ function downloadDataUrl(dataUrl: string, fileName: string): void {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-}
-
-/** Converts a data URL to a File for the Web Share API. */
-async function dataUrlToFile(dataUrl: string, fileName: string): Promise<File | null> {
-  try {
-    const res = await fetch(dataUrl);
-    const blob = await res.blob();
-    return new File([blob], fileName || "document", { type: blob.type });
-  } catch {
-    return null;
-  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -400,35 +390,12 @@ export default function ViewDocument() {
 
   const handleShare = useCallback(async () => {
     if (!doc) return;
-    const fileData = doc.fileData;
-    if (fileData) {
-      const file = await dataUrlToFile(fileData, doc.fileName ?? `${doc.name}`);
-      if (file && navigator.canShare?.({ files: [file] })) {
-        try {
-          await navigator.share({
-            files: [file],
-            title: doc.name,
-            text: doc.notes || undefined,
-          });
-          return;
-        } catch {
-          // user cancelled or share failed — fall through
-        }
-      }
-    }
-    // Fallback: share text
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: doc.name,
-          text: doc.notes || `${doc.name} — ${doc.category}`,
-        });
-      } catch {
-        // user cancelled
-      }
-    } else {
-      toast.info("Sharing is not supported on this device");
-    }
+    await shareDocument({
+      title: doc.name,
+      text: doc.notes || `${doc.name} — ${doc.category}`,
+      fileData: doc.fileData ?? null,
+      fileName: doc.fileName ?? `${doc.name}`,
+    });
   }, [doc]);
 
   const handleDownload = useCallback(() => {
@@ -573,7 +540,6 @@ export default function ViewDocument() {
             icon={Share2}
             label="Share"
             onClick={handleShare}
-            disabled={!hasFile}
           />
           <ActionButton
             icon={Download}

@@ -2,17 +2,28 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
+  BatteryCharging,
+  CalendarClock,
+  CheckCircle2,
+  Clock,
   Cloud,
   CloudDownload,
   CloudUpload,
+  Database,
+  FileText,
+  HardDrive,
+  History,
   KeyRound,
   Loader2,
   Lock,
   Mail,
   MailPlus,
   RefreshCw,
+  RotateCcw,
   ShieldCheck,
   Trash2,
+  Wifi,
+  XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -46,6 +57,7 @@ import {
 } from "@/lib/account-recovery";
 import { trackEmailDelivery } from "@/lib/email-delivery";
 import { supabaseConfigured } from "@/lib/supabase";
+import { formatBytes, type BackupHistoryEntry, type BackupPreferences } from "@/lib/sync";
 import { cn } from "@/lib/utils";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -144,7 +156,8 @@ export default function BackupSync() {
   const [disableOpen, setDisableOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetEmail, setResetEmail] = useState("");
-  const [autoSync, setAutoSync] = useState(true);
+  const [showSuccessBanner, setShowSuccessBanner] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   // What the user was trying to do when the unlock/setup sheet opened, so
   // the flow continues automatically after a successful unlock.
   const pendingActionRef = useRef<PendingAction>(null);
@@ -221,57 +234,108 @@ export default function BackupSync() {
 
   const statusPill = (() => {
     if (sync.status === "syncing")
-      return { label: "Syncing…", cls: "bg-amber-500/15 text-amber-700 dark:text-amber-300" };
+      return { label: "In progress", cls: "bg-amber-500/15 text-amber-700 dark:text-amber-300", icon: Loader2 };
     if (sync.status === "error")
-      return { label: "Last sync failed", cls: "bg-destructive/15 text-destructive" };
+      return { label: "Failed", cls: "bg-destructive/15 text-destructive", icon: AlertTriangle };
     if (!sync.cloudUnlocked)
-      return { label: "Cloud locked", cls: "bg-muted text-muted-foreground" };
+      return { label: "Cloud locked", cls: "bg-muted text-muted-foreground", icon: Lock };
     if (sync.metadata?.lastBackupAt)
-      return { label: "Up to date", cls: "bg-success/15 text-success" };
-    return { label: "Not backed up yet", cls: "bg-muted text-muted-foreground" };
+      return { label: "Up to date", cls: "bg-success/15 text-success", icon: CheckCircle2 };
+    return { label: "Not backed up yet", cls: "bg-muted text-muted-foreground", icon: Cloud };
   })();
 
   const busy = sync.status === "syncing";
+
+  // Show success banner briefly after a backup completes.
+  const prevStatusRef = useRef(sync.status);
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    if (prev === "syncing" && sync.status === "idle" && sync.metadata?.lastBackupAt) {
+      setShowSuccessBanner(true);
+      const t = setTimeout(() => setShowSuccessBanner(false), 5000);
+      return () => clearTimeout(t);
+    }
+    prevStatusRef.current = sync.status;
+  }, [sync.status, sync.metadata?.lastBackupAt]);
+
+  const prefs = sync.backupPrefs;
+  const usage = sync.storageUsage;
 
   return (
     <div className="animate-fade-in">
       <PageHeader title="Backup & Sync" subtitle="Secure cloud backup" back />
 
-      {/* Cloud status hero */}
+      {/* Success banner */}
+      {showSuccessBanner && (
+        <section className="px-4 pt-4">
+          <div className="flex items-center gap-3 rounded-2xl bg-success/15 p-4 ring-1 ring-success/30 animate-fade-in">
+            <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />
+            <div>
+              <p className="text-[14px] font-bold text-success">Backup completed successfully</p>
+              <p className="text-[12px] text-success/80">Your vault is securely backed up.</p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Backup status hero */}
       <section className="px-4 pt-4">
         <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[hsl(219,60%,15%)] to-[hsl(216,55%,28%)] p-5 text-white shadow-lg shadow-primary/15">
           <div className="pointer-events-none absolute -right-12 -top-12 h-40 w-40 rounded-full bg-white/10 blur-2xl" aria-hidden />
           <div className="relative flex items-center gap-3">
             <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/10">
-              <Cloud className="h-6 w-6" />
+              {busy ? <Loader2 className="h-6 w-6 animate-spin" /> : <Cloud className="h-6 w-6" />}
             </span>
             <div className="min-w-0 flex-1">
               <p className="truncate text-[16px] font-extrabold">
                 {sync.cloudSignedIn ? user?.email ?? "Cloud account" : "Not connected"}
               </p>
-              <span className={cn("mt-1 inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold", statusPill.cls, "bg-white/15 text-white")}>
-                <ShieldCheck className="h-3 w-3" /> {statusPill.label}
+              <span className={cn("mt-1 inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-white/15 text-white")}>
+                {(() => {
+                  const Icon = statusPill.icon;
+                  return <Icon className={cn("h-3 w-3", busy && "animate-spin")} />;
+                })()}
+                {statusPill.label}
               </span>
             </div>
           </div>
           <div className="relative mt-4 grid grid-cols-3 gap-2 border-t border-white/10 pt-4">
             <Stat label="Last backup" value={formatTime(sync.metadata?.lastBackupAt)} />
             <Stat label="Last sync" value={formatTime(sync.metadata?.lastSyncedAt)} />
-            <Stat label="Records" value={sync.metadata?.cloudRecordCount ?? 0} />
+            <Stat label="Documents" value={sync.metadata?.cloudRecordCount ?? 0} />
           </div>
         </div>
       </section>
 
-      {/* Encryption explainer */}
+      {/* Storage usage */}
       <section className="px-4 pt-5">
-        <div className="flex items-start gap-3 rounded-2xl bg-success/10 p-4 ring-1 ring-success/25">
-          <Lock className="mt-0.5 h-5 w-5 shrink-0 text-success" />
-          <p className="text-[12.5px] leading-relaxed text-muted-foreground">
-            Your data is <span className="font-bold text-foreground">encrypted on this device</span> before
-            upload. Your backup password derives the encryption key — we cannot read your documents,
-            even if we wanted to.
-          </p>
-        </div>
+        <SectionTitle>Storage</SectionTitle>
+        <SettingsCard>
+          <Row
+            icon={FileText}
+            bubble="bg-blue-500/12 text-blue-600 dark:text-blue-400"
+            title="Documents"
+            subtitle="Items in your vault"
+            right={<StatValue value={usage?.documentCount?.toString() ?? "0"} />}
+            isLast={false}
+          />
+          <Row
+            icon={Database}
+            bubble="bg-violet-500/12 text-violet-600 dark:text-violet-400"
+            title="Total records"
+            subtitle="All synced data records"
+            right={<StatValue value={(usage?.totalRecords ?? 0).toString()} />}
+            isLast={false}
+          />
+          <Row
+            icon={HardDrive}
+            bubble="bg-teal-500/12 text-teal-600 dark:text-teal-400"
+            title="Cloud backup size"
+            subtitle="Estimated encrypted size"
+            right={<StatValue value={usage?.cloudSizeLabel ?? "0 B"} />}
+            isLast
+          />
+        </SettingsCard>
       </section>
 
       {/* Progress bar while syncing */}
@@ -279,7 +343,7 @@ export default function BackupSync() {
         <section className="px-4 pt-5">
           <div className="overflow-hidden rounded-2xl bg-card p-4 ring-1 ring-border">
             <div className="mb-2 flex items-center justify-between text-[13px] font-bold">
-              <span>{sync.progress >= 100 ? "Finishing…" : "Working…"}</span>
+              <span>{sync.progress >= 100 ? "Finishing…" : "Backing up…"}</span>
               <span className="tabular">{sync.progress}%</span>
             </div>
             <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
@@ -316,7 +380,6 @@ export default function BackupSync() {
               if (sync.cloudUnlocked) {
                 navigate("/restore");
               } else {
-                // Restoring implies an existing backup — always go through unlock.
                 openUnlock("restore");
               }
             }}
@@ -329,25 +392,127 @@ export default function BackupSync() {
         </div>
       </section>
 
+      {/* Backup history */}
+      <section className="px-4 pt-6">
+        <SectionTitle
+          action={
+            sync.backupHistory.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => sync.clearHistory()}
+                className="text-[12px] font-bold text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Clear
+              </button>
+            ) : undefined
+          }
+        >
+          Backup history
+        </SectionTitle>
+        {sync.backupHistory.length === 0 ? (
+          <div className="rounded-2xl bg-card p-5 text-center ring-1 ring-border">
+            <History className="mx-auto h-6 w-6 text-muted-foreground/50" />
+            <p className="mt-2 text-[13px] text-muted-foreground">
+              No backups yet. Your backup history will appear here.
+            </p>
+          </div>
+        ) : (
+          <SettingsCard>
+            {sync.backupHistory.slice(0, historyOpen ? 50 : 5).map((entry, i, arr) => (
+              <HistoryRow
+                key={entry.id}
+                entry={entry}
+                isLast={historyOpen ? i === arr.length - 1 : i === Math.min(arr.length, 5) - 1}
+              />
+            ))}
+          </SettingsCard>
+        )}
+        {sync.backupHistory.length > 5 && !historyOpen && (
+          <button
+            type="button"
+            onClick={() => setHistoryOpen(true)}
+            className="mt-2 w-full rounded-xl py-2 text-[13px] font-bold text-primary transition-colors hover:bg-primary/5"
+          >
+            Show all {sync.backupHistory.length} entries
+          </button>
+        )}
+        {historyOpen && sync.backupHistory.length > 5 && (
+          <button
+            type="button"
+            onClick={() => setHistoryOpen(false)}
+            className="mt-2 w-full rounded-xl py-2 text-[13px] font-bold text-muted-foreground transition-colors hover:bg-secondary"
+          >
+            Show less
+          </button>
+        )}
+      </section>
+
+      {/* Backup preferences */}
+      <section className="px-4 pt-6">
+        <SectionTitle>Backup preferences</SectionTitle>
+        <SettingsCard>
+          <Row
+            icon={Wifi}
+            bubble="bg-blue-500/12 text-blue-600 dark:text-blue-400"
+            title="Back up on Wi-Fi only"
+            subtitle="Skip backups on cellular data"
+            right={
+              <Switch
+                checked={prefs.wifiOnly}
+                onCheckedChange={(v) => sync.setBackupPrefs({ wifiOnly: v })}
+                aria-label="Toggle Wi-Fi only backup"
+              />
+            }
+            isLast={false}
+          />
+          <Row
+            icon={BatteryCharging}
+            bubble="bg-green-500/12 text-green-600 dark:text-green-400"
+            title="Back up while charging"
+            subtitle="Only run backups when plugged in"
+            right={
+              <Switch
+                checked={prefs.chargingOnly}
+                onCheckedChange={(v) => sync.setBackupPrefs({ chargingOnly: v })}
+                aria-label="Toggle charging only backup"
+              />
+            }
+            isLast={false}
+          />
+          <Row
+            icon={CalendarClock}
+            bubble="bg-indigo-500/12 text-indigo-600 dark:text-indigo-400"
+            title="Automatic daily backup"
+            subtitle="Back up once a day automatically"
+            right={
+              <Switch
+                checked={prefs.autoDailyBackup}
+                onCheckedChange={(v) => sync.setBackupPrefs({ autoDailyBackup: v })}
+                aria-label="Toggle automatic daily backup"
+              />
+            }
+            isLast
+          />
+        </SettingsCard>
+      </section>
+
       {/* Cloud account management */}
       <section className="px-4 pt-6">
         <SectionTitle>Cloud account</SectionTitle>
         <SettingsCard>
           {!sync.cloudUnlocked && (
-            <>
-              <Row
-                icon={Cloud}
-                bubble="bg-info/12 text-info"
-                title={sync.hasExistingBackup ? "Unlock cloud backup" : "Enable cloud backup"}
-                subtitle={
-                  sync.hasExistingBackup
-                    ? "Enter your backup password to decrypt"
-                    : "Set a backup password to start secure sync"
-                }
-                onClick={() => (sync.hasExistingBackup ? openUnlock(null) : openSetup(null))}
-                isLast={false}
-              />
-            </>
+            <Row
+              icon={Cloud}
+              bubble="bg-info/12 text-info"
+              title={sync.hasExistingBackup ? "Unlock cloud backup" : "Enable cloud backup"}
+              subtitle={
+                sync.hasExistingBackup
+                  ? "Enter your backup password to decrypt"
+                  : "Set a backup password to start secure sync"
+              }
+              onClick={() => (sync.hasExistingBackup ? openUnlock(null) : openSetup(null))}
+              isLast={false}
+            />
           )}
           {sync.cloudUnlocked && (
             <>
@@ -394,30 +559,39 @@ export default function BackupSync() {
         </SettingsCard>
       </section>
 
-      {/* Preferences */}
+      {/* Backup security */}
       <section className="px-4 pt-6">
-        <SectionTitle>Preferences</SectionTitle>
+        <SectionTitle>Security</SectionTitle>
         <SettingsCard>
           <Row
-            icon={RefreshCw}
-            bubble="bg-indigo-500/12 text-indigo-600 dark:text-indigo-400"
-            title="Automatic sync"
-            subtitle="Keep devices in sync automatically"
-            right={
-              <Switch
-                checked={autoSync}
-                onCheckedChange={setAutoSync}
-                aria-label="Toggle automatic sync"
-              />
-            }
+            icon={KeyRound}
+            bubble="bg-warning/12 text-warning"
+            title="Change backup password"
+            subtitle="Re-encrypts all data with a new password"
+            onClick={() => setChangePwOpen(true)}
+            isLast={false}
+          />
+          <div className="flex items-start gap-3 px-4 py-4 border-b border-border/70">
+            <span className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-success/12 text-success")}>
+              <ShieldCheck className="h-[18px] w-[18px]" strokeWidth={2.2} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-[14px] font-bold">End-to-end encrypted</p>
+              <p className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">
+                Your data is encrypted on this device before upload. Your backup password derives
+                the encryption key — we cannot read your documents, even if we wanted to.
+              </p>
+            </div>
+          </div>
+          <Row
+            icon={Lock}
+            bubble="bg-violet-500/12 text-violet-600 dark:text-violet-400"
+            title="Recovery key"
+            subtitle="Your backup password IS your recovery key — keep it safe"
+            right={<InfoBadge text="Active" />}
             isLast
           />
         </SettingsCard>
-        {!autoSync && (
-          <p className="px-1 pt-2 text-[12px] text-muted-foreground">
-            You'll need to back up manually after each change.
-          </p>
-        )}
       </section>
 
       <section className="px-4 pb-6 pt-8">
@@ -486,6 +660,66 @@ function Stat({ label, value }: { label: string; value: string | number }) {
     <div className="text-center">
       <p className="truncate text-[13px] font-extrabold tabular">{value}</p>
       <p className="mt-0.5 text-[10px] font-bold uppercase tracking-wide text-white/55">{label}</p>
+    </div>
+  );
+}
+
+/** Right-aligned stat value for use inside Row components. */
+function StatValue({ value }: { value: string }) {
+  return (
+    <span className="shrink-0 text-[14px] font-extrabold tabular text-foreground">{value}</span>
+  );
+}
+
+/** Small badge for status indicators inside rows. */
+function InfoBadge({ text }: { text: string }) {
+  return (
+    <span className="shrink-0 rounded-full bg-success/15 px-2.5 py-0.5 text-[11px] font-bold text-success">
+      {text}
+    </span>
+  );
+}
+
+/** One entry in the backup history list. */
+function HistoryRow({ entry, isLast }: { entry: BackupHistoryEntry; isLast: boolean }) {
+  const icon =
+    entry.status === "success" ? CheckCircle2 : entry.status === "failed" ? XCircle : Loader2;
+  const Icon = icon;
+  const bubble =
+    entry.status === "success"
+      ? "bg-success/12 text-success"
+      : entry.status === "failed"
+        ? "bg-destructive/12 text-destructive"
+        : "bg-amber-500/12 text-amber-600 dark:text-amber-400";
+  const statusLabel =
+    entry.status === "success" ? "Success" : entry.status === "failed" ? "Failed" : "In progress";
+  return (
+    <div className={cn("flex w-full items-center gap-3 px-4 py-3.5", !isLast && "border-b border-border/70")}>
+      <span className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl", bubble)}>
+        <Icon className={cn("h-[18px] w-[18px]", entry.status === "in_progress" && "animate-spin")} strokeWidth={2.2} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[14px] font-bold">{statusLabel}</span>
+        <span className="mt-0.5 flex items-center gap-2 text-[12px] text-muted-foreground">
+          <Clock className="h-3 w-3" />
+          {formatTime(entry.timestamp)}
+          {entry.recordCount > 0 && (
+            <>
+              <span aria-hidden>·</span>
+              <span>{entry.recordCount} records</span>
+            </>
+          )}
+          {entry.sizeBytes > 0 && (
+            <>
+              <span aria-hidden>·</span>
+              <span>{formatBytes(entry.sizeBytes)}</span>
+            </>
+          )}
+        </span>
+        {entry.error && entry.status === "failed" && (
+          <span className="mt-1 block truncate text-[11px] text-destructive/80">{entry.error}</span>
+        )}
+      </span>
     </div>
   );
 }

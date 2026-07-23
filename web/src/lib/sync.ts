@@ -655,3 +655,189 @@ export async function initCloudSalt(): Promise<{ salt: string | null; error?: st
   const res = await storeSalt(salt);
   return res.ok ? { salt } : { salt: null, error: res.error };
 }
+
+/* ------------------------------------------------------------------ */
+/* Backup history (client-side log of each backup attempt)             */
+/* ------------------------------------------------------------------ */
+
+export type BackupHistoryStatus = "success" | "failed" | "in_progress";
+
+export interface BackupHistoryEntry {
+  /** Unique id for the history entry. */
+  id: string;
+  /** ms timestamp of when the backup was initiated. */
+  timestamp: number;
+  /** ms timestamp of when the backup completed (set on success/failure). */
+  completedAt: number | null;
+  /** Outcome of the backup. */
+  status: BackupHistoryStatus;
+  /** Number of records that were backed up. */
+  recordCount: number;
+  /** Estimated backup size in bytes. */
+  sizeBytes: number;
+  /** Error message if the backup failed. */
+  error?: string;
+}
+
+const HISTORY_KEY = "lv-backup-history-v1";
+const MAX_HISTORY_ENTRIES = 50;
+
+/** Load backup history from localStorage. */
+export function loadBackupHistory(): BackupHistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as BackupHistoryEntry[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Save backup history to localStorage (trims to max entries). */
+export function saveBackupHistory(entries: BackupHistoryEntry[]): void {
+  try {
+    const trimmed = entries.slice(0, MAX_HISTORY_ENTRIES);
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(trimmed));
+  } catch {
+    // Non-fatal — history is cosmetic.
+  }
+}
+
+/** Add a new entry to the beginning of the history list. */
+export function addBackupEntry(
+  entries: BackupHistoryEntry[],
+  entry: BackupHistoryEntry,
+): BackupHistoryEntry[] {
+  const updated = [entry, ...entries].slice(0, MAX_HISTORY_ENTRIES);
+  saveBackupHistory(updated);
+  return updated;
+}
+
+/** Update an existing entry by id (e.g. mark in_progress → success/failed). */
+export function updateBackupEntry(
+  entries: BackupHistoryEntry[],
+  id: string,
+  patch: Partial<BackupHistoryEntry>,
+): BackupHistoryEntry[] {
+  const updated = entries.map((e) => (e.id === id ? { ...e, ...patch } : e));
+  saveBackupHistory(updated);
+  return updated;
+}
+
+/** Clear all backup history. */
+export function clearBackupHistory(): BackupHistoryEntry[] {
+  saveBackupHistory([]);
+  return [];
+}
+
+/* ------------------------------------------------------------------ */
+/* Backup preferences                                                  */
+/* ------------------------------------------------------------------ */
+
+export interface BackupPreferences {
+  /** Back up only when connected to Wi-Fi (not cellular). */
+  wifiOnly: boolean;
+  /** Back up only while the device is charging. */
+  chargingOnly: boolean;
+  /** Automatic daily backups at a chosen time. */
+  autoDailyBackup: boolean;
+}
+
+export const DEFAULT_BACKUP_PREFS: BackupPreferences = {
+  wifiOnly: false,
+  chargingOnly: false,
+  autoDailyBackup: false,
+};
+
+const PREFS_KEY = "lv-backup-prefs-v1";
+
+/** Load backup preferences from localStorage. */
+export function loadBackupPrefs(): BackupPreferences {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw) return DEFAULT_BACKUP_PREFS;
+    const parsed = JSON.parse(raw) as Partial<BackupPreferences>;
+    return { ...DEFAULT_BACKUP_PREFS, ...parsed };
+  } catch {
+    return DEFAULT_BACKUP_PREFS;
+  }
+}
+
+/** Save backup preferences to localStorage. */
+export function saveBackupPrefs(prefs: BackupPreferences): void {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // Non-fatal — preferences are cosmetic.
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Storage usage estimation                                            */
+/* ------------------------------------------------------------------ */
+
+export interface StorageUsage {
+  /** Number of documents in the vault. */
+  documentCount: number;
+  /** Total number of records backed up to the cloud. */
+  totalRecords: number;
+  /** Estimated size of all local data in bytes. */
+  localSizeBytes: number;
+  /** Estimated size of the cloud backup in bytes (approximated from ciphertext). */
+  cloudSizeBytes: number;
+  /** Human-readable size string, e.g. "2.4 MB". */
+  cloudSizeLabel: string;
+  /** Human-readable local size string. */
+  localSizeLabel: string;
+}
+
+/** Format bytes into a human-readable string. */
+export function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const val = bytes / Math.pow(1024, i);
+  return `${val.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+/** Estimate the byte size of a JSON-serializable value. */
+function estimateJsonSize(data: unknown): number {
+  try {
+    return new Blob([JSON.stringify(data ?? null)]).size;
+  } catch {
+    return JSON.stringify(data ?? null).length;
+  }
+}
+
+/**
+ * Compute storage usage from local records and cloud metadata.
+ * The cloud size is approximated as ~1.3× the plaintext size (ciphertext
+ * + iv overhead from AES-GCM), which is a reasonable upper bound.
+ */
+export function computeStorageUsage(records: VaultRecord[], cloudRecordCount: number): StorageUsage {
+  let localSizeBytes = 0;
+  let documentCount = 0;
+
+  for (const rec of records) {
+    if (rec.deletedAt) continue;
+    localSizeBytes += estimateJsonSize(rec.data);
+    if (rec.kind === "document") documentCount++;
+  }
+
+  // Cloud size: ciphertext is ~1.3× plaintext due to base64 encoding + iv.
+  // When we don't have local records (e.g. fresh device), estimate from count.
+  const avgRecordSize = records.length > 0 ? localSizeBytes / records.length : 512;
+  const cloudSizeBytes = Math.round(
+    cloudRecordCount > 0 ? Math.max(localSizeBytes * 1.3, cloudRecordCount * avgRecordSize * 1.3) : 0,
+  );
+
+  return {
+    documentCount,
+    totalRecords: records.filter((r) => !r.deletedAt).length,
+    localSizeBytes,
+    cloudSizeBytes,
+    cloudSizeLabel: formatBytes(cloudSizeBytes),
+    localSizeLabel: formatBytes(localSizeBytes),
+  };
+}

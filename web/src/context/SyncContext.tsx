@@ -38,22 +38,34 @@ import {
   type VerifiedEmailSession,
 } from "@/lib/account-recovery";
 import {
+  addBackupEntry,
   backupAll,
+  clearBackupHistory,
   cloudBackupExistsForEmail,
+  computeStorageUsage,
+  DEFAULT_BACKUP_PREFS,
   describeUnlockFailure,
   fetchSalt,
   getSyncMetadata,
   hasCloudBackup,
   initCloudSalt,
+  loadBackupHistory,
+  loadBackupPrefs,
   restoreAll,
+  saveBackupPrefs,
   syncIncremental,
   syncReady,
+  updateBackupEntry,
   wipeCloudData,
   wipeCloudRecords,
+  type BackupHistoryEntry,
+  type BackupPreferences,
   type RestoreResult,
+  type StorageUsage,
   type SyncMetadata,
   type VaultRecord,
 } from "@/lib/sync";
+import { uid } from "@/lib/format";
 import { useApp, type RestoredRecord } from "@/context/AppContext";
 import type {
   AppNotification,
@@ -131,6 +143,16 @@ interface SyncContextValue {
   changeBackupPassword: (current: string, next: string) => Promise<CloudAuthResult>;
   /** Refresh metadata from the server. */
   refreshMetadata: () => Promise<void>;
+  /** Backup history entries (most recent first). */
+  backupHistory: BackupHistoryEntry[];
+  /** Clear all backup history entries. */
+  clearHistory: () => void;
+  /** Current backup preferences. */
+  backupPrefs: BackupPreferences;
+  /** Update backup preferences and persist them. */
+  setBackupPrefs: (prefs: Partial<BackupPreferences>) => void;
+  /** Storage usage info (documents, sizes). */
+  storageUsage: StorageUsage | null;
 }
 
 const SyncContext = createContext<SyncContextValue | null>(null);
@@ -353,6 +375,9 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   const autoSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionEmail = useRef<string | null>(null);
   const stampsRef = useRef<Record<string, ChangeStamp> | null>(null);
+  const [backupHistory, setBackupHistory] = useState<BackupHistoryEntry[]>([]);
+  const [backupPrefs, setBackupPrefsState] = useState<BackupPreferences>(DEFAULT_BACKUP_PREFS);
+  const [storageUsage, setStorageUsage] = useState<StorageUsage | null>(null);
 
   /* ---------------------------------------------------------------- */
   /* Change-stamp helpers                                              */
@@ -418,6 +443,36 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void checkSession();
   }, [checkSession]);
+
+  // Load backup history and preferences from localStorage on mount.
+  useEffect(() => {
+    setBackupHistory(loadBackupHistory());
+    setBackupPrefsState(loadBackupPrefs());
+  }, []);
+
+  const setBackupPrefs = useCallback((prefs: Partial<BackupPreferences>) => {
+    setBackupPrefsState((prev) => {
+      const next = { ...prev, ...prefs };
+      saveBackupPrefs(next);
+      return next;
+    });
+  }, []);
+
+  const clearHistory = useCallback(() => {
+    setBackupHistory(clearBackupHistory());
+  }, []);
+
+  // Recompute storage usage whenever metadata changes.
+  // (buildCurrentRecords is declared later — called lazily inside the effect.)
+  useEffect(() => {
+    if (!metadata) {
+      setStorageUsage(null);
+      return;
+    }
+    // buildCurrentRecords is defined below; we reference it via a ref to
+    // avoid the TS2448 "used before declaration" error while still
+    // recomputing whenever metadata or records change.
+  }, [metadata]);
 
   /* ---------------------------------------------------------------- */
   /* Shared post-sign-in step: fetch/create salt and derive the key   */
@@ -764,6 +819,14 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     persistStamps,
   ]);
 
+  // Recompute storage usage whenever records or metadata change.
+  // Must be after buildCurrentRecords is declared.
+  useEffect(() => {
+    const records = buildCurrentRecords();
+    const cloudCount = metadata?.cloudRecordCount ?? 0;
+    setStorageUsage(computeStorageUsage(records, cloudCount));
+  }, [metadata, buildCurrentRecords]);
+
   const backupNow = useCallback(async (): Promise<boolean> => {
     if (!syncReady()) {
       setLastError("Cloud backup is not unlocked.");
@@ -774,6 +837,17 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     setStatus("syncing");
     setProgress(0);
     const records = buildCurrentRecords();
+    // Log the backup attempt as "in_progress" in history.
+    const entryId = uid("bk");
+    const entry: BackupHistoryEntry = {
+      id: entryId,
+      timestamp: Date.now(),
+      completedAt: null,
+      status: "in_progress",
+      recordCount: records.filter((r) => !r.deletedAt).length,
+      sizeBytes: storageUsage?.localSizeBytes ?? 0,
+    };
+    setBackupHistory((prev) => addBackupEntry(prev, entry));
     const result = await backupAll(records, (done, total) => {
       setProgress(total > 0 ? Math.round((done / total) * 100) : 100);
     });
@@ -784,10 +858,24 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       setLastError(errorMsg);
       setStatus("error");
       toast.error(errorMsg);
+      setBackupHistory((prev) =>
+        updateBackupEntry(prev, entryId, {
+          status: "failed",
+          completedAt: Date.now(),
+          error: errorMsg,
+        }),
+      );
       return false;
     }
     if (result.ok === true && result.disabled === true) {
       setStatus("disabled");
+      setBackupHistory((prev) =>
+        updateBackupEntry(prev, entryId, {
+          status: "failed",
+          completedAt: Date.now(),
+          error: "Cloud backup is not configured.",
+        }),
+      );
       return false;
     }
     // result.ok === true && result.disabled === false
@@ -796,9 +884,19 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     setProgress(100);
     setLastError(null);
     await refreshMetadata();
-    toast.success(`Backed up ${uploaded} records to the cloud`);
+    setBackupHistory((prev) =>
+      updateBackupEntry(prev, entryId, {
+        status: "success",
+        completedAt: Date.now(),
+        recordCount: uploaded,
+        sizeBytes: storageUsage?.localSizeBytes ?? 0,
+      }),
+    );
+    toast.success("Backup completed successfully", {
+      description: "Your vault is securely backed up.",
+    });
     return true;
-  }, [buildCurrentRecords, refreshMetadata]);
+  }, [buildCurrentRecords, refreshMetadata, storageUsage]);
 
   const restoreNow = useCallback(async (): Promise<RestoreResult> => {
     if (!syncReady()) {
@@ -893,6 +991,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     setMetadata(null);
     setStatus("idle");
     setLastError(null);
+    setStorageUsage(null);
     return true;
   }, []);
 
@@ -1115,6 +1214,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       disableCloud,
       changeBackupPassword,
       refreshMetadata,
+      backupHistory,
+      clearHistory,
+      backupPrefs,
+      setBackupPrefs,
+      storageUsage,
     }),
     [
       cloudSignedIn,
@@ -1135,6 +1239,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       disableCloud,
       changeBackupPassword,
       refreshMetadata,
+      backupHistory,
+      clearHistory,
+      backupPrefs,
+      setBackupPrefs,
+      storageUsage,
     ],
   );
 

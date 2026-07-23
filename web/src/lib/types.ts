@@ -127,6 +127,10 @@ export interface VaultDocument {
   reminderDays: ReminderDays;
   fileName: string | null;
   fileKind: FileKind;
+  /** File content as a data URL (base64). Populated when the user uploads
+   *  a file through the Add/Edit form so the View screen can display it.
+   *  Older documents created before this field may have null here. */
+  fileData?: string | null;
   createdAt: string;
 }
 

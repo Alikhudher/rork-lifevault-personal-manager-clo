@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { CloudUpload, FileImage, FileText, FolderOpen, Plus, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -50,6 +50,7 @@ interface DocFormState {
   reminderDays: ReminderDays;
   fileName: string | null;
   fileKind: FileKind;
+  fileData: string | null;
 }
 
 const EMPTY_FORM: DocFormState = {
@@ -61,6 +62,7 @@ const EMPTY_FORM: DocFormState = {
   reminderDays: 30,
   fileName: null,
   fileKind: "pdf",
+  fileData: null,
 };
 
 function kindFromFile(file: File): FileKind {
@@ -69,8 +71,19 @@ function kindFromFile(file: File): FileKind {
   return "doc";
 }
 
+/** Reads a File as a data URL. */
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function Documents() {
   const { documents, addDocument, updateDocument, deleteDocument } = useApp();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState<string>("");
   const [status, setStatus] = useState<StatusFilter>("all");
@@ -129,6 +142,7 @@ export default function Documents() {
       reminderDays: doc.reminderDays,
       fileName: doc.fileName,
       fileKind: doc.fileKind,
+      fileData: doc.fileData ?? null,
     });
     setSheetOpen(true);
   };
@@ -147,6 +161,7 @@ export default function Documents() {
       reminderDays: form.reminderDays,
       fileName: form.fileName,
       fileKind: form.fileKind,
+      fileData: form.fileData,
     };
     if (editingId) {
       updateDocument(editingId, payload);
@@ -244,7 +259,7 @@ export default function Documents() {
             return (
               <button
                 key={doc.id}
-                onClick={() => openEdit(doc)}
+                onClick={() => navigate(`/documents/${doc.id}`)}
                 className="flex w-full items-center gap-3 rounded-2xl bg-card p-3.5 text-left shadow-sm ring-1 ring-border transition-transform active:scale-[0.99]"
               >
                 <CategoryBubble meta={DOCUMENT_META[doc.category]} />
@@ -290,16 +305,22 @@ export default function Documents() {
             type="file"
             accept=".pdf,.doc,.docx,image/*"
             className="hidden"
-            onChange={(e) => {
+            onChange={async (e) => {
               const file = e.target.files?.[0];
               if (file) {
-                setForm((f) => ({
-                  ...f,
-                  fileName: file.name,
-                  fileKind: kindFromFile(file),
-                  name: f.name || file.name.replace(/\.[^.]+$/, ""),
-                }));
-                toast.success(`"${file.name}" attached`);
+                try {
+                  const dataUrl = await readFileAsDataUrl(file);
+                  setForm((f) => ({
+                    ...f,
+                    fileName: file.name,
+                    fileKind: kindFromFile(file),
+                    fileData: dataUrl,
+                    name: f.name || file.name.replace(/\.[^.]+$/, ""),
+                  }));
+                  toast.success(`"${file.name}" attached`);
+                } catch {
+                  toast.error("Could not read this file");
+                }
               }
             }}
           />

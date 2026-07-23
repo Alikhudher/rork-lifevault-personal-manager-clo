@@ -15,6 +15,7 @@ import ForgotPassword from "./pages/auth/ForgotPassword";
 import Home from "./pages/Home";
 import AIAssistant from "./pages/AIAssistant";
 import Documents from "./pages/Documents";
+import ViewDocument from "./pages/ViewDocument";
 import Expenses from "./pages/Expenses";
 import Subscriptions from "./pages/Subscriptions";
 import CalendarPage from "./pages/CalendarPage";
@@ -75,6 +76,7 @@ const AppRoutes = () => (
       <Route path="/" element={<Home />} />
       <Route path="/assistant" element={<AIAssistant />} />
       <Route path="/documents" element={<Documents />} />
+      <Route path="/documents/:id" element={<ViewDocument />} />
       <Route path="/expenses" element={<Expenses />} />
       <Route path="/subscriptions" element={<Subscriptions />} />
       <Route path="/calendar" element={<CalendarPage />} />

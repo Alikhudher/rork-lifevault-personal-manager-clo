@@ -432,40 +432,60 @@ export default function Profile() {
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    e.target.value = "";
     if (!file) return;
     setImporting(true);
     try {
       const text = await file.text();
-      const parsed = JSON.parse(text) as {
+      let parsed: {
         _format?: string;
+        _version?: number;
         user?: typeof user;
         settings?: typeof settings;
-        documents?: typeof documents;
+        documents?: Array<{ id: string; fileData?: string | null } & Record<string, unknown>>;
         expenses?: typeof expenses;
         subscriptions?: typeof subscriptions;
         appointments?: typeof appointments;
       };
 
-      if (!parsed || typeof parsed !== "object") {
-        toast.error("Invalid file format");
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        toast.error("Could not read this file", {
+          description: "The file is not valid JSON. Make sure it's a LifeVault export.",
+        });
         return;
       }
 
-      // Restore file data to IndexedDB first so it's available immediately.
+      if (!parsed || typeof parsed !== "object") {
+        toast.error("Invalid file format", {
+          description: "This doesn't look like a LifeVault backup file.",
+        });
+        return;
+      }
+
+      if (parsed._format && parsed._format !== "lifevault-export") {
+        toast.error("Wrong file type", {
+          description: "This file was not created by LifeVault export.",
+        });
+        return;
+      }
+
+      // Restore file data to IndexedDB FIRST so it survives the state reset.
+      const importedDocIds = new Set<string>();
       if (Array.isArray(parsed.documents)) {
         for (const doc of parsed.documents) {
           if (doc.id && doc.fileData) {
+            importedDocIds.add(doc.id);
             await saveFileData(doc.id, doc.fileData);
           }
         }
       }
 
-      // Apply the imported state via clearLocalData + direct state replacement.
-      // We use a batch approach: clear existing data, then set imported data.
-      // The AppContext doesn't expose a direct "replace all" for local import,
-      // so we use clearLocalData + individual add calls through the context.
-      // Actually, let's use applyRestoredRecords which is designed for this.
+      // Build the records array for applyRestoredRecords — this replaces ALL
+      // local state (documents, expenses, subscriptions, appointments,
+      // settings) in a single setState call. We do NOT call clearLocalData()
+      // because it calls pruneFileData(new Set()) which would race with the
+      // IndexedDB saves above and delete the file data we just wrote.
       const records: RestoredRecord[] = [];
 
       if (Array.isArray(parsed.documents)) {
@@ -522,24 +542,32 @@ export default function Profile() {
         });
       }
 
-      // Clear existing local data and apply imported records.
-      clearLocalData();
+      // applyRestoredRecords replaces all data in a single setState call.
       applyRestoredRecords(records);
 
-      // Update settings if provided
+      // Update settings if provided (applyRestoredRecords handles it too,
+      // but this ensures the settings are merged correctly).
       if (parsed.settings) {
         updateSettings(parsed.settings);
       }
 
       const docCount = parsed.documents?.length ?? 0;
-      const fileCount = parsed.documents?.filter((d: { fileData?: string }) => d.fileData).length ?? 0;
+      const fileCount = parsed.documents?.filter((d) => d.fileData).length ?? 0;
+      const expCount = parsed.expenses?.length ?? 0;
+      const subCount = parsed.subscriptions?.length ?? 0;
+      const aptCount = parsed.appointments?.length ?? 0;
       toast.success("Import complete", {
-        description: `${docCount} document(s) restored${fileCount > 0 ? `, ${fileCount} with files` : ""}`,
+        description: `${docCount} doc(s)${fileCount > 0 ? ` (${fileCount} with files)` : ""}, ${expCount} expense(s), ${subCount} subscription(s), ${aptCount} appointment(s) restored`,
       });
-    } catch {
-      toast.error("Could not read this file. Make sure it's a valid LifeVault export.");
+    } catch (err) {
+      console.error("[Import] Failed:", err);
+      toast.error("Import failed", {
+        description: "Could not read this file. Make sure it's a valid LifeVault export.",
+      });
     } finally {
       setImporting(false);
+      // Reset the input so the same file can be selected again.
+      e.target.value = "";
     }
   };
 

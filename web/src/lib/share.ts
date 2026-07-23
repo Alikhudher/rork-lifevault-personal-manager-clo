@@ -4,7 +4,7 @@
  * On native (iOS/Android via Capacitor) uses @capacitor/share, which opens
  * the real native share sheet (Messages, Mail, WhatsApp, AirDrop, etc.).
  * On web falls back to the Web Share API (navigator.share) when available,
- * otherwise shows a toast and copies a text summary to the clipboard.
+ * otherwise downloads the file and copies a text summary to the clipboard.
  */
 import { Capacitor } from "@capacitor/core";
 import { Share, type ShareOptions } from "@capacitor/share";
@@ -45,6 +45,28 @@ function dataUrlToBlobUrl(dataUrl: string): { url: string; blob: Blob } | null {
   }
 }
 
+/** Returns true if the error is a user-initiated cancellation (not a real error). */
+function isCancellation(err: unknown): boolean {
+  if (err instanceof DOMException) {
+    return err.name === "AbortError" || err.name === "NotAllowedError";
+  }
+  if (err && typeof err === "object" && "message" in err) {
+    const msg = String((err as { message: string }).message).toLowerCase();
+    return msg.includes("cancel") || msg.includes("abort") || msg.includes("user dismissed");
+  }
+  return false;
+}
+
+/** Triggers a browser download from a data URL (web fallback for file sharing). */
+function downloadDataUrl(dataUrl: string, fileName: string): void {
+  const link = document.createElement("a");
+  link.href = dataUrl;
+  link.download = fileName || "document";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
 export interface ShareDocumentOptions {
   /** Document name / title. */
   title: string;
@@ -62,6 +84,8 @@ export interface ShareDocumentOptions {
  * document title and notes as text.
  *
  * Works on iOS, Android (via Capacitor Share) and web (Web Share API).
+ * If file sharing isn't supported, falls back to downloading the file
+ * plus copying text to the clipboard.
  */
 export async function shareDocument({
   title,
@@ -80,39 +104,36 @@ export async function shareDocument({
     };
 
     if (fileData) {
-      // On native, we can share files via the Share plugin if the platform
-      // supports it. We write the data URL's bytes to a temp blob URL and
-      // pass it as a URL. Capacitor Share on iOS/Android can handle
-      // blob: URLs in the webview layer by converting them to native temp files.
+      // Try navigator.share with files first (works in WKWebView on iOS 17+)
+      if (typeof navigator !== "undefined" && navigator.canShare) {
+        const file = await dataUrlToFile(fileData, resolvedName);
+        if (file && navigator.canShare({ files: [file] })) {
+          try {
+            await navigator.share({
+              files: [file],
+              title,
+              text: text || undefined,
+            });
+            return;
+          } catch (err) {
+            if (isCancellation(err)) return;
+            // Fall through to Capacitor Share
+          }
+        }
+      }
+
+      // Capacitor Share with blob URL
       const blobResult = dataUrlToBlobUrl(fileData);
       if (blobResult) {
         try {
-          // Try file share first (navigator.share with files works in WKWebView on iOS 17+)
-          if (typeof navigator !== "undefined" && navigator.canShare) {
-            const file = await dataUrlToFile(fileData, resolvedName);
-            if (file && navigator.canShare({ files: [file] })) {
-              try {
-                await navigator.share({
-                  files: [file],
-                  title,
-                  text: text || undefined,
-                });
-                URL.revokeObjectURL(blobResult.url);
-                return;
-              } catch {
-                // Fall through to Capacitor Share
-              }
-            }
-          }
-          // Capacitor Share with URL — for webview blob URLs, this may
-          // open the share sheet with the file on some platforms.
           options.url = blobResult.url;
           await Share.share(options);
           URL.revokeObjectURL(blobResult.url);
           return;
         } catch (err) {
           URL.revokeObjectURL(blobResult.url);
-          // If file sharing fails, fall through to text-only share
+          if (isCancellation(err)) return;
+          // Fall through to text-only share
         }
       }
     }
@@ -120,14 +141,19 @@ export async function shareDocument({
     // Text-only share (or fallback when file share failed)
     try {
       await Share.share(options);
-    } catch {
-      // User cancelled — no action needed
+    } catch (err) {
+      if (!isCancellation(err)) {
+        toast.error("Could not open share sheet", {
+          description: "Please try again or copy the document manually.",
+        });
+      }
     }
     return;
   }
 
   // ---- Web ----
   if (fileData) {
+    // Try Web Share API with file
     if (typeof navigator !== "undefined" && navigator.canShare) {
       const file = await dataUrlToFile(fileData, resolvedName);
       if (file && navigator.canShare({ files: [file] })) {
@@ -138,14 +164,28 @@ export async function shareDocument({
             text: text || undefined,
           });
           return;
-        } catch {
-          // User cancelled or failed — fall through
+        } catch (err) {
+          if (isCancellation(err)) return;
+          // Fall through to download fallback
         }
       }
     }
+
+    // Fallback: download the file + copy text to clipboard
+    downloadDataUrl(fileData, resolvedName);
+    const summary = text ? `${title}\n\n${text}` : title;
+    try {
+      await navigator.clipboard.writeText(summary);
+    } catch {
+      // Clipboard may fail in non-secure contexts — the download is the main action
+    }
+    toast.success("File downloaded", {
+      description: "Sharing isn't available in this browser — the file has been downloaded instead.",
+    });
+    return;
   }
 
-  // Text-only web share
+  // Text-only web share (no file)
   if (typeof navigator !== "undefined" && navigator.share) {
     try {
       await navigator.share({
@@ -153,9 +193,9 @@ export async function shareDocument({
         text: text || `${title}`,
       });
       return;
-    } catch {
-      // User cancelled — no action needed
-      return;
+    } catch (err) {
+      if (isCancellation(err)) return;
+      // Fall through to clipboard
     }
   }
 
@@ -165,7 +205,9 @@ export async function shareDocument({
     await navigator.clipboard.writeText(summary);
     toast.success("Copied to clipboard");
   } catch {
-    toast.info("Sharing is not supported on this device");
+    toast.info("Sharing is not supported on this device", {
+      description: "The document title has been displayed for you to copy manually.",
+    });
   }
 }
 
@@ -182,8 +224,10 @@ export async function shareText(
     if (url) options.url = url;
     try {
       await Share.share(options);
-    } catch {
-      // User cancelled
+    } catch (err) {
+      if (!isCancellation(err)) {
+        toast.error("Could not open share sheet");
+      }
     }
     return;
   }
@@ -191,10 +235,10 @@ export async function shareText(
   if (typeof navigator !== "undefined" && navigator.share) {
     try {
       await navigator.share({ title, text, url });
-    } catch {
-      // User cancelled
+      return;
+    } catch (err) {
+      if (isCancellation(err)) return;
     }
-    return;
   }
 
   try {

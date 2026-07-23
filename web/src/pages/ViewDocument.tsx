@@ -45,6 +45,7 @@ import {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { shareDocument } from "@/lib/share";
+import { loadFileData } from "@/lib/file-store";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -390,10 +391,12 @@ export default function ViewDocument() {
 
   const handleShare = useCallback(async () => {
     if (!doc) return;
+    // fileData may not be hydrated from IndexedDB yet — load it on demand.
+    const fileData = doc.fileData ?? (await loadFileData(doc.id));
     await shareDocument({
       title: doc.name,
       text: doc.notes || `${doc.name} — ${doc.category}`,
-      fileData: doc.fileData ?? null,
+      fileData,
       fileName: doc.fileName ?? `${doc.name}`,
     });
   }, [doc]);

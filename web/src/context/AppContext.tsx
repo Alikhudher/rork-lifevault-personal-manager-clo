@@ -342,13 +342,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   // Persist state to localStorage, stripping fileData (base64 data URLs)
   // from documents — those live in IndexedDB to avoid quota errors.
+  // Uses console.warn (not console.error) so the dev error overlay doesn't
+  // fire for a non-fatal quota issue — state stays in memory regardless.
   useEffect(() => {
     try {
       const { documents, ...rest } = state;
       const stripped = documents.map(({ fileData: _fd, ...doc }) => doc);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...rest, documents: stripped }));
+      const json = JSON.stringify({ ...rest, documents: stripped });
+      try {
+        localStorage.setItem(STORAGE_KEY, json);
+      } catch {
+        // Quota exceeded — try clearing and writing a minimal version
+        // (stripped documents without fileData should be small, but
+        // accumulated old data may bloat the store).
+        try {
+          localStorage.removeItem(STORAGE_KEY);
+          localStorage.setItem(STORAGE_KEY, json);
+        } catch {
+          console.warn("[Persist] localStorage quota exceeded — data stays in memory only");
+        }
+      }
     } catch (error) {
-      console.error("Failed to persist state", error);
+      console.warn("[Persist] Failed to serialize state", error);
     }
   }, [state]);
 

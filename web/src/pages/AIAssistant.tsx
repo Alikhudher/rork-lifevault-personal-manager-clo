@@ -398,6 +398,7 @@ function EntityChip({ entity }: { entity: ExtractedEntity }) {
 
 interface FollowUpProps {
   result: ScanResult;
+  scanImage?: string | null;
 }
 
 interface QaItem {
@@ -407,7 +408,7 @@ interface QaItem {
   loading?: boolean;
 }
 
-function FollowUpQa({ result }: FollowUpProps) {
+function FollowUpQa({ result, scanImage }: FollowUpProps) {
   const ctxRef = useRef<AskContext>({
     text: result.text,
     kind: result.kind,
@@ -512,7 +513,7 @@ function FollowUpQa({ result }: FollowUpProps) {
                   {!item.loading && item.actions.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {item.actions.map((a, j) => (
-                        <ActionInline key={`qa-${i}-${j}`} action={a} />
+                        <ActionInline key={`qa-${i}-${j}`} action={a} scanImage={scanImage} />
                       ))}
                     </div>
                   )}
@@ -567,7 +568,7 @@ function FollowUpQa({ result }: FollowUpProps) {
 }
 
 /** Inline action chip rendered in Q&A replies (one-tap add). */
-function ActionInline({ action }: { action: SuggestedAction }) {
+function ActionInline({ action, scanImage }: { action: SuggestedAction; scanImage?: string | null }) {
   const { addDocument, addExpense, addAppointment } = useApp();
   const meta = ACTION_META[action.kind];
   const Icon = meta.icon;
@@ -603,8 +604,9 @@ function ActionInline({ action }: { action: SuggestedAction }) {
           expiryDate: action.expiryDate,
           notes: action.notes,
           reminderDays: action.reminderDays,
-          fileName: null,
+          fileName: "scanned-document.jpg",
           fileKind: "image",
+          fileData: scanImage ?? null,
         };
         addDocument(doc);
         toast.success("Document saved");
@@ -616,8 +618,9 @@ function ActionInline({ action }: { action: SuggestedAction }) {
           expiryDate: action.date,
           notes: action.notes,
           reminderDays: 30,
-          fileName: null,
+          fileName: "scanned-document.jpg",
           fileKind: "image",
+          fileData: scanImage ?? null,
         };
         addDocument(doc);
         toast.success("Reminder created");
@@ -644,11 +647,14 @@ function ActionInline({ action }: { action: SuggestedAction }) {
 
 function ScanResultCard({
   result,
+  scanImage,
   onClose,
   autoOpenReview,
   onReviewOpened,
 }: {
   result: ScanResult;
+  /** First scanned page image (data URL) — saved as the document's fileData. */
+  scanImage?: string | null;
   onClose: () => void;
   /** Open the editable review sheet automatically (fresh analysis). */
   autoOpenReview?: boolean;
@@ -745,8 +751,9 @@ function ScanResultCard({
             expiryDate: action.expiryDate,
             notes: action.notes,
             reminderDays: action.reminderDays,
-            fileName: null,
+            fileName: "scanned-document.jpg",
             fileKind: "image",
+            fileData: scanImage ?? null,
           };
           addDocument(doc);
           toast.success("Document saved");
@@ -758,8 +765,9 @@ function ScanResultCard({
             expiryDate: action.date,
             notes: action.notes,
             reminderDays: 30,
-            fileName: null,
+            fileName: "scanned-document.jpg",
             fileKind: "image",
+            fileData: scanImage ?? null,
           };
           addDocument(doc);
           toast.success("Reminder created");
@@ -805,8 +813,9 @@ function ScanResultCard({
       expiryDate: saveExpiryDate || null,
       notes,
       reminderDays: saveReminderDays,
-      fileName: null,
+      fileName: "scanned-document.jpg",
       fileKind: "image",
+      fileData: scanImage ?? null,
     };
     addDocument(doc);
     setSavedDocId("saved");
@@ -902,7 +911,7 @@ function ScanResultCard({
       )}
 
       {/* Follow-up Q&A */}
-      <FollowUpQa result={result} />
+      <FollowUpQa result={result} scanImage={scanImage} />
 
       {/* Captured text (collapsible) */}
       {result.text && (
@@ -1273,6 +1282,7 @@ function ScanResultsView({ outcome, onReset }: ScanResultsProps) {
       <ScanResultCard
         key={active.id}
         result={active}
+        scanImage={outcome.pages[0] ?? null}
         onClose={onReset}
         autoOpenReview={!reviewedIds.has(active.id)}
         onReviewOpened={() =>

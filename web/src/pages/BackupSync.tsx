@@ -563,14 +563,6 @@ export default function BackupSync() {
       <section className="px-4 pt-6">
         <SectionTitle>Security</SectionTitle>
         <SettingsCard>
-          <Row
-            icon={KeyRound}
-            bubble="bg-warning/12 text-warning"
-            title="Change backup password"
-            subtitle="Re-encrypts all data with a new password"
-            onClick={() => setChangePwOpen(true)}
-            isLast={false}
-          />
           <div className="flex items-start gap-3 px-4 py-4 border-b border-border/70">
             <span className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-success/12 text-success")}>
               <ShieldCheck className="h-[18px] w-[18px]" strokeWidth={2.2} />

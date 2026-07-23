@@ -135,32 +135,6 @@ export default function CalendarPage() {
     setSheetOpen(false);
   };
 
-  const AppointmentRow = ({ apt }: { apt: Appointment }) => (
-    <button
-      onClick={() => openEdit(apt)}
-      className="flex w-full items-center gap-3 rounded-2xl bg-card p-3.5 text-left shadow-sm ring-1 ring-border transition-transform active:scale-[0.99]"
-    >
-      <span className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-xl bg-primary/10 text-primary dark:text-foreground">
-        <span className="text-[10px] font-bold uppercase leading-none">{format(parseISO(apt.date), "MMM")}</span>
-        <span className="text-[17px] font-extrabold leading-tight">{format(parseISO(apt.date), "d")}</span>
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-[14px] font-bold">{apt.title}</p>
-        <p className="flex items-center gap-1 text-[12px] text-muted-foreground">
-          <Clock className="h-3 w-3 shrink-0" />
-          {relativeDayLabel(apt.date)} · {formatTime12(apt.time)}
-        </p>
-        {apt.location && (
-          <p className="mt-0.5 flex items-center gap-1 truncate text-[12px] text-muted-foreground">
-            <MapPin className="h-3 w-3 shrink-0" />
-            <span className="truncate">{apt.location}</span>
-          </p>
-        )}
-      </div>
-      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-    </button>
-  );
-
   return (
     <div className="animate-fade-in">
       <PageHeader
@@ -216,14 +190,14 @@ export default function CalendarPage() {
             </div>
           )}
           {upcoming.map((apt) => (
-            <AppointmentRow key={apt.id} apt={apt} />
+            <AppointmentRow key={apt.id} apt={apt} onOpen={openEdit} />
           ))}
           {past.length > 0 && (
             <>
               <p className="px-1 pt-4 text-[13px] font-bold text-muted-foreground">Past</p>
               {past.slice(0, 5).map((apt) => (
                 <div key={apt.id} className="opacity-60">
-                  <AppointmentRow apt={apt} />
+                  <AppointmentRow apt={apt} onOpen={openEdit} />
                 </div>
               ))}
             </>
@@ -302,7 +276,7 @@ export default function CalendarPage() {
                 <p className="text-[13px] text-muted-foreground">Nothing scheduled this day.</p>
               </div>
             ) : (
-              dayAppointments.map((apt) => <AppointmentRow key={apt.id} apt={apt} />)
+              dayAppointments.map((apt) => <AppointmentRow key={apt.id} apt={apt} onOpen={openEdit} />)
             )}
           </div>
         </div>
@@ -413,6 +387,34 @@ export default function CalendarPage() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+function AppointmentRow({ apt, onOpen }: { apt: Appointment; onOpen: (apt: Appointment) => void }) {
+  return (
+    <button
+      onClick={() => onOpen(apt)}
+      className="flex w-full items-center gap-3 rounded-2xl bg-card p-3.5 text-left shadow-sm ring-1 ring-border transition-transform active:scale-[0.99]"
+    >
+      <span className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-xl bg-primary/10 text-primary dark:text-foreground">
+        <span className="text-[10px] font-bold uppercase leading-none">{format(parseISO(apt.date), "MMM")}</span>
+        <span className="text-[17px] font-extrabold leading-tight">{format(parseISO(apt.date), "d")}</span>
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[14px] font-bold">{apt.title}</p>
+        <p className="flex items-center gap-1 text-[12px] text-muted-foreground">
+          <Clock className="h-3 w-3 shrink-0" />
+          {relativeDayLabel(apt.date)} · {formatTime12(apt.time)}
+        </p>
+        {apt.location && (
+          <p className="mt-0.5 flex items-center gap-1 truncate text-[12px] text-muted-foreground">
+            <MapPin className="h-3 w-3 shrink-0" />
+            <span className="truncate">{apt.location}</span>
+          </p>
+        )}
+      </div>
+      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+    </button>
   );
 }
 

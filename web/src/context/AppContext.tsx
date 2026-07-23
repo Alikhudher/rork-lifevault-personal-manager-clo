@@ -43,6 +43,12 @@ import type {
   VaultDocument,
 } from "@/lib/types";
 import { DEFAULT_SECURITY_SETTINGS } from "@/lib/types";
+import {
+  deleteFileData,
+  loadAllFileData,
+  pruneFileData,
+  saveFileData,
+} from "@/lib/file-store";
 
 const STORAGE_KEY = "lifevault-state-v1";
 
@@ -334,13 +340,53 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     stateRef.current = state;
   }, [state]);
 
+  // Persist state to localStorage, stripping fileData (base64 data URLs)
+  // from documents — those live in IndexedDB to avoid quota errors.
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      const { documents, ...rest } = state;
+      const stripped = documents.map(({ fileData: _fd, ...doc }) => doc);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...rest, documents: stripped }));
     } catch (error) {
       console.error("Failed to persist state", error);
     }
   }, [state]);
+
+  // Mirror document fileData to IndexedDB and prune orphaned entries.
+  useEffect(() => {
+    const ids = new Set(state.documents.map((d) => d.id));
+    void pruneFileData(ids);
+    for (const doc of state.documents) {
+      if (doc.fileData) {
+        void saveFileData(doc.id, doc.fileData);
+      }
+    }
+  }, [state.documents]);
+
+  // On mount, hydrate fileData from IndexedDB into documents.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const files = await loadAllFileData();
+      if (cancelled || files.size === 0) return;
+      setState((s) => {
+        let changed = false;
+        const documents = s.documents.map((d) => {
+          if (d.fileData) return d;
+          const data = files.get(d.id);
+          if (data) {
+            changed = true;
+            return { ...d, fileData: data };
+          }
+          return d;
+        });
+        return changed ? { ...s, documents } : s;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", state.settings.darkMode);
@@ -729,6 +775,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const deleteDocument = useCallback((id: string) => {
+    void deleteFileData(id);
     setState((s) => ({ ...s, documents: s.documents.filter((d) => d.id !== id) }));
   }, []);
 
@@ -955,6 +1002,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const clearLocalData = useCallback(() => {
+    void pruneFileData(new Set());
     setState((s) => ({
       ...s,
       documents: [],

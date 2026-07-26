@@ -254,16 +254,37 @@ function PinchZoomImage({ src, alt }: { src: string; alt: string }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* PDF viewer with zoom                                               */
+/* PDF viewer (pdf.js canvas rendering)                               */
 /* ------------------------------------------------------------------ */
 
-function PdfViewer({ src, fileName }: { src: string; fileName: string }) {
-  const [zoom, setZoom] = useState<number>(100);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [containerWidth, setContainerWidth] = useState<number>(0);
+import * as pdfjsLib from "pdfjs-dist";
+import type { PageViewport, RenderTask, PDFDocumentProxy, PDFDocumentLoadingTask } from "pdfjs-dist";
+// Vite bundles the worker as a URL asset.
+import PdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
+pdfjsLib.GlobalWorkerOptions.workerSrc = PdfWorker;
+
+type PdfPageMeta = { pageNum: number };
+
+function PdfViewer({ src, fileName }: { src: string; fileName: string }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const canvasRefs = useRef<Map<number, HTMLCanvasElement>>(new Map());
+  const pdfDocRef = useRef<PDFDocumentProxy | null>(null);
+  const loadingTaskRef = useRef<PDFDocumentLoadingTask | null>(null);
+  const renderTasksRef = useRef<Map<number, RenderTask>>(new Map());
+  const pageViewportsRef = useRef<Map<number, PageViewport>>(new Map());
+
+  const [numPages, setNumPages] = useState<number>(0);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [zoom, setZoom] = useState<number>(1); // 1 = fit-to-width initially
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  const [containerWidth, setContainerWidth] = useState<number>(0);
+  const [pageHeights, setPageHeights] = useState<Map<number, number>>(new Map());
+
+  // Track container width for responsive rendering.
   useEffect(() => {
-    const el = containerRef.current;
+    const el = scrollRef.current;
     if (!el) return;
     const observer = new ResizeObserver(() => {
       setContainerWidth(el.clientWidth);
@@ -273,47 +294,206 @@ function PdfViewer({ src, fileName }: { src: string; fileName: string }) {
     return () => observer.disconnect();
   }, []);
 
-  const zoomIn = () => setZoom((z) => Math.min(z + 25, 300));
-  const zoomOut = () => setZoom((z) => Math.max(z - 25, 50));
+  // Load the PDF document once.
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
+    (async () => {
+      try {
+        const loadingTask = pdfjsLib.getDocument({ url: src });
+        loadingTaskRef.current = loadingTask;
+        const doc = await loadingTask.promise;
+        if (cancelled) {
+          void loadingTask.destroy();
+          return;
+        }
+        pdfDocRef.current = doc;
+        setNumPages(doc.numPages);
+        setLoading(false);
+      } catch (err) {
+        if (cancelled) return;
+        console.error("PDF load failed", err);
+        setError("Could not open this PDF.");
+        setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      renderTasksRef.current.forEach((t) => t.cancel());
+      renderTasksRef.current.clear();
+      pdfDocRef.current = null;
+      void loadingTaskRef.current?.destroy();
+      loadingTaskRef.current = null;
+    };
+  }, [src]);
+
+  // Render a single page at the current zoom level.
+  const renderPage = useCallback(
+    async (pageNum: number) => {
+      const doc = pdfDocRef.current;
+      const canvas = canvasRefs.current.get(pageNum);
+      if (!doc || !canvas) return;
+
+      // Cancel any in-flight render for this page.
+      const existing = renderTasksRef.current.get(pageNum);
+      if (existing) existing.cancel();
+
+      try {
+        const page = await doc.getPage(pageNum);
+        // Base viewport at scale 1; we scale to fit container width * zoom.
+        const baseViewport = page.getViewport({ scale: 1 });
+        const targetWidth = containerWidth > 0 ? containerWidth : canvas.parentElement?.clientWidth ?? 360;
+        const fitScale = (targetWidth / baseViewport.width) * zoom;
+        const viewport = page.getViewport({ scale: fitScale });
+
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        // HiDPI: render at devicePixelRatio for crispness, cap at 2.
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.floor(viewport.width * dpr);
+        canvas.height = Math.floor(viewport.height * dpr);
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+
+        const transform = dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined;
+        const renderTask = page.render({ canvas: ctx.canvas, canvasContext: ctx, viewport, transform });
+        renderTasksRef.current.set(pageNum, renderTask);
+        pageViewportsRef.current.set(pageNum, viewport);
+        await renderTask.promise;
+
+        // Record the rendered height for the spacer layout.
+        setPageHeights((prev) => {
+          if (prev.get(pageNum) === Math.floor(viewport.height)) return prev;
+          const next = new Map(prev);
+          next.set(pageNum, Math.floor(viewport.height));
+          return next;
+        });
+      } catch (err) {
+        // Render cancel throws a RenderingCancelledException — ignore.
+        const e = err as { name?: string };
+        if (e?.name === "RenderingCancelledException") return;
+        // Ignore cancellations from unmount
+      }
+    },
+    [containerWidth, zoom],
+  );
+
+  // Re-render all visible/nearby pages when zoom or container width changes.
+  useEffect(() => {
+    if (!pdfDocRef.current || numPages === 0 || containerWidth === 0) return;
+    // Render all pages (PDFs in a vault are small; safe to render all).
+    for (let p = 1; p <= numPages; p++) {
+      void renderPage(p);
+    }
+  }, [numPages, containerWidth, zoom, renderPage]);
+
+  // Track current page on scroll.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || numPages === 0) return;
+    const onScroll = () => {
+      const scrollTop = el.scrollTop;
+      let accum = 0;
+      let page = 1;
+      for (let p = 1; p <= numPages; p++) {
+        const h = pageHeights.get(p) ?? 0;
+        if (accum + h / 2 > scrollTop) {
+          page = p;
+          break;
+        }
+        accum += h + 12; // 12px gap
+        page = p;
+      }
+      setCurrentPage(page);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [numPages, pageHeights]);
+
+  const zoomIn = () => setZoom((z) => Math.min(+(z + 0.25).toFixed(2), 4));
+  const zoomOut = () => setZoom((z) => Math.max(+(z - 0.25).toFixed(2), 0.5));
+  const fitWidth = () => setZoom(1);
+
+  const pages: PdfPageMeta[] = useMemo(
+    () => Array.from({ length: numPages }, (_, i) => ({ pageNum: i + 1 })),
+    [numPages],
+  );
 
   return (
     <div className="relative flex flex-1 flex-col overflow-hidden bg-neutral-200 dark:bg-neutral-800">
-      <div ref={containerRef} className="flex-1 overflow-auto">
-        <embed
-          src={`${src}#toolbar=0&navpanes=0&view=FitH&zoom=${zoom}`}
-          type="application/pdf"
-          className="border-0"
-          style={{
-            width: `${(containerWidth * zoom) / 100}px`,
-            height: "100%",
-            minHeight: "100%",
-          }}
-          aria-label={fileName}
-        />
+      <div ref={scrollRef} className="flex-1 overflow-auto">
+        {loading ? (
+          <div className="flex h-full items-center justify-center">
+            <div className="flex flex-col items-center gap-3 text-muted-foreground">
+              <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground" />
+              <p className="text-[13px] font-semibold">Loading PDF…</p>
+            </div>
+          </div>
+        ) : error ? (
+          <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+            <FileText className="h-10 w-10 text-muted-foreground/40" />
+            <p className="mt-3 text-[14px] font-bold">{error}</p>
+            <p className="mt-1 text-[12.5px] text-muted-foreground">{fileName}</p>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-3 py-4">
+            {pages.map(({ pageNum }) => (
+              <canvas
+                key={pageNum}
+                ref={(el) => {
+                  if (el) canvasRefs.current.set(pageNum, el);
+                  else canvasRefs.current.delete(pageNum);
+                }}
+                className="bg-white shadow-md"
+                style={{ display: "block" }}
+                aria-label={`Page ${pageNum} of ${numPages}`}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Zoom controls */}
-      <div className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full bg-card/95 px-1.5 py-1.5 shadow-lg ring-1 ring-border backdrop-blur-xl">
-        <button
-          onClick={zoomOut}
-          disabled={zoom <= 50}
-          className="flex h-9 w-9 items-center justify-center rounded-full text-foreground transition-colors disabled:opacity-30 active:scale-90"
-          aria-label="Zoom out"
-        >
-          <ZoomOut className="h-[18px] w-[18px]" strokeWidth={2.2} />
-        </button>
-        <span className="min-w-[48px] text-center text-[12px] font-bold tabular text-muted-foreground">
-          {zoom}%
-        </span>
-        <button
-          onClick={zoomIn}
-          disabled={zoom >= 300}
-          className="flex h-9 w-9 items-center justify-center rounded-full text-foreground transition-colors disabled:opacity-30 active:scale-90"
-          aria-label="Zoom in"
-        >
-          <ZoomIn className="h-[18px] w-[18px]" strokeWidth={2.2} />
-        </button>
-      </div>
+      {!loading && !error && (
+        <div className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full bg-card/95 px-1.5 py-1.5 shadow-lg ring-1 ring-border backdrop-blur-xl">
+          <button
+            onClick={zoomOut}
+            disabled={zoom <= 0.5}
+            className="flex h-9 w-9 items-center justify-center rounded-full text-foreground transition-colors disabled:opacity-30 active:scale-90"
+            aria-label="Zoom out"
+          >
+            <ZoomOut className="h-[18px] w-[18px]" strokeWidth={2.2} />
+          </button>
+          <span className="min-w-[52px] text-center text-[12px] font-bold tabular text-muted-foreground">
+            {Math.round(zoom * 100)}%
+          </span>
+          <button
+            onClick={zoomIn}
+            disabled={zoom >= 4}
+            className="flex h-9 w-9 items-center justify-center rounded-full text-foreground transition-colors disabled:opacity-30 active:scale-90"
+            aria-label="Zoom in"
+          >
+            <ZoomIn className="h-[18px] w-[18px]" strokeWidth={2.2} />
+          </button>
+          <div className="mx-0.5 h-5 w-px bg-border" />
+          <button
+            onClick={fitWidth}
+            className="flex h-9 w-9 items-center justify-center rounded-full text-foreground transition-colors active:scale-90"
+            aria-label="Fit to width"
+          >
+            <Minimize2 className="h-4 w-4" strokeWidth={2.2} />
+          </button>
+          {numPages > 1 && (
+            <span className="ms-1 me-2 text-[12px] font-bold tabular text-muted-foreground">
+              {currentPage}/{numPages}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

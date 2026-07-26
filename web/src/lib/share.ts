@@ -8,10 +8,52 @@
  */
 import { Capacitor } from "@capacitor/core";
 import { Share, type ShareOptions } from "@capacitor/share";
+import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
 import { toast } from "sonner";
 
 const isNative = (): boolean =>
   typeof Capacitor !== "undefined" && Capacitor.isNativePlatform();
+
+/**
+ * Writes a data URL (base64) to a temporary file in the Capacitor Cache dir and
+ * returns a `file://` URI that can be passed to `Share.share({ files: [...] })`.
+ *
+ * This is the only reliable way to share an actual binary attachment on native
+ * iOS/Android — blob: URLs are not accepted by the native share sheet.
+ */
+async function dataUrlToCacheFile(
+  dataUrl: string,
+  fileName: string,
+): Promise<string | null> {
+  try {
+    const commaIdx = dataUrl.indexOf(",");
+    const base64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+    // Sanitize the filename so it's safe on both platforms.
+    const safeName = (fileName || "document").replace(/[^a-zA-Z0-9._-]/g, "_");
+    const path = `share_${Date.now()}_${safeName}`;
+    await Filesystem.writeFile({
+      path,
+      data: base64,
+      directory: Directory.Cache,
+      encoding: Encoding.UTF8,
+      recursive: true,
+    });
+    const uri = await Filesystem.getUri({ path, directory: Directory.Cache });
+    return uri.uri; // file:// URI
+  } catch (err) {
+    console.error("dataUrlToCacheFile failed", err);
+    return null;
+  }
+}
+
+/** Best-effort cleanup of a temporary share file. */
+async function cleanupCacheFile(path: string): Promise<void> {
+  try {
+    await Filesystem.deleteFile({ path, directory: Directory.Cache });
+  } catch {
+    /* ignore */
+  }
+}
 
 /** Converts a data URL to a File for the Web Share API. */
 async function dataUrlToFile(
@@ -104,38 +146,39 @@ export async function shareDocument({
     };
 
     if (fileData) {
-      // Try navigator.share with files first (works in WKWebView on iOS 17+)
-      if (typeof navigator !== "undefined" && navigator.canShare) {
-        const file = await dataUrlToFile(fileData, resolvedName);
-        if (file && navigator.canShare({ files: [file] })) {
-          try {
-            await navigator.share({
-              files: [file],
-              title,
-              text: text || undefined,
-            });
-            return;
-          } catch (err) {
-            if (isCancellation(err)) return;
-            // Fall through to Capacitor Share
-          }
+      // Write the file to a temporary cache file and share via file:// URI.
+      // This is the only reliable way to attach a real binary file to the
+      // native iOS/Android share sheet — blob: URLs are rejected.
+      const fileUri = await dataUrlToCacheFile(fileData, resolvedName);
+      if (fileUri) {
+        try {
+          await Share.share({
+            title,
+            text: text || undefined,
+            dialogTitle: title,
+            files: [fileUri],
+          });
+          // Clean up the temp file after sharing completes.
+          const path = fileUri.split("/").pop() ?? "";
+          if (path) void cleanupCacheFile(path);
+          return;
+        } catch (err) {
+          const path = fileUri.split("/").pop() ?? "";
+          if (path) void cleanupCacheFile(path);
+          if (isCancellation(err)) return;
+          // Show a clear error instead of silently downloading on native.
+          toast.error("Could not open share sheet", {
+            description: "Sharing this file type isn't supported on this device.",
+          });
+          return;
         }
       }
 
-      // Capacitor Share with blob URL
-      const blobResult = dataUrlToBlobUrl(fileData);
-      if (blobResult) {
-        try {
-          options.url = blobResult.url;
-          await Share.share(options);
-          URL.revokeObjectURL(blobResult.url);
-          return;
-        } catch (err) {
-          URL.revokeObjectURL(blobResult.url);
-          if (isCancellation(err)) return;
-          // Fall through to text-only share
-        }
-      }
+      // Filesystem write failed — surface a clear error, do NOT silently download.
+      toast.error("Could not prepare file for sharing", {
+        description: "Please try again or use Download to save the file.",
+      });
+      return;
     }
 
     // Text-only share (or fallback when file share failed)

@@ -27,8 +27,11 @@ import {
   FREE_FEATURES,
   type PlanId,
 } from "@/lib/premium";
-import type { PurchasesStoreProduct } from "@revenuecat/purchases-capacitor";
-import { fetchProducts } from "@/lib/iap";
+import type {
+  PurchasesOffering,
+  PurchasesStoreProduct,
+} from "@revenuecat/purchases-capacitor";
+import { fetchOffering, findPackageForPlan } from "@/lib/iap";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
 
@@ -65,40 +68,37 @@ export default function Premium() {
   const [selectedPlan, setSelectedPlan] = useState<PlanId>("yearly");
   const [purchasing, setPurchasing] = useState<boolean>(false);
   const [restoring, setRestoring] = useState<boolean>(false);
-  const [storeProducts, setStoreProducts] = useState<
-    Record<string, PurchasesStoreProduct>
-  >({});
+  const [offering, setOffering] = useState<PurchasesOffering | null>(null);
 
-  // Fetch localized product prices from the store on mount (native only).
+  // Fetch the current RevenueCat Offering on mount (native only) and use
+  // its Monthly / Yearly packages for localized pricing. Falls back to the
+  // static price labels when no offering or package is available.
   useEffect(() => {
     if (!iapAvailable) return;
     let mounted = true;
     (async () => {
-      const products = await fetchProducts();
+      const current = await fetchOffering();
       if (!mounted) return;
-      const map: Record<string, PurchasesStoreProduct> = {};
-      for (const p of products) {
-        map[p.identifier] = p;
-      }
-      setStoreProducts(map);
+      setOffering(current);
     })();
     return () => {
       mounted = false;
     };
   }, [iapAvailable]);
 
-  // Get the localized price for a plan, falling back to the static label.
+  // Get the localized price for a plan from the Offering's package, falling
+  // back to the static label defined in PREMIUM_PLANS.
   const getPriceLabel = useMemo(() => {
     return (planId: PlanId): string => {
       const fallback = PREMIUM_PLANS.find((p) => p.id === planId);
       if (!fallback) return "";
-      const product = storeProducts[fallback.productId];
-      if (product && product.priceString) {
-        return product.priceString;
+      const pkg = findPackageForPlan(offering, planId);
+      if (pkg && pkg.product.priceString) {
+        return pkg.product.priceString;
       }
       return fallback.priceLabel;
     };
-  }, [storeProducts]);
+  }, [offering]);
 
   const handlePurchase = async () => {
     setPurchasing(true);

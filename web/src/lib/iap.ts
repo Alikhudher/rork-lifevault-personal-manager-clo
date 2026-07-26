@@ -19,6 +19,8 @@ import {
 } from "@revenuecat/purchases-capacitor";
 import type {
   CustomerInfo,
+  PurchasesOffering,
+  PurchasesPackage,
   PurchasesStoreProduct,
 } from "@revenuecat/purchases-capacitor";
 import type { PlanId, PremiumState } from "@/lib/premium";
@@ -101,6 +103,10 @@ export async function configureIAP(appUserID?: string | null): Promise<void> {
 /**
  * Fetch store products for the given product IDs.
  * Returns localized pricing from the App Store / Google Play.
+ *
+ * Used as a fallback when the RevenueCat Offering can't be loaded.
+ * Prefer {@link fetchOffering} which returns Packages from the current
+ * Offering (the source of truth configured in the RevenueCat dashboard).
  */
 export async function fetchProducts(
   productIds: string[] = ALL_PRODUCT_IDS,
@@ -118,8 +124,54 @@ export async function fetchProducts(
 }
 
 /**
+ * Fetch the current RevenueCat Offering.
+ *
+ * The Offering is configured in the RevenueCat dashboard and groups the
+ * Monthly / Yearly packages. Returns `null` on web or if no current
+ * offering is set.
+ */
+export async function fetchOffering(): Promise<PurchasesOffering | null> {
+  if (!isIAPAvailable()) return null;
+  try {
+    const offerings = await Purchases.getOfferings();
+    return offerings.current ?? null;
+  } catch (err) {
+    console.error("[IAP] Failed to fetch offerings:", err);
+    return null;
+  }
+}
+
+/**
+ * Find the package for a plan in the current Offering.
+ *
+ * Monthly maps to the Offering's `monthly` package, Yearly to `annual`.
+ * Falls back to matching by product identifier so custom package
+ * identifiers still work.
+ */
+export function findPackageForPlan(
+  offering: PurchasesOffering | null,
+  planId: PlanId,
+): PurchasesPackage | null {
+  if (!offering) return null;
+  // Prefer the predefined package slots.
+  if (planId === "monthly" && offering.monthly) return offering.monthly;
+  if (planId === "yearly" && offering.annual) return offering.annual;
+  // Fallback: match by product identifier across all available packages.
+  const productId = PRODUCT_IDS[planId];
+  return (
+    offering.availablePackages.find(
+      (pkg) => pkg.product.identifier === productId,
+    ) ?? null
+  );
+}
+
+/**
  * Initiate a purchase for the given plan.
  * Displays Apple's / Google's native purchase sheet.
+ *
+ * Prefers purchasing the Package from the current RevenueCat Offering
+ * (so offering-level config like paywall placement is honored). Falls
+ * back to a direct product purchase if no Offering is configured.
  *
  * Returns the updated PremiumState if the purchase succeeds and the
  * entitlement is active. Throws if the user cancels or the purchase fails.
@@ -134,6 +186,15 @@ export async function purchasePlan(
     );
   }
 
+  // Try the Offering first — it's the source of truth in RevenueCat.
+  const offering = await fetchOffering();
+  const pkg = findPackageForPlan(offering, planId);
+  if (pkg) {
+    const result = await Purchases.purchasePackage({ aPackage: pkg });
+    return customerInfoToPremiumState(result.customerInfo);
+  }
+
+  // Fallback: direct product purchase (no Offering configured).
   const productId = PRODUCT_IDS[planId];
   const products = await fetchProducts([productId]);
   const product = products.find((p) => p.identifier === productId);
@@ -295,6 +356,24 @@ export async function manageSubscription(): Promise<void> {
     }
   } catch (err) {
     console.error("[IAP] Failed to get management URL:", err);
+  }
+}
+
+/**
+ * Log in a RevenueCat appUserID (linking purchases to the signed-in user).
+ *
+ * RevenueCat treats `logIn` as idempotent for an existing user and creates
+ * an anonymous-to-known alias on first call. Safe to invoke after every
+ * app sign-in. On web or when IAP isn't configured, this is a no-op.
+ */
+export async function loginIAP(appUserID: string): Promise<PremiumState | null> {
+  if (!isIAPAvailable()) return null;
+  try {
+    const { customerInfo } = await Purchases.logIn({ appUserID });
+    return customerInfoToPremiumState(customerInfo);
+  } catch (err) {
+    console.error("[IAP] logIn failed:", err);
+    return null;
   }
 }
 

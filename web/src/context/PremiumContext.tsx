@@ -17,6 +17,8 @@ import {
   checkSubscriptionStatus,
   configureIAP,
   isIAPAvailable,
+  loginIAP,
+  logoutIAP,
   onCustomerInfoUpdate,
   purchasePlan as iapPurchase,
   removeCustomerInfoListener,
@@ -25,6 +27,7 @@ import {
   manageSubscription as iapManageSubscription,
 } from "@/lib/iap";
 import { Capacitor } from "@capacitor/core";
+import { useApp } from "@/context/AppContext";
 
 const STORAGE_KEY = "lifevault-premium-v1";
 
@@ -82,10 +85,14 @@ function loadCachedState(): PremiumState {
  *    stays fully functional without a subscription.
  */
 export function PremiumProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useApp();
   const [premium, setPremium] = useState<PremiumState>(() => loadCachedState());
   const [checkingStatus, setCheckingStatus] = useState<boolean>(true);
   const [iapAvailable] = useState<boolean>(() => isIAPAvailable());
   const listenerIdRef = useRef<string | null>(null);
+  // Track the last appUserID we logged in to RevenueCat so we only call
+  // logIn when the identity actually changes (avoids redundant SDK calls).
+  const lastAppUserIdRef = useRef<string | null>(null);
 
   // Persist state to localStorage (cache for instant UI on next launch).
   useEffect(() => {
@@ -149,6 +156,49 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
       }
     };
   }, []);
+
+  // Link RevenueCat to the signed-in user and re-check subscription status
+  // whenever the user changes (sign-in / sign-out / account switch). On
+  // web (no IAP) this is a no-op. Premium only unlocks after RevenueCat
+  // confirms an active `premium` entitlement — never from the local cache.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const appUserID = user?.email ?? null;
+
+    async function syncIdentity() {
+      // Sign-out: log out RevenueCat and clear the cached Premium state so
+      // the next user starts from a clean, unverified state.
+      if (!appUserID) {
+        if (lastAppUserIdRef.current !== null) {
+          await logoutIAP();
+          lastAppUserIdRef.current = null;
+          setPremium(DEFAULT_PREMIUM_STATE);
+        }
+        return;
+      }
+      // Sign-in: log in RevenueCat with the user's email as appUserID and
+      // sync entitlement state from the server.
+      if (appUserID === lastAppUserIdRef.current) return;
+      setCheckingStatus(true);
+      try {
+        const state = await loginIAP(appUserID);
+        if (state) {
+          setPremium(state);
+        } else {
+          // loginIAP returned null (web/IAP unavailable) — fall back to a
+          // status check so we still reflect the real entitlement.
+          const fallback = await checkSubscriptionStatus();
+          setPremium(fallback);
+        }
+        lastAppUserIdRef.current = appUserID;
+      } catch (err) {
+        console.error("[Premium] Failed to sync RevenueCat identity:", err);
+      } finally {
+        setCheckingStatus(false);
+      }
+    }
+    void syncIdentity();
+  }, [user?.email]);
 
   // hasFeature: on web (no IAP), everything is free.
   // On native, check the feature flag for non-premium users.

@@ -8,7 +8,7 @@
  */
 import { Capacitor } from "@capacitor/core";
 import { Share, type ShareOptions } from "@capacitor/share";
-import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
+import { Filesystem, Directory } from "@capacitor/filesystem";
 import { toast } from "sonner";
 
 const isNative = (): boolean =>
@@ -28,14 +28,19 @@ async function dataUrlToCacheFile(
   try {
     const commaIdx = dataUrl.indexOf(",");
     const base64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
-    // Sanitize the filename so it's safe on both platforms.
+    // Sanitize the filename so it's safe on both platforms, preserving the
+    // extension so iOS/Android know how to handle the shared file.
     const safeName = (fileName || "document").replace(/[^a-zA-Z0-9._-]/g, "_");
     const path = `share_${Date.now()}_${safeName}`;
+    // IMPORTANT: do NOT pass `encoding` here. When `encoding` is omitted,
+    // Capacitor's Filesystem plugin treats `data` as base64 and decodes it
+    // to real binary bytes before writing. Passing `Encoding.UTF8` would
+    // write the literal base64 characters as text, producing a corrupt
+    // file that the native share sheet cannot open.
     await Filesystem.writeFile({
       path,
       data: base64,
       directory: Directory.Cache,
-      encoding: Encoding.UTF8,
       recursive: true,
     });
     const uri = await Filesystem.getUri({ path, directory: Directory.Cache });
@@ -64,24 +69,6 @@ async function dataUrlToFile(
     const res = await fetch(dataUrl);
     const blob = await res.blob();
     return new File([blob], fileName || "document", { type: blob.type });
-  } catch {
-    return null;
-  }
-}
-
-/** Writes a data URL to a temporary blob URL (for native share on web view). */
-function dataUrlToBlobUrl(dataUrl: string): { url: string; blob: Blob } | null {
-  try {
-    const commaIdx = dataUrl.indexOf(",");
-    const meta = commaIdx >= 0 ? dataUrl.slice(0, commaIdx) : "";
-    const base64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
-    const mimeMatch = meta.match(/data:([^;]+)/);
-    const mime = mimeMatch ? mimeMatch[1] : "application/octet-stream";
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const blob = new Blob([bytes], { type: mime });
-    return { url: URL.createObjectURL(blob), blob };
   } catch {
     return null;
   }

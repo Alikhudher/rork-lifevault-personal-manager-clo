@@ -339,12 +339,12 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Bump to 14 for the next App Store Connect upload. Build 13 is
+          # Bump to 16 for the next App Store Connect upload. Build 15 is
           # already uploaded. This build restricts the app to iPhone only
           # (TARGETED_DEVICE_FAMILY = 1); iPad is no longer a supported
           # device. No feature, design, data, authentication, or behavior
           # changes.
-          agvtool new-version -all 15
+          agvtool new-version -all 16
 
       - name: Apply iOS signing
         script: |

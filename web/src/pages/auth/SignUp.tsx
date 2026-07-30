@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/input-otp";
 import { DeliveryStatusLine } from "@/components/lifevault/DeliveryStatus";
 import { Field } from "@/components/lifevault/FormSheet";
+import { LegalLinks, LegalSheet, type LegalDocType } from "@/components/lifevault/LegalLinks";
 import { useApp } from "@/context/AppContext";
 import {
   alignCloudPasswordAfterReset,
@@ -52,6 +53,7 @@ export default function SignUp() {
   const [error, setError] = useState<string | null>(null);
   const [resendIn, setResendIn] = useState<number>(0);
   const [delivery, setDelivery] = useState<DeliveryUpdate | null>(null);
+  const [legalDoc, setLegalDoc] = useState<LegalDocType | null>(null);
 
   // Resend countdown ticker.
   useEffect(() => {
@@ -355,6 +357,21 @@ export default function SignUp() {
           Sign in
         </Link>
       </p>
+
+      <p className="pb-8 text-center text-[12px] leading-relaxed text-muted-foreground">
+        By creating an account, you agree to our{" "}
+        <LegalLinks
+          className="inline-flex items-center gap-1 text-[12px]"
+          onOpen={setLegalDoc}
+        />
+        .
+      </p>
+
+      <LegalSheet
+        doc={legalDoc}
+        open={legalDoc !== null}
+        onOpenChange={(open) => !open && setLegalDoc(null)}
+      />
     </div>
   );
 }

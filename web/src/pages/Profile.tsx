@@ -54,6 +54,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { PageHeader, SectionTitle } from "@/components/lifevault/PageHeader";
 import { Field, FormSheet } from "@/components/lifevault/FormSheet";
+import { LegalSheet, type LegalDocType } from "@/components/lifevault/LegalLinks";
 import {
   ActiveSessionsSheet,
   ChangePasswordSheet,
@@ -343,7 +344,7 @@ export default function Profile() {
   const [deletePassword, setDeletePassword] = useState<string>("");
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<boolean>(false);
-  const [legalDoc, setLegalDoc] = useState<"privacy" | "terms" | null>(null);
+  const [legalDoc, setLegalDoc] = useState<LegalDocType | null>(null);
   const [sheet, setSheet] = useState<SheetKind>(null);
   const [budgetOpen, setBudgetOpen] = useState<boolean>(false);
 
@@ -1048,28 +1049,12 @@ export default function Profile() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Legal bottom sheet */}
-      <FormSheet
+      {/* Legal bottom sheet — shared component for full Privacy Policy & Terms of Use */}
+      <LegalSheet
+        doc={legalDoc}
         open={legalDoc !== null}
         onOpenChange={(open) => !open && setLegalDoc(null)}
-        title={legalDoc === "privacy" ? t("profile.privacyPolicy") : t("profile.terms")}
-        description={t("profile.legalUpdated")}
-      >
-        <div className="space-y-4 text-[13px] leading-relaxed text-muted-foreground">
-          {legalDoc === "privacy" ? (
-            <>
-              <p>{t("profile.privacyP1")}</p>
-              <p>{t("profile.privacyP2")}</p>
-              <p>{t("profile.privacyP3")}</p>
-            </>
-          ) : (
-            <>
-              <p>{t("profile.termsP1")}</p>
-              <p>{t("profile.termsP2")}</p>
-            </>
-          )}
-        </div>
-      </FormSheet>
+      />
     </div>
   );
 }

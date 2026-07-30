@@ -32,6 +32,7 @@ import type {
   PurchasesStoreProduct,
 } from "@revenuecat/purchases-capacitor";
 import { fetchOffering, findPackageForPlan } from "@/lib/iap";
+import { LegalLinks, LegalSheet, type LegalDocType } from "@/components/lifevault/LegalLinks";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
 
@@ -69,6 +70,7 @@ export default function Premium() {
   const [purchasing, setPurchasing] = useState<boolean>(false);
   const [restoring, setRestoring] = useState<boolean>(false);
   const [offering, setOffering] = useState<PurchasesOffering | null>(null);
+  const [legalDoc, setLegalDoc] = useState<LegalDocType | null>(null);
 
   // Fetch the current RevenueCat Offering on mount (native only) and use
   // its Monthly / Yearly packages for localized pricing. Falls back to the
@@ -415,17 +417,48 @@ export default function Premium() {
         </section>
       )}
 
-      {/* Fine print */}
+      {/* Fine print — Apple App Store Guideline 3.1.2(c) compliance */}
       <section className="px-4 pt-6 pb-6">
+        {iapAvailable && (
+          <div className="mb-4 rounded-2xl bg-card p-4 ring-1 ring-border">
+            <h3 className="text-[13px] font-extrabold text-foreground">
+              {selectedPlan === "yearly" ? "LifeVault Premium — Yearly" : "LifeVault Premium — Monthly"}
+            </h3>
+            <p className="mt-1 text-[12.5px] text-muted-foreground">
+              {selectedPlan === "yearly"
+                ? `${getPriceLabel("yearly")} per year — billed annually.`
+                : `${getPriceLabel("monthly")} per month — billed monthly.`}
+            </p>
+            <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">
+              This is an auto-renewable subscription. Payment is charged to your Apple App Store or
+              Google Play account at confirmation of purchase. The subscription automatically renews
+              unless auto-renew is turned off at least 24 hours before the end of the current billing
+              period. Your account will be charged for renewal within 24 hours prior to the end of the
+              current period. You can manage and cancel your subscription anytime from your App Store
+              or Google Play account settings.
+            </p>
+          </div>
+        )}
         <p className="text-center text-[11.5px] leading-relaxed text-muted-foreground">
           Subscriptions auto-renew unless cancelled at least 24 hours before the end of the current period.
           Manage or cancel anytime from your App Store or Google Play account settings.
         </p>
+        <LegalLinks
+          className="mt-3 flex items-center justify-center gap-1 text-[12px]"
+          onOpen={setLegalDoc}
+        />
         <div className="mt-4 flex items-center justify-center gap-2 text-[12px] font-bold text-muted-foreground">
           <ShieldCheck className="h-4 w-4" />
           Secure payment via Apple App Store & Google Play
         </div>
       </section>
+
+      {/* Legal document bottom sheet */}
+      <LegalSheet
+        doc={legalDoc}
+        open={legalDoc !== null}
+        onOpenChange={(open) => !open && setLegalDoc(null)}
+      />
     </div>
   );
 }

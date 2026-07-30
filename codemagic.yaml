@@ -339,13 +339,13 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Bump to 18 for the next App Store Connect upload. Build 17 is
-          # already uploaded. This build includes: StoreKit/RevenueCat audit
-          # fixes (diagnostic logging, race condition fix, ensureConfigured
-          # pattern, empty-products surfacing) to resolve the "Product not
-          # found in the store" TestFlight error after the Monthly and
-          # Yearly subscriptions were imported into RevenueCat.
-          agvtool new-version -all 18
+          # Bump to 19 for the next App Store Connect upload. Build 18 is
+          # already uploaded but still hit "Product not found" because the
+          # RevenueCat offerings were not yet configured. The Monthly and
+          # Yearly subscriptions have now been imported into RevenueCat and
+          # linked to $rc_monthly / $rc_annual in the default offering.
+          # This build should resolve the TestFlight purchase error.
+          agvtool new-version -all 19
 
       - name: Apply iOS signing
         script: |

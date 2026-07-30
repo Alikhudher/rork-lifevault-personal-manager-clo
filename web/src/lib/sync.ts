@@ -90,6 +90,8 @@ export interface SyncMetadata {
   lastBackupAt: number | null;
   /** Total records currently stored in the cloud for this user. */
   cloudRecordCount: number;
+  /** Real encrypted backup size in bytes (ciphertext + iv columns). */
+  cloudSizeBytes: number;
 }
 
 /** True when cloud sync is available AND an encryption key is unlocked. */
@@ -117,10 +119,23 @@ export async function getSyncMetadata(): Promise<SyncMetadata | null> {
       .eq("user_id", userId)
       .is("deleted_at", null);
 
+    // Fetch the REAL encrypted backup size from the server-side function.
+    // Falls back to 0 if the function isn't deployed yet (pre-migration projects).
+    let cloudSizeBytes = 0;
+    try {
+      const { data: sizeData, error: sizeErr } = await sb.rpc("get_cloud_backup_size");
+      if (!sizeErr && typeof sizeData === "number") {
+        cloudSizeBytes = sizeData;
+      }
+    } catch {
+      // Function not deployed or network error — non-fatal, size shows 0.
+    }
+
     return {
       lastSyncedAt: (state as SyncStateRow | null)?.last_synced_at ?? null,
       lastBackupAt: (state as SyncStateRow | null)?.last_backup_at ?? null,
       cloudRecordCount: count ?? 0,
+      cloudSizeBytes,
     };
   } catch (err) {
     console.warn("[CloudBackup] getSyncMetadata failed:", err instanceof Error ? err.message : err);
@@ -812,10 +827,18 @@ function estimateJsonSize(data: unknown): number {
 
 /**
  * Compute storage usage from local records and cloud metadata.
- * The cloud size is approximated as ~1.3× the plaintext size (ciphertext
- * + iv overhead from AES-GCM), which is a reasonable upper bound.
+ *
+ * The cloud size is the REAL encrypted size (ciphertext + iv column bytes)
+ * fetched from the `get_cloud_backup_size()` SQL function. When that
+ * value is 0 (function not deployed, or no records), fall back to an
+ * estimate from the local plaintext size so the user never sees a
+ * misleading "0 B" while records actually exist.
  */
-export function computeStorageUsage(records: VaultRecord[], cloudRecordCount: number): StorageUsage {
+export function computeStorageUsage(
+  records: VaultRecord[],
+  cloudRecordCount: number,
+  realCloudSizeBytes: number = 0,
+): StorageUsage {
   let localSizeBytes = 0;
   let documentCount = 0;
 
@@ -825,12 +848,14 @@ export function computeStorageUsage(records: VaultRecord[], cloudRecordCount: nu
     if (rec.kind === "document") documentCount++;
   }
 
-  // Cloud size: ciphertext is ~1.3× plaintext due to base64 encoding + iv.
-  // When we don't have local records (e.g. fresh device), estimate from count.
-  const avgRecordSize = records.length > 0 ? localSizeBytes / records.length : 512;
-  const cloudSizeBytes = Math.round(
-    cloudRecordCount > 0 ? Math.max(localSizeBytes * 1.3, cloudRecordCount * avgRecordSize * 1.3) : 0,
-  );
+  // Use the real server-side size when available. Fall back to an
+  // estimate (~1.3× plaintext for AES-GCM + base64 + iv overhead) only
+  // when the RPC function hasn't been deployed or returned 0.
+  let cloudSizeBytes = realCloudSizeBytes;
+  if (cloudSizeBytes <= 0 && cloudRecordCount > 0) {
+    const avgRecordSize = records.length > 0 ? localSizeBytes / records.length : 512;
+    cloudSizeBytes = Math.round(cloudRecordCount * avgRecordSize * 1.3);
+  }
 
   return {
     documentCount,

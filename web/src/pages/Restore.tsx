@@ -16,12 +16,23 @@ export default function Restore() {
   const sync = useSync();
   const [phase, setPhase] = useState<Phase>("idle");
   const [count, setCount] = useState(0);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+
+  const canRestore = sync.cloudUnlocked && (sync.hasExistingBackup || (sync.metadata?.cloudRecordCount ?? 0) > 0);
 
   const handleRestore = async () => {
+    if (!sync.cloudUnlocked) {
+      const msg = "Cloud backup is not unlocked. Sign in with your password to restore from the cloud.";
+      setRestoreError(msg);
+      toast.error(msg);
+      return;
+    }
     setPhase("restoring");
+    setRestoreError(null);
     const result = await sync.restoreNow();
     if (!result.ok) {
       setPhase("error");
+      setRestoreError(result.error ?? "Restore failed");
       toast.error(result.error ?? "Restore failed");
       return;
     }
@@ -111,6 +122,16 @@ export default function Restore() {
         </section>
       )}
 
+      {/* Error message */}
+      {restoreError && phase !== "restoring" && (
+        <section className="px-4 pt-5">
+          <div className="flex items-start gap-3 rounded-2xl bg-destructive/10 p-4 ring-1 ring-destructive/25">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+            <p className="text-[12.5px] leading-relaxed text-destructive">{restoreError}</p>
+          </div>
+        </section>
+      )}
+
       {/* Warning + action */}
       <section className="px-4 pt-5">
         <div className="flex items-start gap-3 rounded-2xl bg-warning/10 p-4 ring-1 ring-warning/25">
@@ -143,6 +164,12 @@ export default function Restore() {
           <p className="mt-3 text-center text-[12px] text-muted-foreground">
             Cloud backup connects automatically when you sign in with your password. If you used
             Face ID, sign out and back in with your password to restore from the cloud.
+          </p>
+        )}
+        {sync.cloudUnlocked && !canRestore && (
+          <p className="mt-3 text-center text-[12px] text-muted-foreground">
+            No cloud backup found yet. Your data will be backed up automatically — check back later
+            or use Sync now on the Backup & Sync screen.
           </p>
         )}
       </section>

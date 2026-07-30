@@ -855,7 +855,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const records = buildCurrentRecords();
     const cloudCount = metadata?.cloudRecordCount ?? 0;
-    setStorageUsage(computeStorageUsage(records, cloudCount));
+    const realCloudSize = metadata?.cloudSizeBytes ?? 0;
+    setStorageUsage(computeStorageUsage(records, cloudCount, realCloudSize));
   }, [metadata, buildCurrentRecords]);
 
   const backupNow = useCallback(async (): Promise<boolean> => {
@@ -1036,18 +1037,35 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
     cloudLog(`Auto-unlock: enabling cloud backup for ${maskEmail(email)}`);
     void (async () => {
-      // setupCloud creates the Supabase identity if it doesn't exist yet
-      // (first sign-in), or signs in to an existing one. The account
-      // password IS the encryption key — no separate backup password.
-      const result = await setupCloud(email, password);
+      // Step 1: Check if a Supabase session already exists (persisted from
+      // a previous launch). If so, skip signUp/signIn and go straight to
+      // key derivation — calling signUp with an existing session can fail
+      // or create a spurious second identity.
+      const existingSession = await getSupabaseSession();
+      let result: CloudAuthResult;
+      if (existingSession) {
+        cloudLog("Auto-unlock: existing Supabase session found — deriving key directly");
+        setCloudSignedIn(true);
+        sessionEmail.current = email;
+        result = await prepareEncryptionKey(password);
+      } else {
+        // No session — create the Supabase identity (first sign-in) or
+        // sign in to an existing one. The account password IS the
+        // encryption key — no separate backup password.
+        cloudLog("Auto-unlock: no existing session — running full setup");
+        result = await setupCloud(email, password);
+      }
+
       if (result.ok) {
         cloudLog("Auto-unlock: cloud backup enabled and unlocked");
-        // For brand-new accounts (no existing backup), push the initial
-        // backup immediately. For returning accounts, pull remote data.
-        if (!hasExistingBackup) {
+        // Check directly whether a backup already exists — don't rely on
+        // the hasExistingBackup state, which may be stale from the closure.
+        const backupExists = await hasCloudBackup();
+        if (!backupExists) {
           cloudLog("Auto-unlock: first-time account — running initial backup");
           void backupNow().catch(() => undefined);
         } else {
+          cloudLog("Auto-unlock: existing backup found — running incremental sync");
           void syncNow({ silent: true }).catch(() => undefined);
         }
       } else {
@@ -1057,7 +1075,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
         cloudWarn("Auto-unlock failed (legacy password mismatch or network)", result.ok === false ? result.error : "unknown");
       }
     })();
-  }, [app.user, app.getSessionPassword, cloudUnlocked, hasExistingBackup, setupCloud, syncNow, backupNow]);
+  }, [app.user, app.getSessionPassword, cloudUnlocked, setupCloud, syncNow, backupNow, prepareEncryptionKey]);
 
   const disableCloud = useCallback(async (): Promise<boolean> => {
     const sb = getSupabase();

@@ -204,7 +204,7 @@ export default function BackupSync() {
           <div className="relative mt-4 grid grid-cols-3 gap-2 border-t border-white/10 pt-4">
             <Stat label="Last backup" value={formatTime(sync.metadata?.lastBackupAt)} />
             <Stat label="Last sync" value={formatTime(sync.metadata?.lastSyncedAt)} />
-            <Stat label="Documents" value={sync.metadata?.cloudRecordCount ?? 0} />
+            <Stat label="Records" value={sync.metadata?.cloudRecordCount ?? 0} />
           </div>
         </div>
       </section>
@@ -266,14 +266,14 @@ export default function BackupSync() {
             onClick={() => {
               if (!busy) void sync.syncNow();
             }}
-            disabled={busy || !sync.cloudUnlocked}
+            disabled={busy}
             className="h-[52px] rounded-2xl text-[14px] font-bold shadow-sm"
           >
             <RefreshCw className={cn("mr-2 h-5 w-5", busy && "animate-spin")} /> Sync now
           </Button>
           <Button
             onClick={() => navigate("/restore")}
-            disabled={busy || !sync.cloudUnlocked}
+            disabled={busy}
             variant="outline"
             className="h-[52px] rounded-2xl text-[14px] font-bold"
           >
@@ -282,8 +282,8 @@ export default function BackupSync() {
         </div>
         {!sync.cloudUnlocked && (
           <p className="mt-3 text-center text-[12px] text-muted-foreground">
-            Cloud backup connects automatically when you sign in. If this persists, check your
-            internet connection.
+            Cloud backup connects automatically when you sign in with your password. Sync will
+            start once the connection is established.
           </p>
         )}
       </section>

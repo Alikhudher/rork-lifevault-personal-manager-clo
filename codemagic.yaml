@@ -339,14 +339,13 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Bump to 17 for the next App Store Connect upload. Build 16 is
-          # already uploaded. This build includes: account data isolation on
-          # sign-out, automatic cloud backup (no manual setup), real cloud
-          # backup size from Supabase RPC, auto-restore on login, offline
-          # sync queue, App Store compliance (Privacy Policy, Terms of Use,
-          # subscription info), and bug fixes (Sync button, Restore button,
-          # email verification toast, Download button removal).
-          agvtool new-version -all 17
+          # Bump to 18 for the next App Store Connect upload. Build 17 is
+          # already uploaded. This build includes: StoreKit/RevenueCat audit
+          # fixes (diagnostic logging, race condition fix, ensureConfigured
+          # pattern, empty-products surfacing) to resolve the "Product not
+          # found in the store" TestFlight error after the Monthly and
+          # Yearly subscriptions were imported into RevenueCat.
+          agvtool new-version -all 18
 
       - name: Apply iOS signing
         script: |

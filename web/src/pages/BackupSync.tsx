@@ -16,6 +16,7 @@ import {
   RefreshCw,
   ShieldCheck,
   Wifi,
+  WifiOff,
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -152,16 +153,22 @@ export default function BackupSync() {
   const statusPill = (() => {
     if (sync.status === "syncing")
       return { label: "Syncing", cls: "bg-amber-500/15 text-amber-700 dark:text-amber-300", icon: Loader2 };
+    if (sync.status === "preparing")
+      return { label: "Preparing…", cls: "bg-blue-500/15 text-blue-700 dark:text-blue-300", icon: Cloud };
+    if (sync.status === "restoring")
+      return { label: "Restoring…", cls: "bg-indigo-500/15 text-indigo-700 dark:text-indigo-300", icon: CloudDownload };
+    if (sync.status === "offline")
+      return { label: "Waiting for internet", cls: "bg-muted text-muted-foreground", icon: WifiOff };
     if (sync.status === "error")
       return { label: "Sync failed", cls: "bg-destructive/15 text-destructive", icon: AlertTriangle };
-    if (!sync.cloudUnlocked)
+    if (!sync.cloudUnlocked && !sync.autoRestoreComplete)
       return { label: "Connecting…", cls: "bg-muted text-muted-foreground", icon: Cloud };
     if (sync.metadata?.lastBackupAt)
       return { label: "Up to date", cls: "bg-success/15 text-success", icon: CheckCircle2 };
     return { label: "Ready", cls: "bg-muted text-muted-foreground", icon: Cloud };
   })();
 
-  const busy = sync.status === "syncing";
+  const busy = sync.status === "syncing" || sync.status === "preparing" || sync.status === "restoring";
 
   return (
     <div className="animate-fade-in">
@@ -266,21 +273,21 @@ export default function BackupSync() {
             onClick={() => {
               if (!busy) void sync.syncNow();
             }}
-            disabled={!sync.cloudUnlocked || busy}
+            disabled={busy}
             className="h-[52px] rounded-2xl text-[14px] font-bold shadow-sm"
           >
             <RefreshCw className={cn("mr-2 h-5 w-5", busy && "animate-spin")} /> Sync now
           </Button>
           <Button
             onClick={() => navigate("/restore")}
-            disabled={!sync.cloudUnlocked}
+            disabled={busy}
             variant="outline"
             className="h-[52px] rounded-2xl text-[14px] font-bold"
           >
             <CloudDownload className="mr-2 h-5 w-5" /> Restore
           </Button>
         </div>
-        {!sync.cloudUnlocked && (
+        {!sync.cloudUnlocked && !sync.autoRestoreComplete && (
           <p className="mt-3 text-center text-[12px] text-muted-foreground">
             Cloud backup connects automatically when you sign in with your password. Sync will
             start once the connection is established.
@@ -289,6 +296,11 @@ export default function BackupSync() {
         {sync.cloudUnlocked && (
           <p className="mt-3 text-center text-[12px] text-muted-foreground">
             Changes are backed up automatically. Use Sync now to force an immediate sync.
+          </p>
+        )}
+        {sync.status === "offline" && (
+          <p className="mt-3 text-center text-[12px] text-muted-foreground">
+            You're offline. Changes will sync automatically when you reconnect.
           </p>
         )}
       </section>

@@ -78,7 +78,14 @@ import type {
   VaultDocument,
 } from "@/lib/types";
 
-export type SyncStatus = "idle" | "syncing" | "error" | "disabled";
+export type SyncStatus =
+  | "idle"
+  | "syncing"
+  | "error"
+  | "disabled"
+  | "preparing"
+  | "restoring"
+  | "offline";
 
 /** Machine-readable failure reason so the UI can offer recovery actions. */
 export type CloudAuthErrorCode =
@@ -153,11 +160,17 @@ interface SyncContextValue {
   setBackupPrefs: (prefs: Partial<BackupPreferences>) => void;
   /** Storage usage info (documents, sizes). */
   storageUsage: StorageUsage | null;
+  /** True when the device has an internet connection. */
+  isOnline: boolean;
+  /** True after the initial cloud restore has completed for this session. */
+  autoRestoreComplete: boolean;
 }
 
 const SyncContext = createContext<SyncContextValue | null>(null);
 
-const AUTO_SYNC_DELAY_MS = 4000;
+const AUTO_SYNC_DELAY_MS = 1500;
+/** Immediate sync delay for deletions (shorter — deletions should propagate fast). */
+const DELETE_SYNC_DELAY_MS = 500;
 
 /**
  * Total wall-clock budget for a setup/unlock operation. Individual
@@ -363,7 +376,7 @@ function buildRecordSet(args: {
 
 export function SyncProvider({ children }: { children: ReactNode }) {
   const app = useApp();
-  const { mergeRestoredRecords } = app;
+  const { mergeRestoredRecords, applyRestoredRecords } = app;
   const [cloudSignedIn, setCloudSignedIn] = useState<boolean>(false);
   const [cloudUnlocked, setCloudUnlocked] = useState<boolean>(false);
   const [hasExistingBackup, setHasExistingBackup] = useState<boolean>(false);
@@ -373,11 +386,26 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   const [lastError, setLastError] = useState<string | null>(null);
 
   const autoSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deleteSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionEmail = useRef<string | null>(null);
   const stampsRef = useRef<Record<string, ChangeStamp> | null>(null);
   const [backupHistory, setBackupHistory] = useState<BackupHistoryEntry[]>([]);
   const [backupPrefs, setBackupPrefsState] = useState<BackupPreferences>(DEFAULT_BACKUP_PREFS);
   const [storageUsage, setStorageUsage] = useState<StorageUsage | null>(null);
+  const [isOnline, setIsOnline] = useState<boolean>(
+    typeof navigator !== "undefined" ? navigator.onLine : true,
+  );
+  const [autoRestoreComplete, setAutoRestoreComplete] = useState<boolean>(false);
+  /** Tracks whether a sync is pending because the device was offline. */
+  const pendingSyncRef = useRef<boolean>(false);
+  /** Previous record counts — used to detect deletions vs additions. */
+  const prevCountsRef = useRef<{
+    documents: number;
+    expenses: number;
+    subscriptions: number;
+    appointments: number;
+    notifications: number;
+  }>({ documents: 0, expenses: 0, subscriptions: 0, appointments: 0, notifications: 0 });
 
   /* ---------------------------------------------------------------- */
   /* Change-stamp helpers                                              */
@@ -450,6 +478,34 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     setBackupPrefsState(loadBackupPrefs());
   }, []);
 
+  /* ---------------------------------------------------------------- */
+  /* Online / offline detection                                       */
+  /* ---------------------------------------------------------------- */
+  // Ref to the latest syncNow so the online listener can call it without
+  // a forward-reference (syncNow is declared further down).
+  const syncNowRef = useRef<((opts?: { silent?: boolean }) => Promise<boolean>) | null>(null);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      cloudLog("Network restored — flushing pending sync");
+      if (pendingSyncRef.current && cloudUnlocked && syncNowRef.current) {
+        pendingSyncRef.current = false;
+        void syncNowRef.current({ silent: true }).catch(() => undefined);
+      }
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      cloudLog("Network lost — sync will queue until reconnected");
+    };
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, [cloudUnlocked]);
+
   /**
    * React to user sign-out / account switch: when the signed-in user
    * becomes null (sign-out), reset ALL cloud sync state so a different
@@ -475,9 +531,15 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     setStorageUsage(null);
     sessionEmail.current = null;
     stampsRef.current = null;
+    setAutoRestoreComplete(false);
+    pendingSyncRef.current = false;
     if (autoSyncTimer.current) {
       clearTimeout(autoSyncTimer.current);
       autoSyncTimer.current = null;
+    }
+    if (deleteSyncTimer.current) {
+      clearTimeout(deleteSyncTimer.current);
+      deleteSyncTimer.current = null;
     }
   }, [app.user]);
 
@@ -968,6 +1030,13 @@ export function SyncProvider({ children }: { children: ReactNode }) {
         if (!opts?.silent) toast.error("Unlock cloud backup first.");
         return false;
       }
+      // If offline, queue the sync for when we reconnect.
+      if (!navigator.onLine) {
+        pendingSyncRef.current = true;
+        setStatus("offline");
+        if (!opts?.silent) toast.info("You're offline. Changes will sync when you reconnect.");
+        return false;
+      }
       setStatus("syncing");
       const records = buildCurrentRecords();
       const result = await syncIncremental(records);
@@ -1000,40 +1069,46 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     [buildCurrentRecords, mergeRestoredRecords, refreshMetadata, seedStamps],
   );
 
+  // Keep the ref in sync so the online/offline listener can call the latest syncNow.
+  useEffect(() => {
+    syncNowRef.current = syncNow;
+  }, [syncNow]);
+
   /**
-   * Auto-enable and unlock cloud backup on sign-in using the user's
-   * account password.
+   * Auto-enable and unlock cloud backup on sign-in or app restart using
+   * the user's account password (loaded from memory or secure storage).
    *
    * Cloud backup is ALWAYS enabled automatically — there is no manual
-   * setup step and no separate backup password. When a user signs in
-   * with their password (not Face ID), this effect silently:
-   *   - Creates or signs in to the Supabase cloud identity with the
-   *     account password,
-   *   - Fetches or creates the encryption salt,
-   *   - Derives the encryption key and unlocks cloud access,
-   *   - Runs an initial sync (or a first backup for brand-new accounts).
+   * setup step and no separate backup password. This effect:
+   *   - Waits for the session password to be ready (loaded from secure
+   *     storage on app restart, or set directly on sign-in).
+   *   - Creates or signs in to the Supabase cloud identity.
+   *   - Derives the encryption key and unlocks cloud access.
+   *   - If a backup exists: AUTO-RESTORES all cloud data (like iCloud).
+   *   - If no backup exists (first-time account): runs initial backup.
    *
-   * If the cloud identity exists with a DIFFERENT password (legacy users
-   * who set a separate backup password before this update), the auto-
-   * unlock silently fails. The user can still recover via the Change
-   * Password → Forgot password? flow, which re-encrypts the cloud backup
-   * with the new account password.
-   *
-   * Face ID unlock (no plaintext password) skips auto-unlock entirely —
-   * the user can sign out and back in with their password to activate
-   * cloud backup.
+   * This handles three scenarios:
+   *   1. Fresh sign-in with password → setup + restore/backup.
+   *   2. App restart with persisted Supabase session → derive key + sync.
+   *   3. Face ID unlock → password loaded from secure storage → same as #2.
    */
   const autoUnlockAttemptedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!app.user) return; // only on sign-in
     if (!supabaseConfigured) return;
+    // Wait for the session password to be loaded from secure storage.
+    if (!app.sessionPasswordReady) return;
     // Don't re-attempt for the same user in the same session.
     const email = app.user.email.toLowerCase();
     if (autoUnlockAttemptedRef.current === email) return;
     if (cloudUnlocked) return; // already unlocked
     const password = app.getSessionPassword();
-    if (!password) return; // Face ID unlock — no password available
+    if (!password) {
+      cloudLog(`Auto-unlock: no password available for ${maskEmail(email)} — skipping`);
+      return;
+    }
     autoUnlockAttemptedRef.current = email;
+    setStatus("preparing");
 
     cloudLog(`Auto-unlock: enabling cloud backup for ${maskEmail(email)}`);
     void (async () => {
@@ -1061,21 +1136,57 @@ export function SyncProvider({ children }: { children: ReactNode }) {
         // Check directly whether a backup already exists — don't rely on
         // the hasExistingBackup state, which may be stale from the closure.
         const backupExists = await hasCloudBackup();
+        setHasExistingBackup(backupExists);
+
         if (!backupExists) {
+          // Brand-new account — no cloud data yet. Upload current local
+          // data as the initial backup.
           cloudLog("Auto-unlock: first-time account — running initial backup");
+          setAutoRestoreComplete(true);
           void backupNow().catch(() => undefined);
         } else {
-          cloudLog("Auto-unlock: existing backup found — running incremental sync");
-          void syncNow({ silent: true }).catch(() => undefined);
+          // Existing backup found — AUTO-RESTORE everything from the cloud.
+          // This is the iCloud-like behavior: data appears automatically.
+          cloudLog("Auto-unlock: existing backup found — auto-restoring from cloud");
+          setStatus("restoring");
+          setProgress(0);
+          try {
+            const restoreResult = await restoreAll((done, total) => {
+              setProgress(total > 0 ? Math.round((done / total) * 100) : 100);
+            });
+            if (restoreResult.ok && !restoreResult.disabled && restoreResult.records.length > 0) {
+              // Stamp restored rows so the next auto-sync doesn't re-upload.
+              seedStamps(restoreResult.records);
+              // Apply restored records to local state.
+              applyRestoredRecords(restoreResult.records as RestoredRecord[]);
+              const restored = restoreResult.records.filter((r) => !r.deletedAt).length;
+              cloudLog(`Auto-restore: ${restored} records restored from cloud`);
+            } else if (!restoreResult.ok) {
+              cloudWarn("Auto-restore failed", restoreResult.error ?? "unknown");
+            }
+            // After restore, run an incremental sync to push any local
+            // changes that are newer than the cloud copy.
+            await syncNow({ silent: true }).catch(() => undefined);
+          } catch (err) {
+            cloudWarn("Auto-restore threw", err);
+          } finally {
+            setAutoRestoreComplete(true);
+            setStatus("idle");
+            setProgress(100);
+            await refreshMetadata().catch(() => undefined);
+          }
         }
       } else {
         // Auto-unlock failed — likely a legacy user whose cloud identity
         // has a different password. Don't show an error toast; the user
         // can recover via Change Password → Forgot password?
         cloudWarn("Auto-unlock failed (legacy password mismatch or network)", result.ok === false ? result.error : "unknown");
+        // Don't stay stuck on "preparing" — go to idle so the UI shows
+        // a clear state instead of an infinite spinner.
+        setStatus("idle");
       }
     })();
-  }, [app.user, app.getSessionPassword, cloudUnlocked, setupCloud, syncNow, backupNow, prepareEncryptionKey]);
+  }, [app.user, app.sessionPasswordReady, app.getSessionPassword, cloudUnlocked, setupCloud, syncNow, backupNow, prepareEncryptionKey, restoreAll, seedStamps, applyRestoredRecords, refreshMetadata]);
 
   const disableCloud = useCallback(async (): Promise<boolean> => {
     const sb = getSupabase();
@@ -1291,16 +1402,65 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   /* ---------------------------------------------------------------- */
   /* Debounced auto-sync after local mutations                        */
   /* ---------------------------------------------------------------- */
+  // Track previous record counts to detect deletions (faster sync trigger).
+  const currentCounts = {
+    documents: app.documents.length,
+    expenses: app.expenses.length,
+    subscriptions: app.subscriptions.length,
+    appointments: app.appointments.length,
+    notifications: app.notifications.length,
+  };
+  const prevCounts = prevCountsRef.current;
+  const hasDeletions =
+    currentCounts.documents < prevCounts.documents ||
+    currentCounts.expenses < prevCounts.expenses ||
+    currentCounts.subscriptions < prevCounts.subscriptions ||
+    currentCounts.appointments < prevCounts.appointments ||
+    currentCounts.notifications < prevCounts.notifications;
+
+  useEffect(() => {
+    // Update the ref for the next comparison.
+    prevCountsRef.current = currentCounts;
+  });
+
   useEffect(() => {
     if (!cloudUnlocked) return;
+    if (!autoRestoreComplete) return; // don't auto-sync until restore is done
+
+    // If offline, mark a pending sync — it'll flush when we reconnect.
+    if (!isOnline) {
+      pendingSyncRef.current = true;
+      setStatus("offline");
+      return;
+    }
+
+    // Clear any pending flag — we're online.
+    pendingSyncRef.current = false;
+
+    const delay = hasDeletions ? DELETE_SYNC_DELAY_MS : AUTO_SYNC_DELAY_MS;
     if (autoSyncTimer.current) clearTimeout(autoSyncTimer.current);
     autoSyncTimer.current = setTimeout(() => {
-      void syncNow({ silent: true });
-    }, AUTO_SYNC_DELAY_MS);
+      void syncNow({ silent: true }).catch((err) => {
+        cloudWarn("Auto-sync failed", err);
+      });
+    }, delay);
     return () => {
       if (autoSyncTimer.current) clearTimeout(autoSyncTimer.current);
     };
-  }, [cloudUnlocked, syncNow, app.documents, app.expenses, app.subscriptions, app.appointments, app.notifications, app.settings, app.security]);
+  }, [
+    cloudUnlocked,
+    autoRestoreComplete,
+    isOnline,
+    hasDeletions,
+    syncNow,
+    app.documents,
+    app.expenses,
+    app.subscriptions,
+    app.appointments,
+    app.notifications,
+    app.settings,
+    app.security,
+  ]);
 
   const value = useMemo<SyncContextValue>(
     () => ({
@@ -1328,6 +1488,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       backupPrefs,
       setBackupPrefs,
       storageUsage,
+      isOnline,
+      autoRestoreComplete,
     }),
     [
       cloudSignedIn,
@@ -1353,6 +1515,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       backupPrefs,
       setBackupPrefs,
       storageUsage,
+      isOnline,
+      autoRestoreComplete,
     ],
   );
 

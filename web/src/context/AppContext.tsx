@@ -21,9 +21,12 @@ import { uid } from "@/lib/format";
 import {
   authenticateWithBiometry,
   clearPin,
+  clearSessionPasswordSecure,
+  getSessionPasswordSecure,
   hasPin,
   setPin as secureSetPin,
   setPrivacyScreen,
+  setSessionPasswordSecure,
   verifyPin,
   type BiometricAuthOutcome,
 } from "@/lib/security";
@@ -104,6 +107,8 @@ interface AppContextValue extends PersistedState {
   signOut: () => void;
   /** Get the plaintext password of the current session (for auto-unlocking cloud backup). Returns null after Face ID unlock or sign-out. */
   getSessionPassword: () => string | null;
+  /** True once the session password has been loaded from secure storage on app start. SyncContext waits for this before auto-unlocking. */
+  sessionPasswordReady: boolean;
   deleteAccount: () => void;
   updateSettings: (patch: Partial<Settings>) => void;
   updateSecurity: (patch: Partial<SecuritySettings>) => void;
@@ -348,10 +353,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<PersistedState>(() => loadState());
 
   // The plaintext password of the current session — kept in a ref (never
-  // persisted) so SyncContext can auto-unlock cloud backup with the user's
-  // account password on sign-in, without a separate "backup password" prompt.
+  // persisted to localStorage) so SyncContext can auto-unlock cloud backup
+  // with the user's account password on sign-in, without a separate
+  // "backup password" prompt. Also persisted to secure storage (Keychain /
+  // Keystore) so it can be restored on app restart for silent reconnection.
   // Null after Face ID unlock (no plaintext available) or sign-out.
   const sessionPasswordRef = useRef<string | null>(null);
+  // True once we've attempted to load the session password from secure
+  // storage on mount. SyncContext uses this to know when it's safe to
+  // auto-unlock (avoids racing with the async secure-storage read).
+  const [sessionPasswordReady, setSessionPasswordReady] = useState<boolean>(false);
 
   // Keep a synchronous ref to the latest state so auth methods can read
   // accounts/user synchronously and return a result before React re-renders.
@@ -423,9 +434,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // On mount or when the signed-in user changes, load the session password
+  // from secure storage (Keychain / Keystore) so cloud backup can auto-unlock
+  // silently on app restart — exactly like iCloud reconnecting.
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", state.settings.darkMode);
-  }, [state.settings.darkMode]);
+    let cancelled = false;
+    void (async () => {
+      const email = stateRef.current.user?.email;
+      if (email) {
+        const pwd = await getSessionPasswordSecure(email);
+        if (!cancelled && pwd) {
+          sessionPasswordRef.current = pwd;
+        }
+      }
+      if (!cancelled) setSessionPasswordReady(true);
+    })();
+    return () => { cancelled = true; };
+  }, [state.user?.email]);
 
   // One-time migration: accounts persisted by pre-hashing builds still
   // carry a plaintext password. Re-store them as salted PBKDF2 hashes
@@ -507,6 +532,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
     // Store the plaintext password so SyncContext can auto-unlock cloud backup.
     sessionPasswordRef.current = password;
+    // Persist to secure storage (Keychain / Keystore) so the app can
+    // silently reconnect to cloud backup on restart.
+    void setSessionPasswordSecure(normalized, password);
     stateRef.current = next;
     setState(next);
     return { ok: true, error: null };
@@ -526,9 +554,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       onboarded: true,
       user: profileFromAccount(account),
     };
-    // Face ID unlock — no plaintext password available. SyncContext will
-    // skip auto-unlock; the user can unlock manually from Backup & Sync.
-    sessionPasswordRef.current = null;
+    // Face ID unlock — try loading the persisted password from secure
+    // storage so cloud backup can still auto-unlock silently. If not found,
+    // sessionPasswordRef stays null and the user can unlock manually.
+    void (async () => {
+      const pwd = await getSessionPasswordSecure(account.email);
+      if (pwd) sessionPasswordRef.current = pwd;
+    })();
     stateRef.current = next;
     setState(next);
     return { ok: true, error: null };
@@ -561,6 +593,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
     // Store the plaintext password so SyncContext can auto-setup cloud backup.
     sessionPasswordRef.current = password;
+    // Persist to secure storage for silent reconnection on app restart.
+    void setSessionPasswordSecure(normalized, password);
     stateRef.current = next;
     setState(next);
     return { ok: true, error: null };
@@ -589,8 +623,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       void sb.auth.signOut().catch(() => undefined);
     }
     // 2. Drop the session password and encryption key.
+    const s = stateRef.current;
+    const signingOutEmail = s.user?.email;
     sessionPasswordRef.current = null;
     setSessionKey(null);
+    // Clear the persisted session password from secure storage.
+    if (signingOutEmail) void clearSessionPasswordSecure(signingOutEmail);
     // 3. Wipe IndexedDB file data.
     void clearAllFileData();
     // 4. Remove all account-scoped localStorage keys (except the state
@@ -606,7 +644,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
     // 5. Reset in-memory state: keep the accounts registry and lastEmail
     //    (for Face ID), wipe everything else.
-    const s = stateRef.current;
     const next: PersistedState = {
       ...freshSeed(),
       onboarded: true, // stay past onboarding so we show SignIn, not Onboarding
@@ -636,9 +673,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (sb) {
       void sb.auth.signOut().catch(() => undefined);
     }
+    const s = stateRef.current;
     sessionPasswordRef.current = null;
     setSessionKey(null);
     void clearAllFileData();
+    if (s.user?.email) void clearSessionPasswordSecure(s.user.email);
     for (const key of ACCOUNT_SCOPED_LS_KEYS) {
       try {
         localStorage.removeItem(key);
@@ -678,6 +717,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
     // Update the session password so SyncContext stays unlocked with the new key.
     sessionPasswordRef.current = next;
+    // Update the persisted password in secure storage too.
+    void setSessionPasswordSecure(account.email, next);
     stateRef.current = nextState;
     setState(nextState);
     return true;
@@ -719,6 +760,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // Update the session password if the signed-in user reset their password.
     if (affectsSignedInUser) {
       sessionPasswordRef.current = newPassword;
+      void setSessionPasswordSecure(normalized, newPassword);
     }
     stateRef.current = nextState;
     setState(nextState);
@@ -741,9 +783,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // Sign out all sessions server-side, then sign out this device.
       void sb.auth.signOut({ scope: "global" }).catch(() => undefined);
     }
+    const s = stateRef.current;
     sessionPasswordRef.current = null;
     setSessionKey(null);
     void clearAllFileData();
+    if (s.user?.email) void clearSessionPasswordSecure(s.user.email);
     for (const key of ACCOUNT_SCOPED_LS_KEYS) {
       if (key !== STORAGE_KEY) {
         try {
@@ -753,7 +797,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       }
     }
-    const s = stateRef.current;
     const next: PersistedState = {
       ...freshSeed(),
       onboarded: true,
@@ -1190,6 +1233,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       signUp,
       signOut,
       getSessionPassword,
+      sessionPasswordReady,
       deleteAccount,
       updateSettings,
       updateSecurity,
@@ -1238,6 +1282,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       signUp,
       signOut,
       getSessionPassword,
+      sessionPasswordReady,
       deleteAccount,
       updateSettings,
       updateSecurity,

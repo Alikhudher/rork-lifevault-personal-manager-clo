@@ -21,6 +21,9 @@ export default function Restore() {
   const cloudCount = sync.metadata?.cloudRecordCount ?? 0;
   const hasCloudBackup = sync.hasExistingBackup || cloudCount > 0;
   const canRestore = sync.cloudUnlocked && hasCloudBackup;
+  // Show the real cloud count — never a dash. If not unlocked yet, show 0
+  // with a hint that the connection is still being established.
+  const cloudCountDisplay = sync.cloudUnlocked ? cloudCount.toString() : "0";
 
   const handleRestore = async () => {
     if (!sync.cloudUnlocked) {
@@ -82,7 +85,7 @@ export default function Restore() {
           </div>
           <div className="rounded-2xl bg-card p-4 text-center ring-1 ring-border">
             <p className="text-[20px] font-extrabold tabular">
-              {sync.cloudUnlocked ? cloudCount : "—"}
+              {cloudCountDisplay}
             </p>
             <p className="mt-0.5 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
               In the cloud
@@ -156,7 +159,7 @@ export default function Restore() {
         ) : (
           <Button
             onClick={handleRestore}
-            disabled={phase === "restoring" || !sync.cloudUnlocked || (sync.cloudUnlocked && !hasCloudBackup)}
+            disabled={phase === "restoring" || !canRestore}
             className="h-[52px] w-full rounded-2xl text-[15px] font-bold shadow-lg shadow-primary/25"
           >
             {phase === "restoring" ? "Restoring…" : "Restore everything"}
@@ -165,12 +168,19 @@ export default function Restore() {
         {!sync.cloudUnlocked && (
           <p className="mt-3 text-center text-[12px] text-muted-foreground">
             Cloud backup connects automatically when you sign in with your password. If you used
-            Face ID, sign out and back in with your password to restore from the cloud.
+            Face ID, your data will still restore automatically once the connection is established.
           </p>
         )}
         {sync.cloudUnlocked && !hasCloudBackup && (
           <p className="mt-3 text-center text-[12px] text-muted-foreground">
-            No cloud backup found. Your data will be backed up automatically — once a backup exists, you can restore it here.
+            No cloud backup found. Your data is backed up automatically — once a backup exists,
+            it will appear here.
+          </p>
+        )}
+        {sync.cloudUnlocked && hasCloudBackup && sync.autoRestoreComplete && (
+          <p className="mt-3 text-center text-[12px] text-muted-foreground">
+            Your cloud data was restored automatically when you signed in. This button is a
+            manual fallback if you ever need to re-download everything.
           </p>
         )}
       </section>

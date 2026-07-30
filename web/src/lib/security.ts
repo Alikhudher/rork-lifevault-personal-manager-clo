@@ -163,6 +163,7 @@ export async function authenticateWithBiometry(reason: string): Promise<Biometri
 const FALLBACK_PREFIX = "lv-secure:";
 const KEY_PIN_HASH = "pin-hash";
 const KEY_PIN_SALT = "pin-salt";
+const KEY_SESSION_PASSWORD = "session-pwd";
 
 async function secureSet(key: string, value: string): Promise<void> {
   if (isNative) {
@@ -253,6 +254,31 @@ export async function hasPin(): Promise<boolean> {
 export async function clearPin(): Promise<void> {
   await secureRemove(KEY_PIN_HASH);
   await secureRemove(KEY_PIN_SALT);
+}
+
+/* ------------------------------------------------------------------ */
+/* Session password persistence (for auto cloud unlock)                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Persist the plaintext account password in secure storage (iOS Keychain /
+ * Android Keystore) so cloud backup can auto-unlock on app restart or after
+ * Face ID sign-in without asking the user to re-enter their password.
+ *
+ * On web, falls back to localStorage (NOT secure — native builds only).
+ */
+export async function setSessionPasswordSecure(email: string, password: string): Promise<void> {
+  await secureSet(`${KEY_SESSION_PASSWORD}:${email.toLowerCase()}`, password);
+}
+
+/** Retrieve the persisted session password, or null if not stored. */
+export async function getSessionPasswordSecure(email: string): Promise<string | null> {
+  return secureGet(`${KEY_SESSION_PASSWORD}:${email.toLowerCase()}`);
+}
+
+/** Remove the persisted session password for a given email. */
+export async function clearSessionPasswordSecure(email: string): Promise<void> {
+  await secureRemove(`${KEY_SESSION_PASSWORD}:${email.toLowerCase()}`);
 }
 
 /* ------------------------------------------------------------------ */

@@ -110,6 +110,21 @@ export async function deleteFileData(docId: string): Promise<void> {
   }
 }
 
+/** Delete ALL file data from IndexedDB (used on sign-out / account switch). */
+export async function clearAllFileData(): Promise<void> {
+  try {
+    const db = await openDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, "readwrite");
+      tx.objectStore(STORE_NAME).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    // Non-fatal
+  }
+}
+
 /** Remove file data for all documents not in the given set of ids. */
 export async function pruneFileData(validIds: Set<string>): Promise<void> {
   try {

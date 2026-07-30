@@ -450,6 +450,37 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     setBackupPrefsState(loadBackupPrefs());
   }, []);
 
+  /**
+   * React to user sign-out / account switch: when the signed-in user
+   * becomes null (sign-out), reset ALL cloud sync state so a different
+   * account that signs in next never sees the previous user's cloud
+   * data, metadata, or sync stamps.
+   *
+   * The AppContext.signOut already clears localStorage keys, signs out
+   * of Supabase, and drops the encryption key — this effect resets the
+   * in-memory SyncContext state to match.
+   */
+  useEffect(() => {
+    if (app.user) return; // only react to sign-out
+    setSessionKey(null);
+    setCloudSignedIn(false);
+    setCloudUnlocked(false);
+    setHasExistingBackup(false);
+    setStatus(supabaseConfigured ? "idle" : "disabled");
+    setMetadata(null);
+    setProgress(0);
+    setLastError(null);
+    setBackupHistory([]);
+    setBackupPrefsState(DEFAULT_BACKUP_PREFS);
+    setStorageUsage(null);
+    sessionEmail.current = null;
+    stampsRef.current = null;
+    if (autoSyncTimer.current) {
+      clearTimeout(autoSyncTimer.current);
+      autoSyncTimer.current = null;
+    }
+  }, [app.user]);
+
   const setBackupPrefs = useCallback((prefs: Partial<BackupPreferences>) => {
     setBackupPrefsState((prev) => {
       const next = { ...prev, ...prefs };

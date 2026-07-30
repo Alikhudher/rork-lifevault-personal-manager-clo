@@ -44,13 +44,25 @@ import type {
 } from "@/lib/types";
 import { DEFAULT_SECURITY_SETTINGS } from "@/lib/types";
 import {
+  clearAllFileData,
   deleteFileData,
   loadAllFileData,
   pruneFileData,
   saveFileData,
 } from "@/lib/file-store";
+import { getSupabase } from "@/lib/supabase";
+import { setSessionKey } from "@/lib/crypto";
 
 const STORAGE_KEY = "lifevault-state-v1";
+
+/** localStorage keys that hold per-account data and must be cleared on sign-out. */
+const ACCOUNT_SCOPED_LS_KEYS = [
+  STORAGE_KEY,
+  "lv-sync-stamps-v1",
+  "lv-backup-history-v1",
+  "lv-backup-prefs-v1",
+  "lifevault-premium-v1",
+];
 
 interface PersistedState {
   onboarded: boolean;
@@ -539,15 +551,84 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return { ok: true, error: null };
   }, []);
 
+  /**
+   * Sign out the current user AND wipe all cached account data so a
+   * different account that signs in next starts from a clean slate.
+   *
+   * Clears:
+   *  - In-memory state (documents, expenses, subscriptions, appointments,
+   *    notifications, settings, security, sessions)
+   *  - localStorage (app state, sync stamps, backup history/prefs, premium cache)
+   *  - IndexedDB file data (document blobs)
+   *  - Supabase cloud session (so sync doesn't re-hydrate old data)
+   *  - In-memory encryption key
+   *
+   * The accounts registry is preserved so the user doesn't have to
+   * re-register, and lastEmail is kept so Face ID unlock still works
+   * for the same device. Everything else is wiped.
+   */
   const signOut = useCallback(() => {
+    // 1. Sign out of Supabase (fire-and-forget — don't block the UI).
+    const sb = getSupabase();
+    if (sb) {
+      void sb.auth.signOut().catch(() => undefined);
+    }
+    // 2. Drop the in-memory encryption key.
+    setSessionKey(null);
+    // 3. Wipe IndexedDB file data.
+    void clearAllFileData();
+    // 4. Remove all account-scoped localStorage keys (except the state
+    //    key, which we rewrite below with the cleaned state).
+    for (const key of ACCOUNT_SCOPED_LS_KEYS) {
+      if (key !== STORAGE_KEY) {
+        try {
+          localStorage.removeItem(key);
+        } catch {
+          // ignore
+        }
+      }
+    }
+    // 5. Reset in-memory state: keep the accounts registry and lastEmail
+    //    (for Face ID), wipe everything else.
     const s = stateRef.current;
-    const next: PersistedState = { ...s, user: null };
+    const next: PersistedState = {
+      ...freshSeed(),
+      onboarded: true, // stay past onboarding so we show SignIn, not Onboarding
+      accounts: s.accounts,
+      lastEmail: s.lastEmail,
+      user: null,
+    };
     stateRef.current = next;
     setState(next);
+    // 6. Persist the cleaned state immediately so a page reload doesn't
+    //    bring back the old user's data.
+    try {
+      const { documents, ...rest } = next;
+      const stripped = documents.map(({ fileData: _fd, ...doc }) => doc);
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ ...rest, documents: stripped }),
+      );
+    } catch {
+      // Non-fatal — state is clean in memory.
+    }
   }, []);
 
   const deleteAccount = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY);
+    // Same full wipe as signOut, plus remove the account from the registry.
+    const sb = getSupabase();
+    if (sb) {
+      void sb.auth.signOut().catch(() => undefined);
+    }
+    setSessionKey(null);
+    void clearAllFileData();
+    for (const key of ACCOUNT_SCOPED_LS_KEYS) {
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        // ignore
+      }
+    }
     const seed = freshSeed();
     stateRef.current = seed;
     setState(seed);
@@ -625,11 +706,50 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setState((s) => ({ ...s, sessions: s.sessions.filter((session) => session.id !== id) }));
   }, []);
 
+  /**
+   * Sign out every device session. On THIS device it's a full sign-out
+   * (same data wipe as signOut); on other devices the sync engine
+   * signs them out when it sees the "__account__" tombstone or a
+   * session revocation record.
+   */
   const signOutAllDevices = useCallback(() => {
+    const sb = getSupabase();
+    if (sb) {
+      // Sign out all sessions server-side, then sign out this device.
+      void sb.auth.signOut({ scope: "global" }).catch(() => undefined);
+    }
+    setSessionKey(null);
+    void clearAllFileData();
+    for (const key of ACCOUNT_SCOPED_LS_KEYS) {
+      if (key !== STORAGE_KEY) {
+        try {
+          localStorage.removeItem(key);
+        } catch {
+          // ignore
+        }
+      }
+    }
     const s = stateRef.current;
-    const next: PersistedState = { ...s, user: null, sessions: [] };
+    const next: PersistedState = {
+      ...freshSeed(),
+      onboarded: true,
+      accounts: s.accounts,
+      lastEmail: s.lastEmail,
+      user: null,
+      sessions: [],
+    };
     stateRef.current = next;
     setState(next);
+    try {
+      const { documents, ...rest } = next;
+      const stripped = documents.map(({ fileData: _fd, ...doc }) => doc);
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ ...rest, documents: stripped }),
+      );
+    } catch {
+      // Non-fatal
+    }
   }, []);
 
   const verifyEmail = useCallback(() => {

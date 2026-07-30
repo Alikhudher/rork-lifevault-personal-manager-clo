@@ -1000,22 +1000,27 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   );
 
   /**
-   * Auto-unlock cloud backup on sign-in using the user's account password.
+   * Auto-enable and unlock cloud backup on sign-in using the user's
+   * account password.
    *
-   * The backup password IS the account password — no separate "backup
-   * password" is ever requested. When a user signs in with their
-   * password (not Face ID), this effect automatically:
-   *   - Signs in to the Supabase cloud identity with the account password,
-   *   - Fetches/creates the encryption salt,
-   *   - Derives the encryption key and unlocks cloud access.
+   * Cloud backup is ALWAYS enabled automatically — there is no manual
+   * setup step and no separate backup password. When a user signs in
+   * with their password (not Face ID), this effect silently:
+   *   - Creates or signs in to the Supabase cloud identity with the
+   *     account password,
+   *   - Fetches or creates the encryption salt,
+   *   - Derives the encryption key and unlocks cloud access,
+   *   - Runs an initial sync (or a first backup for brand-new accounts).
    *
-   * If the cloud identity doesn't exist yet (first time), it's created
-   * automatically. If it exists with a DIFFERENT password (legacy users
+   * If the cloud identity exists with a DIFFERENT password (legacy users
    * who set a separate backup password before this update), the auto-
-   * unlock silently fails and the user can manually unlock from the
-   * Backup & Sync screen (or reset via "Forgot backup password?").
+   * unlock silently fails. The user can still recover via the Change
+   * Password → Forgot password? flow, which re-encrypts the cloud backup
+   * with the new account password.
    *
-   * Face ID unlock (no plaintext password) skips auto-unlock entirely.
+   * Face ID unlock (no plaintext password) skips auto-unlock entirely —
+   * the user can sign out and back in with their password to activate
+   * cloud backup.
    */
   const autoUnlockAttemptedRef = useRef<string | null>(null);
   useEffect(() => {
@@ -1024,31 +1029,35 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     // Don't re-attempt for the same user in the same session.
     const email = app.user.email.toLowerCase();
     if (autoUnlockAttemptedRef.current === email) return;
-    if (cloudUnlocked) return; // already unlocked (e.g. via manual unlock)
+    if (cloudUnlocked) return; // already unlocked
     const password = app.getSessionPassword();
     if (!password) return; // Face ID unlock — no password available
     autoUnlockAttemptedRef.current = email;
 
-    cloudLog(`Auto-unlock: attempting cloud setup/unlock for ${maskEmail(email)}`);
+    cloudLog(`Auto-unlock: enabling cloud backup for ${maskEmail(email)}`);
     void (async () => {
-      // Try setup first (creates the Supabase identity if it doesn't exist,
-      // then signs in). If the identity already exists with a different
-      // password, setup falls back to sign-in — which will fail with
-      // "invalid credentials". In that case, the user can manually unlock
-      // from the Backup & Sync screen.
+      // setupCloud creates the Supabase identity if it doesn't exist yet
+      // (first sign-in), or signs in to an existing one. The account
+      // password IS the encryption key — no separate backup password.
       const result = await setupCloud(email, password);
       if (result.ok) {
-        cloudLog("Auto-unlock: cloud backup unlocked successfully");
-        // Run an initial sync to pull any remote data.
-        void syncNow({ silent: true }).catch(() => undefined);
+        cloudLog("Auto-unlock: cloud backup enabled and unlocked");
+        // For brand-new accounts (no existing backup), push the initial
+        // backup immediately. For returning accounts, pull remote data.
+        if (!hasExistingBackup) {
+          cloudLog("Auto-unlock: first-time account — running initial backup");
+          void backupNow().catch(() => undefined);
+        } else {
+          void syncNow({ silent: true }).catch(() => undefined);
+        }
       } else {
-        // Auto-unlock failed — likely a legacy user with a different
-        // backup password. Don't show an error; the user can unlock
-        // manually from Backup & Sync.
-        cloudWarn("Auto-unlock failed (user can unlock manually)", result.ok === false ? result.error : "unknown");
+        // Auto-unlock failed — likely a legacy user whose cloud identity
+        // has a different password. Don't show an error toast; the user
+        // can recover via Change Password → Forgot password?
+        cloudWarn("Auto-unlock failed (legacy password mismatch or network)", result.ok === false ? result.error : "unknown");
       }
     })();
-  }, [app.user, app.getSessionPassword, cloudUnlocked, setupCloud, syncNow]);
+  }, [app.user, app.getSessionPassword, cloudUnlocked, hasExistingBackup, setupCloud, syncNow, backupNow]);
 
   const disableCloud = useCallback(async (): Promise<boolean> => {
     const sb = getSupabase();

@@ -117,7 +117,7 @@ export default function Restore() {
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
           <p className="text-[12.5px] leading-relaxed text-muted-foreground">
             Restoring replaces the data currently on this device with your cloud backup. If you have
-            unsynced local changes, back them up first.
+            unsynced local changes, sync them first.
           </p>
         </div>
       </section>
@@ -141,7 +141,8 @@ export default function Restore() {
         )}
         {!sync.cloudUnlocked && (
           <p className="mt-3 text-center text-[12px] text-muted-foreground">
-            Unlock cloud backup first from the Backup &amp; Sync screen.
+            Cloud backup connects automatically when you sign in with your password. If you used
+            Face ID, sign out and back in with your password to restore from the cloud.
           </p>
         )}
       </section>

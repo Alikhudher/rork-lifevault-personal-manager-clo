@@ -102,6 +102,8 @@ interface AppContextValue extends PersistedState {
    */
   signUp: (name: string, email: string, password: string) => Promise<AuthResult>;
   signOut: () => void;
+  /** Get the plaintext password of the current session (for auto-unlocking cloud backup). Returns null after Face ID unlock or sign-out. */
+  getSessionPassword: () => string | null;
   deleteAccount: () => void;
   updateSettings: (patch: Partial<Settings>) => void;
   updateSecurity: (patch: Partial<SecuritySettings>) => void;
@@ -345,6 +347,12 @@ function withCredentials(
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<PersistedState>(() => loadState());
 
+  // The plaintext password of the current session — kept in a ref (never
+  // persisted) so SyncContext can auto-unlock cloud backup with the user's
+  // account password on sign-in, without a separate "backup password" prompt.
+  // Null after Face ID unlock (no plaintext available) or sign-out.
+  const sessionPasswordRef = useRef<string | null>(null);
+
   // Keep a synchronous ref to the latest state so auth methods can read
   // accounts/user synchronously and return a result before React re-renders.
   const stateRef = useRef<PersistedState>(state);
@@ -497,6 +505,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         : s.accounts,
       user: profileFromAccount(active),
     };
+    // Store the plaintext password so SyncContext can auto-unlock cloud backup.
+    sessionPasswordRef.current = password;
     stateRef.current = next;
     setState(next);
     return { ok: true, error: null };
@@ -516,6 +526,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       onboarded: true,
       user: profileFromAccount(account),
     };
+    // Face ID unlock — no plaintext password available. SyncContext will
+    // skip auto-unlock; the user can unlock manually from Backup & Sync.
+    sessionPasswordRef.current = null;
     stateRef.current = next;
     setState(next);
     return { ok: true, error: null };
@@ -546,6 +559,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       accounts: [...s.accounts, account],
       user: profileFromAccount(account),
     };
+    // Store the plaintext password so SyncContext can auto-setup cloud backup.
+    sessionPasswordRef.current = password;
     stateRef.current = next;
     setState(next);
     return { ok: true, error: null };
@@ -573,7 +588,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (sb) {
       void sb.auth.signOut().catch(() => undefined);
     }
-    // 2. Drop the in-memory encryption key.
+    // 2. Drop the session password and encryption key.
+    sessionPasswordRef.current = null;
     setSessionKey(null);
     // 3. Wipe IndexedDB file data.
     void clearAllFileData();
@@ -620,6 +636,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (sb) {
       void sb.auth.signOut().catch(() => undefined);
     }
+    sessionPasswordRef.current = null;
     setSessionKey(null);
     void clearAllFileData();
     for (const key of ACCOUNT_SCOPED_LS_KEYS) {
@@ -659,6 +676,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // signed out via the "__account__" record on their next sync.
       sessions: s.sessions.filter((session) => session.current),
     };
+    // Update the session password so SyncContext stays unlocked with the new key.
+    sessionPasswordRef.current = next;
     stateRef.current = nextState;
     setState(nextState);
     return true;
@@ -697,6 +716,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         affectsSignedInUser && s.user ? { ...s.user, emailVerified: true } : s.user,
       sessions: affectsSignedInUser ? s.sessions.filter((session) => session.current) : s.sessions,
     };
+    // Update the session password if the signed-in user reset their password.
+    if (affectsSignedInUser) {
+      sessionPasswordRef.current = newPassword;
+    }
     stateRef.current = nextState;
     setState(nextState);
     return true;
@@ -718,6 +741,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // Sign out all sessions server-side, then sign out this device.
       void sb.auth.signOut({ scope: "global" }).catch(() => undefined);
     }
+    sessionPasswordRef.current = null;
     setSessionKey(null);
     void clearAllFileData();
     for (const key of ACCOUNT_SCOPED_LS_KEYS) {
@@ -750,6 +774,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Non-fatal
     }
+  }, []);
+
+  const getSessionPassword = useCallback((): string | null => {
+    return sessionPasswordRef.current;
   }, []);
 
   const verifyEmail = useCallback(() => {
@@ -1161,6 +1189,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       signInWithBiometric,
       signUp,
       signOut,
+      getSessionPassword,
       deleteAccount,
       updateSettings,
       updateSecurity,
@@ -1208,6 +1237,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       signInWithBiometric,
       signUp,
       signOut,
+      getSessionPassword,
       deleteAccount,
       updateSettings,
       updateSecurity,

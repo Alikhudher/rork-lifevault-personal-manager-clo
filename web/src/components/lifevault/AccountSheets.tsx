@@ -48,6 +48,7 @@ import { DeliveryStatusLine } from "@/components/lifevault/DeliveryStatus";
 import { FormSheet, Field } from "@/components/lifevault/FormSheet";
 import { PhotoPicker } from "@/components/lifevault/PhotoPicker";
 import { accountHasPassword, useApp } from "@/context/AppContext";
+import { useSync } from "@/context/SyncContext";
 import {
   alignCloudPasswordAfterReset,
   finishVerifiedSession,
@@ -531,6 +532,7 @@ export function ChangePasswordSheet({
   onOpenChange: (open: boolean) => void;
 }) {
   const { user, accounts, changePassword, resetAccountPassword } = useApp();
+  const sync = useSync();
   const [step, setStep] = useState<ChangePasswordStep>("form");
   const [current, setCurrent] = useState<string>("");
   const [next, setNext] = useState<string>("");
@@ -625,6 +627,20 @@ export function ChangePasswordSheet({
         setError("Current password is incorrect.");
         toast.error("Current password is incorrect.");
         return;
+      }
+      // Sync the cloud backup password to match the new account password.
+      // This re-derives the encryption key and re-encrypts all cloud data
+      // with the new password. Non-fatal — if it fails, the user can
+      // manually re-unlock from the Backup & Sync screen.
+      if (sync.cloudUnlocked) {
+        try {
+          const cloudResult = await sync.changeBackupPassword(current, next);
+          if (cloudResult.ok === false) {
+            console.warn("[ChangePassword] Cloud backup password sync failed:", cloudResult.error);
+          }
+        } catch (cloudErr) {
+          console.warn("[ChangePassword] Cloud backup password sync error:", cloudErr);
+        }
       }
       toast.success("Password updated", {
         description: "You stay signed in on this device — all other devices were signed out.",
@@ -722,12 +738,31 @@ export function ChangePasswordSheet({
         setError("Couldn't update the password for this account. Please try again.");
         return;
       }
-      // Keep the cloud identity usable (only when it has no encrypted
-      // backup — an existing backup password is never touched).
+      // Sync the cloud backup password to match the new account password.
+      // Since the backup password IS the account password, and the user
+      // just forgot it, old cloud records (encrypted with the forgotten
+      // password) can never be decrypted — so we reset the cloud backup
+      // password: update the cloud auth password, wipe old records, create
+      // a fresh salt, and re-encrypt + upload this device's data.
       const session = verifiedRef.current;
       verifiedRef.current = null;
       if (session) {
-        await alignCloudPasswordAfterReset(session, resetPw);
+        if (sync.cloudAvailable) {
+          try {
+            const cloudResult = await sync.resetBackupPassword(session, resetPw);
+            if (cloudResult.ok === false) {
+              // Fall back to alignment (best-effort) — at least keeps the
+              // cloud identity usable for future auto-unlock.
+              console.warn("[ChangePassword] Cloud backup reset failed, aligning:", cloudResult.error);
+              await alignCloudPasswordAfterReset(session, resetPw);
+            }
+          } catch (cloudErr) {
+            console.warn("[ChangePassword] Cloud backup reset error:", cloudErr);
+            await alignCloudPasswordAfterReset(session, resetPw);
+          }
+        } else {
+          await alignCloudPasswordAfterReset(session, resetPw);
+        }
         await finishVerifiedSession(session);
       }
       toast.success("Password updated", {

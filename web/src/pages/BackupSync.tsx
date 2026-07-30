@@ -152,7 +152,6 @@ export default function BackupSync() {
   const sync = useSync();
   const [setupOpen, setSetupOpen] = useState(false);
   const [unlockOpen, setUnlockOpen] = useState(false);
-  const [changePwOpen, setChangePwOpen] = useState(false);
   const [disableOpen, setDisableOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetEmail, setResetEmail] = useState("");
@@ -507,8 +506,8 @@ export default function BackupSync() {
               title={sync.hasExistingBackup ? "Unlock cloud backup" : "Enable cloud backup"}
               subtitle={
                 sync.hasExistingBackup
-                  ? "Enter your backup password to decrypt"
-                  : "Set a backup password to start secure sync"
+                  ? "Enter your account password to decrypt"
+                  : "Uses your account password for encryption"
               }
               onClick={() => (sync.hasExistingBackup ? openUnlock(null) : openSetup(null))}
               isLast={false}
@@ -538,14 +537,6 @@ export default function BackupSync() {
                 isLast={false}
               />
               <Row
-                icon={KeyRound}
-                bubble="bg-warning/12 text-warning"
-                title="Change backup password"
-                subtitle="Verifies your current password, then re-encrypts your data"
-                onClick={() => setChangePwOpen(true)}
-                isLast={false}
-              />
-              <Row
                 icon={Trash2}
                 bubble="bg-destructive/12 text-destructive"
                 title="Disable cloud backup"
@@ -570,7 +561,7 @@ export default function BackupSync() {
             <div className="min-w-0 flex-1">
               <p className="text-[14px] font-bold">End-to-end encrypted</p>
               <p className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">
-                Your data is encrypted on this device before upload. Your backup password derives
+                Your data is encrypted on this device before upload. Your account password derives
                 the encryption key — we cannot read your documents, even if we wanted to.
               </p>
             </div>
@@ -579,7 +570,7 @@ export default function BackupSync() {
             icon={Lock}
             bubble="bg-violet-500/12 text-violet-600 dark:text-violet-400"
             title="Recovery key"
-            subtitle="Your backup password IS your recovery key — keep it safe"
+            subtitle="Your account password IS your recovery key — keep it safe"
             right={<InfoBadge text="Active" />}
             isLast
           />
@@ -615,8 +606,6 @@ export default function BackupSync() {
         onOpenChange={setResetOpen}
         defaultEmail={resetEmail || user?.email || ""}
       />
-      {/* Change password sheet */}
-      <ChangePasswordSheet open={changePwOpen} onOpenChange={setChangePwOpen} />
       {/* Disable confirm */}
       <AlertDialog open={disableOpen} onOpenChange={setDisableOpen}>
         <AlertDialogContent className="mx-auto max-w-[340px] rounded-2xl">
@@ -643,6 +632,12 @@ export default function BackupSync() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      {/* Forgot backup password sheet */}
+      <ResetBackupPasswordSheet
+        open={resetOpen}
+        onOpenChange={setResetOpen}
+        defaultEmail={resetEmail || user?.email || ""}
+      />
     </div>
   );
 }
@@ -757,7 +752,7 @@ function SetupSheet({
   const submit = async () => {
     if (busy) return;
     if (!email.trim()) return setError("Enter your email.");
-    if (pw.length < 8) return setError("Backup password must be at least 8 characters.");
+    if (pw.length < 6) return setError("Password must be at least 6 characters.");
     if (pw !== confirm) return setError("Passwords do not match.");
     setBusy(true);
     setError(null);
@@ -792,10 +787,10 @@ function SetupSheet({
       open={open}
       onOpenChange={onOpenChange}
       title="Enable cloud backup"
-      description="Set a backup password — it encrypts your data and is never sent to us."
+      description="Your account password encrypts your cloud backup. Enter it below to set up secure sync."
     >
       <div className="space-y-4">
-        <Field label="Email" hint="Used as your cloud identity. Can be the same as your LifeVault email.">
+        <Field label="Email" hint="Your LifeVault account email — used as your cloud identity.">
           <Input
             type="email"
             inputMode="email"
@@ -807,7 +802,7 @@ function SetupSheet({
             disabled={busy}
           />
         </Field>
-        <Field label="Backup password" hint="At least 8 characters. You'll need this to restore on a new device.">
+        <Field label="Account password" hint="This is the same password you use to sign in to LifeVault.">
           <Input
             type="password"
             autoComplete="new-password"
@@ -818,7 +813,7 @@ function SetupSheet({
             disabled={busy}
           />
         </Field>
-        <Field label="Confirm backup password">
+        <Field label="Confirm password">
           <Input
             type="password"
             autoComplete="new-password"
@@ -829,10 +824,10 @@ function SetupSheet({
             disabled={busy}
           />
         </Field>
-        <div className="flex items-start gap-2 rounded-xl bg-warning/10 p-3">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+        <div className="flex items-start gap-2 rounded-xl bg-info/10 p-3">
+          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-info" />
           <p className="text-[11.5px] leading-relaxed text-muted-foreground">
-            If you forget this password, your cloud backup cannot be recovered.
+            Your account password is used to derive the encryption key. If you change it, your cloud backup is automatically re-encrypted.
           </p>
         </div>
         {error && (
@@ -854,7 +849,7 @@ function SetupSheet({
               LINK_BLUE_CLASS,
             )}
           >
-            Forgot backup password?
+            Forgot password?
           </button>
         )}
         <Button
@@ -919,7 +914,7 @@ function UnlockSheet({
   const submit = async () => {
     if (busy) return;
     if (!email.trim() || !pw) {
-      setError("Enter your email and backup password.");
+      setError("Enter your email and password.");
       return;
     }
     setBusy(true);
@@ -954,7 +949,7 @@ function UnlockSheet({
       open={open}
       onOpenChange={onOpenChange}
       title="Unlock cloud backup"
-      description="Enter your backup password to decrypt your data."
+      description="Enter your account password to decrypt your cloud backup."
     >
       <div className="space-y-4">
         <Field label="Email">
@@ -969,7 +964,7 @@ function UnlockSheet({
             disabled={busy}
           />
         </Field>
-        <Field label="Backup password" hint="The password you chose when enabling cloud backup — it can differ from your account password.">
+        <Field label="Account password" hint="This is the same password you use to sign in to LifeVault.">
           <Input
             type="password"
             autoComplete="current-password"
@@ -994,7 +989,7 @@ function UnlockSheet({
             LINK_BLUE_CLASS,
           )}
         >
-          Forgot backup password?
+          Forgot password?
         </button>
         {error && (
           <div className="flex items-start gap-2 rounded-xl bg-destructive/10 p-3 ring-1 ring-destructive/25" role="alert">
@@ -1110,121 +1105,6 @@ function ResendConfirmation({
         </p>
       )}
     </div>
-  );
-}
-
-function ChangePasswordSheet({
-  open,
-  onOpenChange,
-}: {
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
-}) {
-  const sync = useSync();
-  const [current, setCurrent] = useState("");
-  const [next, setNext] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const slowHint = useSlowHint(busy);
-
-  useEffect(() => {
-    if (open) setError(null);
-  }, [open]);
-
-  const submit = async () => {
-    if (busy) return;
-    if (!current || !next) return setError("Fill in both passwords.");
-    if (next.length < 8) return setError("New password must be at least 8 characters.");
-    if (next !== confirm) return setError("New passwords do not match.");
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await sync.changeBackupPassword(current, next);
-      // Explicit literal comparison so TS narrows the union without strict mode.
-      if (result.ok === false) {
-        setError(result.error);
-        toast.error(result.error);
-        return;
-      }
-      toast.success("Backup password changed and data re-encrypted", {
-        description: "All other devices were signed out and need the new password.",
-      });
-      setCurrent("");
-      setNext("");
-      setConfirm("");
-      onOpenChange(false);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unexpected error. Please try again.";
-      setError(msg);
-      toast.error(msg);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <FormSheet
-      open={open}
-      onOpenChange={onOpenChange}
-      title="Change backup password"
-      description="Your current password is verified with the server first. Your data is then re-encrypted with the new password and every other device is signed out."
-    >
-      <div className="space-y-4">
-        <Field label="Current backup password">
-          <Input
-            type="password"
-            value={current}
-            onChange={(e) => setCurrent(e.target.value)}
-            className="h-12 rounded-xl"
-            disabled={busy}
-          />
-        </Field>
-        <Field label="New backup password">
-          <Input
-            type="password"
-            value={next}
-            onChange={(e) => setNext(e.target.value)}
-            className="h-12 rounded-xl"
-            disabled={busy}
-          />
-        </Field>
-        <Field label="Confirm new password">
-          <Input
-            type="password"
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-            className="h-12 rounded-xl"
-            disabled={busy}
-          />
-        </Field>
-        {error && (
-          <div className="flex items-start gap-2 rounded-xl bg-destructive/10 p-3 ring-1 ring-destructive/25" role="alert">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
-            <p className="text-[12.5px] font-semibold leading-relaxed text-destructive">{error}</p>
-          </div>
-        )}
-        <Button
-          onClick={submit}
-          disabled={busy}
-          className="h-[52px] w-full rounded-2xl text-[15px] font-bold"
-        >
-          {busy ? (
-            <>
-              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Re-encrypting…
-            </>
-          ) : (
-            "Change password"
-          )}
-        </Button>
-        {busy && slowHint && (
-          <p className="text-center text-[12px] text-muted-foreground" role="status">
-            Still working — re-encrypting and re-uploading your data. You'll get a result or an
-            exact error shortly.
-          </p>
-        )}
-      </div>
-    </FormSheet>
   );
 }
 
@@ -1349,8 +1229,8 @@ function ResetBackupPasswordSheet({
   const submitNewPassword = async () => {
     if (busy) return;
     setError(null);
-    if (pw.length < 8) {
-      setError("Backup password must be at least 8 characters.");
+    if (pw.length < 6) {
+      setError("Password must be at least 6 characters.");
       return;
     }
     if (pw !== confirm) {
@@ -1373,7 +1253,7 @@ function ResetBackupPasswordSheet({
       }
       verifiedRef.current = null;
       void finishVerifiedSession(session);
-      toast.success("Backup password reset", {
+      toast.success("Cloud backup reset", {
         description: "Cloud backup is unlocked — your data was re-encrypted and uploaded.",
       });
       onOpenChange(false);
@@ -1393,13 +1273,13 @@ function ResetBackupPasswordSheet({
     <FormSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Reset backup password"
+      title="Reset cloud backup"
       description={
         step === "email"
-          ? "We'll email you a 6-digit code to verify it's you, then you'll choose a new backup password."
+          ? "We'll email you a 6-digit code to verify it's you, then you'll set a new password."
           : step === "code"
             ? `We sent a 6-digit code to ${normalizedEmail}.`
-            : "Email verified. Choose a new backup password."
+            : "Email verified. Choose a new password for your cloud backup."
       }
     >
       {step === "email" && (
@@ -1555,7 +1435,7 @@ function ResetBackupPasswordSheet({
           <Button
             type="button"
             onClick={() => void submitNewPassword()}
-            disabled={busy || pw.length < 8 || pw !== confirm}
+            disabled={busy || pw.length < 6 || pw !== confirm}
             className="h-[52px] w-full rounded-2xl text-[15px] font-bold"
           >
             {busy ? (
@@ -1576,3 +1456,4 @@ function ResetBackupPasswordSheet({
     </FormSheet>
   );
 }
+

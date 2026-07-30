@@ -18,7 +18,9 @@ export default function Restore() {
   const [count, setCount] = useState(0);
   const [restoreError, setRestoreError] = useState<string | null>(null);
 
-  const canRestore = sync.cloudUnlocked && (sync.hasExistingBackup || (sync.metadata?.cloudRecordCount ?? 0) > 0);
+  const cloudCount = sync.metadata?.cloudRecordCount ?? 0;
+  const hasCloudBackup = sync.hasExistingBackup || cloudCount > 0;
+  const canRestore = sync.cloudUnlocked && hasCloudBackup;
 
   const handleRestore = async () => {
     if (!sync.cloudUnlocked) {
@@ -80,7 +82,7 @@ export default function Restore() {
           </div>
           <div className="rounded-2xl bg-card p-4 text-center ring-1 ring-border">
             <p className="text-[20px] font-extrabold tabular">
-              {sync.metadata?.cloudRecordCount ?? "—"}
+              {sync.cloudUnlocked ? cloudCount : "—"}
             </p>
             <p className="mt-0.5 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
               In the cloud
@@ -154,7 +156,7 @@ export default function Restore() {
         ) : (
           <Button
             onClick={handleRestore}
-            disabled={phase === "restoring" || !sync.cloudUnlocked}
+            disabled={phase === "restoring" || !sync.cloudUnlocked || (sync.cloudUnlocked && !hasCloudBackup)}
             className="h-[52px] w-full rounded-2xl text-[15px] font-bold shadow-lg shadow-primary/25"
           >
             {phase === "restoring" ? "Restoring…" : "Restore everything"}
@@ -166,10 +168,9 @@ export default function Restore() {
             Face ID, sign out and back in with your password to restore from the cloud.
           </p>
         )}
-        {sync.cloudUnlocked && !canRestore && (
+        {sync.cloudUnlocked && !hasCloudBackup && (
           <p className="mt-3 text-center text-[12px] text-muted-foreground">
-            No cloud backup found yet. Your data will be backed up automatically — check back later
-            or use Sync now on the Backup & Sync screen.
+            No cloud backup found. Your data will be backed up automatically — once a backup exists, you can restore it here.
           </p>
         )}
       </section>

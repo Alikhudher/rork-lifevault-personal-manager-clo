@@ -119,8 +119,13 @@ export async function getSyncMetadata(): Promise<SyncMetadata | null> {
       .eq("user_id", userId)
       .is("deleted_at", null);
 
-    // Fetch the REAL encrypted backup size from the server-side function.
-    // Falls back to 0 if the function isn't deployed yet (pre-migration projects).
+    // Fetch the REAL encrypted backup size.
+    // Strategy: try the server-side RPC function first (most efficient).
+    // If it isn't deployed, fall back to a direct query that fetches
+    // only the ciphertext + iv columns and sums their character lengths
+    // client-side. Both columns are base64 text, so char length = byte
+    // length. This downloads the encrypted strings but gives the exact
+    // cloud storage size without requiring a database migration.
     let cloudSizeBytes = 0;
     try {
       const { data: sizeData, error: sizeErr } = await sb.rpc("get_cloud_backup_size");
@@ -128,7 +133,26 @@ export async function getSyncMetadata(): Promise<SyncMetadata | null> {
         cloudSizeBytes = sizeData;
       }
     } catch {
-      // Function not deployed or network error — non-fatal, size shows 0.
+      // Function not deployed — fall through to direct query below.
+    }
+    // Fallback: direct query when the RPC function isn't deployed.
+    if (cloudSizeBytes <= 0) {
+      try {
+        const { data: sizeRows, error: sizeErr2 } = await sb
+          .from(TABLE_RECORDS)
+          .select("ciphertext, iv")
+          .eq("user_id", userId)
+          .limit(10000);
+        if (!sizeErr2 && sizeRows) {
+          const rows = sizeRows as { ciphertext: string; iv: string }[];
+          cloudSizeBytes = rows.reduce(
+            (sum, row) => sum + (row.ciphertext?.length ?? 0) + (row.iv?.length ?? 0),
+            0,
+          );
+        }
+      } catch {
+        // Non-fatal — size will be estimated from record count.
+      }
     }
 
     return {

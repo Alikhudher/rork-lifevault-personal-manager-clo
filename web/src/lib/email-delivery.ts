@@ -33,9 +33,11 @@ const VALID_STATUSES: ReadonlySet<string> = new Set([
 ]);
 
 const CHECK_TIMEOUT_MS = 12_000;
-const POLL_INTERVAL_MS = 4_000;
+const POLL_INTERVAL_MS = 3_000;
 /** Total confirmation budget — Gmail deferrals longer than this get an honest "delayed" verdict. */
-const POLL_BUDGET_MS = 45_000;
+const POLL_BUDGET_MS = 15_000;
+/** Hard limit on how long the loading toast stays visible. After this, it is dismissed regardless of polling state. */
+const TOAST_MAX_DISPLAY_MS = 6_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -123,6 +125,18 @@ export async function trackEmailDelivery(
   };
   push({ status: "accepted", final: false, reason: null });
 
+  // Hard timeout: dismiss the loading toast after a few seconds so it
+  // never persists after the user navigates away or enters the app.
+  // Polling continues silently in the background — if a definitive
+  // status arrives later, a new brief toast is shown.
+  let toastVisible = true;
+  const toastTimer = setTimeout(() => {
+    if (toastVisible && !isStale()) {
+      toast.dismiss(toastId);
+      toastVisible = false;
+    }
+  }, TOAST_MAX_DISPLAY_MS);
+
   const deadline = Date.now() + POLL_BUDGET_MS;
   let last: EmailDeliveryStatus = "unknown";
   let lastReason: string | null = null;
@@ -131,11 +145,13 @@ export async function trackEmailDelivery(
   while (Date.now() < deadline) {
     await sleep(POLL_INTERVAL_MS);
     if (isStale()) {
+      clearTimeout(toastTimer);
       toast.dismiss(toastId);
       return last;
     }
     const report = await checkEmailDelivery(email, sinceMs);
     if (isStale()) {
+      clearTimeout(toastTimer);
       toast.dismiss(toastId);
       return last;
     }
@@ -144,16 +160,18 @@ export async function trackEmailDelivery(
     last = report.status;
     lastReason = report.reason;
     if (report.status === "delivered") {
+      clearTimeout(toastTimer);
       console.log("[EmailDelivery] Delivery confirmed by the mail service");
       push({ status: "delivered", final: true, reason: null });
       toast.success("Email delivered", {
         id: toastId,
         description: `The mail service confirmed delivery to ${email}. If you don't see it, check Spam.`,
-        duration: 7000,
+        duration: 5000,
       });
       return last;
     }
     if (report.status === "failed") {
+      clearTimeout(toastTimer);
       console.warn("[EmailDelivery] Provider rejected delivery:", report.reason ?? "no reason given");
       push({ status: "failed", final: true, reason: report.reason });
       toast.error("The email could not be delivered", {
@@ -161,12 +179,12 @@ export async function trackEmailDelivery(
         description: report.reason
           ? `The mail service said: “${report.reason}”`
           : "The mail service reported a delivery failure. Check the address and try again.",
-        duration: 12000,
+        duration: 8000,
       });
       return last;
     }
     push({ status: report.status, final: false, reason: report.reason });
-    if (report.status === "delayed") {
+    if (report.status === "delayed" && toastVisible) {
       toast.loading("Email accepted and may be delayed", {
         id: toastId,
         description: report.reason
@@ -176,6 +194,7 @@ export async function trackEmailDelivery(
     }
   }
 
+  clearTimeout(toastTimer);
   if (isStale() || !anyResponse) {
     // Status service unreachable (or superseded) — the send was already
     // confirmed accepted, so end quietly rather than alarm the user.
@@ -184,20 +203,24 @@ export async function trackEmailDelivery(
   }
   if (last === "delayed") {
     push({ status: "delayed", final: true, reason: lastReason });
-    toast.warning("Email accepted and may be delayed", {
-      id: toastId,
-      description:
-        "The email was accepted by the mail service, but your inbox provider is throttling delivery. It can take a few minutes — check Spam as well, then use Resend if it never arrives.",
-      duration: 12000,
-    });
+    if (toastVisible) {
+      toast.warning("Email accepted and may be delayed", {
+        id: toastId,
+        description:
+          "The email was accepted by the mail service, but your inbox provider is throttling delivery. It can take a few minutes — check Spam as well, then use Resend if it never arrives.",
+        duration: 8000,
+      });
+    }
   } else {
     push({ status: last === "unknown" ? "unknown" : "accepted", final: true, reason: lastReason });
-    toast.info("Email accepted — delivery not confirmed yet", {
-      id: toastId,
-      description:
-        "The mail service accepted the email but hasn't confirmed delivery yet. Give it a minute and check Spam too.",
-      duration: 8000,
-    });
+    if (toastVisible) {
+      toast.info("Email sent — check your inbox", {
+        id: toastId,
+        description:
+          "The email was accepted. If you don't see it within a minute, check Spam too.",
+        duration: 5000,
+      });
+    }
   }
   return last;
 }

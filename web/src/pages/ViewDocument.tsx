@@ -3,7 +3,6 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   Calendar,
   Clock,
-  Download,
   Edit3,
   FileImage,
   FileText,
@@ -81,16 +80,6 @@ function readFileAsDataUrl(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
-}
-
-/** Triggers a download from a data URL. */
-function downloadDataUrl(dataUrl: string, fileName: string): void {
-  const link = document.createElement("a");
-  link.href = dataUrl;
-  link.download = fileName || "document";
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
 }
 
 /* ------------------------------------------------------------------ */
@@ -581,16 +570,6 @@ export default function ViewDocument() {
     });
   }, [doc]);
 
-  const handleDownload = useCallback(() => {
-    if (!doc) return;
-    if (doc.fileData) {
-      downloadDataUrl(doc.fileData, doc.fileName ?? `${doc.name}`);
-      toast.success("Download started");
-    } else {
-      toast.info("No file attached to this document");
-    }
-  }, [doc]);
-
   /* ---- Not found ---- */
 
   if (!doc) {
@@ -712,7 +691,7 @@ export default function ViewDocument() {
         </div>
 
         {/* Action buttons */}
-        <div className="grid grid-cols-4 gap-2.5">
+        <div className="grid grid-cols-3 gap-2.5">
           <ActionButton
             icon={Edit3}
             label="Edit"
@@ -723,12 +702,6 @@ export default function ViewDocument() {
             icon={Share2}
             label="Share"
             onClick={handleShare}
-          />
-          <ActionButton
-            icon={Download}
-            label="Download"
-            onClick={handleDownload}
-            disabled={!hasFile}
           />
           <ActionButton
             icon={Trash2}
@@ -979,7 +952,7 @@ function TextReadingView({ doc }: { doc: VaultDocument }) {
       </span>
       <p className="mt-4 text-[15px] font-bold">{doc.fileName ?? "Document"}</p>
       <p className="mt-1 text-[13px] text-muted-foreground">
-        This file type can't be previewed. Download to view it.
+        This file type can't be previewed. Use Share to save or send it.
       </p>
     </div>
   );

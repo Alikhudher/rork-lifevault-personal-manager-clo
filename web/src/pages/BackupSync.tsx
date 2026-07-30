@@ -266,14 +266,14 @@ export default function BackupSync() {
             onClick={() => {
               if (!busy) void sync.syncNow();
             }}
-            disabled={busy}
+            disabled={!sync.cloudUnlocked || busy}
             className="h-[52px] rounded-2xl text-[14px] font-bold shadow-sm"
           >
             <RefreshCw className={cn("mr-2 h-5 w-5", busy && "animate-spin")} /> Sync now
           </Button>
           <Button
             onClick={() => navigate("/restore")}
-            disabled={busy}
+            disabled={!sync.cloudUnlocked}
             variant="outline"
             className="h-[52px] rounded-2xl text-[14px] font-bold"
           >
@@ -284,6 +284,11 @@ export default function BackupSync() {
           <p className="mt-3 text-center text-[12px] text-muted-foreground">
             Cloud backup connects automatically when you sign in with your password. Sync will
             start once the connection is established.
+          </p>
+        )}
+        {sync.cloudUnlocked && (
+          <p className="mt-3 text-center text-[12px] text-muted-foreground">
+            Changes are backed up automatically. Use Sync now to force an immediate sync.
           </p>
         )}
       </section>

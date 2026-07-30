@@ -31,7 +31,12 @@ import type {
   PurchasesOffering,
   PurchasesStoreProduct,
 } from "@revenuecat/purchases-capacitor";
-import { fetchOffering, findPackageForPlan } from "@/lib/iap";
+import {
+  fetchOffering,
+  fetchProducts,
+  findPackageForPlan,
+  runIAPDiagnostics,
+} from "@/lib/iap";
 import { LegalLinks, LegalSheet, type LegalDocType } from "@/components/lifevault/LegalLinks";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
@@ -70,18 +75,46 @@ export default function Premium() {
   const [purchasing, setPurchasing] = useState<boolean>(false);
   const [restoring, setRestoring] = useState<boolean>(false);
   const [offering, setOffering] = useState<PurchasesOffering | null>(null);
+  const [productCount, setProductCount] = useState<number>(0);
   const [legalDoc, setLegalDoc] = useState<LegalDocType | null>(null);
 
   // Fetch the current RevenueCat Offering on mount (native only) and use
   // its Monthly / Yearly packages for localized pricing. Falls back to the
   // static price labels when no offering or package is available.
+  // Also runs a full diagnostic sweep and logs all StoreKit products so
+  // "Product not found" issues are visible in TestFlight console logs.
   useEffect(() => {
     if (!iapAvailable) return;
     let mounted = true;
     (async () => {
+      // Run full diagnostics — logs platform, API key, config status,
+      // all StoreKit products, and current offering to the console.
+      const diag = await runIAPDiagnostics();
+      if (!mounted) return;
+      setProductCount(diag.productCount);
+
       const current = await fetchOffering();
       if (!mounted) return;
       setOffering(current);
+
+      // If the offering had no packages, also try a direct product fetch
+      // so we can still display prices from StoreKit.
+      if (!current || current.availablePackages.length === 0) {
+        console.warn(
+          "[Premium] No offering packages — attempting direct StoreKit fetch.",
+        );
+        const products = await fetchProducts();
+        if (!mounted) return;
+        setProductCount(products.length);
+        if (products.length === 0) {
+          console.error(
+            "[Premium] StoreKit returned ZERO products. " +
+              "Check App Store Connect: products must be in 'Ready to Submit' " +
+              "or 'Approved' status, with a valid price tier, and the bundle ID " +
+              "must match. Also verify RevenueCat Offerings are active.",
+          );
+        }
+      }
     })();
     return () => {
       mounted = false;
@@ -113,11 +146,8 @@ export default function Premium() {
       const message =
         err instanceof Error ? err.message : "Purchase failed. Please try again.";
 
-      // Check if it's a user cancellation (common — don't show an error toast).
-      if (
-        message.toLowerCase().includes("cancel") ||
-        message.toLowerCase().includes("user")
-      ) {
+      // User cancellation — silent (common, not an error).
+      if (message.toLowerCase().includes("cancel")) {
         // Silent — user dismissed the purchase sheet.
       } else {
         toast.error("Purchase failed", { description: message });
@@ -372,13 +402,29 @@ export default function Premium() {
         </section>
       )}
 
+      {/* Zero-products warning — visible in TestFlight when StoreKit returns nothing */}
+      {!isPremium && iapAvailable && productCount === 0 && !checkingStatus && (
+        <section className="px-4 pt-4">
+          <div className="rounded-2xl bg-red-500/10 px-4 py-3 ring-1 ring-red-500/20">
+            <p className="text-[13px] font-bold text-red-600 dark:text-red-400">
+              No store products found
+            </p>
+            <p className="mt-1 text-[12px] text-muted-foreground">
+              The subscription products could not be loaded from the App Store. This usually means the products are still
+              in "Missing Metadata" or "Ready to Submit" status, or RevenueCat Offerings are not active. Check the
+              console logs for detailed StoreKit diagnostics.
+            </p>
+          </div>
+        </section>
+      )}
+
       {/* CTA buttons — hidden if already premium */}
       {!isPremium && (
         <section className="px-4 pt-6">
           {iapAvailable ? (
             <Button
               onClick={handlePurchase}
-              disabled={purchasing || checkingStatus}
+              disabled={purchasing}
               className="h-13 w-full rounded-2xl bg-gradient-to-r from-[hsl(43,90%,55%)] to-[hsl(33,85%,48%)] py-3.5 text-[15px] font-extrabold text-white shadow-lg shadow-amber-500/25 transition-transform active:scale-[0.98]"
               style={{ height: "52px" }}
             >

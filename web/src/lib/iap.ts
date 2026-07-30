@@ -37,8 +37,6 @@ import type { PlanId, PremiumState } from "@/lib/premium";
  * Get them from: RevenueCat Dashboard → Project Settings → API Keys.
  */
 
-// Baked-in fallbacks — replace with your real RevenueCat public keys.
-// These are PUBLIC app-level keys, not secret keys.
 const RC_IOS_API_KEY = import.meta.env.VITE_RC_IOS_API_KEY || "";
 const RC_ANDROID_API_KEY = import.meta.env.VITE_RC_ANDROID_API_KEY || "";
 
@@ -63,8 +61,13 @@ export function isIAPAvailable(): boolean {
   );
 }
 
-/** Whether RevenueCat has been configured. */
+// ─── Configuration with race-condition protection ──────────────────────
+
+/** Whether RevenueCat.configure() has completed successfully. */
 let configured = false;
+
+/** In-flight configure() promise so concurrent callers share one call. */
+let configurePromise: Promise<void> | null = null;
 
 /**
  * Configure RevenueCat with the appropriate API key for the current platform.
@@ -74,6 +77,21 @@ export async function configureIAP(appUserID?: string | null): Promise<void> {
   if (configured) return;
   if (!Capacitor.isNativePlatform()) return;
 
+  // Deduplicate: if a configure() is already in flight, await it.
+  if (configurePromise) {
+    await configurePromise;
+    return;
+  }
+
+  configurePromise = doConfigure(appUserID);
+  try {
+    await configurePromise;
+  } finally {
+    configurePromise = null;
+  }
+}
+
+async function doConfigure(appUserID?: string | null): Promise<void> {
   const platform = Capacitor.getPlatform();
   const apiKey = platform === "ios" ? RC_IOS_API_KEY : RC_ANDROID_API_KEY;
 
@@ -90,15 +108,29 @@ export async function configureIAP(appUserID?: string | null): Promise<void> {
     await Purchases.configure({
       apiKey,
       appUserID: appUserID || undefined,
-      // Use StoreKit 2 on iOS 16+ for better receipt validation
       storeKitVersion: STOREKIT_VERSION.STOREKIT_2,
     });
     configured = true;
-    console.log(`[IAP] RevenueCat configured for ${platform}`);
+    console.log(`[IAP] RevenueCat configured for ${platform}, key=${apiKey.slice(0, 12)}…`);
   } catch (err) {
     console.error("[IAP] Failed to configure RevenueCat:", err);
   }
 }
+
+/**
+ * Ensure RevenueCat is configured before performing an IAP operation.
+ * If IAP is not available (web / missing key), returns false.
+ * If a configure() is in flight, awaits it first.
+ */
+async function ensureConfigured(): Promise<boolean> {
+  if (!isIAPAvailable()) return false;
+  if (configured) return true;
+  // Trigger configure if it hasn't been called yet (safety net).
+  await configureIAP();
+  return configured;
+}
+
+// ─── Product / Offering fetching ───────────────────────────────────────
 
 /**
  * Fetch store products for the given product IDs.
@@ -111,14 +143,23 @@ export async function configureIAP(appUserID?: string | null): Promise<void> {
 export async function fetchProducts(
   productIds: string[] = ALL_PRODUCT_IDS,
 ): Promise<PurchasesStoreProduct[]> {
-  if (!isIAPAvailable()) return [];
+  if (!(await ensureConfigured())) return [];
   try {
     const result = await Purchases.getProducts({
       productIdentifiers: productIds,
     });
+    console.log(
+      `[IAP] StoreKit returned ${result.products.length} product(s):`,
+      result.products.map((p) => ({
+        id: p.identifier,
+        price: p.priceString,
+        title: p.title,
+        desc: p.description,
+      })),
+    );
     return result.products;
   } catch (err) {
-    console.error("[IAP] Failed to fetch products:", err);
+    console.error("[IAP] Failed to fetch products — StoreKit error:", err);
     return [];
   }
 }
@@ -131,10 +172,26 @@ export async function fetchProducts(
  * offering is set.
  */
 export async function fetchOffering(): Promise<PurchasesOffering | null> {
-  if (!isIAPAvailable()) return null;
+  if (!(await ensureConfigured())) return null;
   try {
     const offerings = await Purchases.getOfferings();
-    return offerings.current ?? null;
+    const current = offerings.current;
+    if (current) {
+      console.log(
+        `[IAP] Current offering "${current.identifier}" has ${current.availablePackages.length} package(s):`,
+        current.availablePackages.map((pkg) => ({
+          packageId: pkg.identifier,
+          productId: pkg.product.identifier,
+          price: pkg.product.priceString,
+        })),
+      );
+    } else {
+      console.warn(
+        "[IAP] No current offering returned by RevenueCat. " +
+          "Check the RevenueCat dashboard: Offerings → ensure one is marked Current.",
+      );
+    }
+    return current ?? null;
   } catch (err) {
     console.error("[IAP] Failed to fetch offerings:", err);
     return null;
@@ -153,10 +210,8 @@ export function findPackageForPlan(
   planId: PlanId,
 ): PurchasesPackage | null {
   if (!offering) return null;
-  // Prefer the predefined package slots.
   if (planId === "monthly" && offering.monthly) return offering.monthly;
   if (planId === "yearly" && offering.annual) return offering.annual;
-  // Fallback: match by product identifier across all available packages.
   const productId = PRODUCT_IDS[planId];
   return (
     offering.availablePackages.find(
@@ -164,6 +219,8 @@ export function findPackageForPlan(
     ) ?? null
   );
 }
+
+// ─── Purchase / Restore ────────────────────────────────────────────────
 
 /**
  * Initiate a purchase for the given plan.
@@ -179,38 +236,86 @@ export function findPackageForPlan(
 export async function purchasePlan(
   planId: PlanId,
 ): Promise<PremiumState> {
-  if (!isIAPAvailable()) {
+  if (!(await ensureConfigured())) {
     throw new Error(
       "In-app purchases are not available on this platform. " +
         "Premium is currently free for all users.",
     );
   }
 
+  const productId = PRODUCT_IDS[planId];
+  console.log(`[IAP] Starting purchase for plan="${planId}" productId="${productId}"`);
+
   // Try the Offering first — it's the source of truth in RevenueCat.
   const offering = await fetchOffering();
   const pkg = findPackageForPlan(offering, planId);
   if (pkg) {
-    const result = await Purchases.purchasePackage({ aPackage: pkg });
-    return customerInfoToPremiumState(result.customerInfo);
+    console.log(`[IAP] Purchasing via offering package: ${pkg.identifier}`);
+    try {
+      const result = await Purchases.purchasePackage({ aPackage: pkg });
+      console.log("[IAP] Purchase completed, checking entitlement…");
+      return customerInfoToPremiumState(result.customerInfo);
+    } catch (err) {
+      throw wrapPurchaseError(err, planId);
+    }
   }
 
   // Fallback: direct product purchase (no Offering configured).
-  const productId = PRODUCT_IDS[planId];
+  console.warn(
+    `[IAP] No offering package for plan="${planId}". ` +
+      "Falling back to direct product fetch + purchase.",
+  );
   const products = await fetchProducts([productId]);
   const product = products.find((p) => p.identifier === productId);
 
   if (!product) {
+    // Fetch ALL products to log what StoreKit actually returned — helps
+    // diagnose "Product not found" in TestFlight.
+    const allProducts = await fetchProducts(ALL_PRODUCT_IDS);
+    const foundIds = allProducts.map((p) => p.identifier);
     throw new Error(
       `Product "${productId}" not found in the store. ` +
-        "Make sure it's configured in App Store Connect / RevenueCat.",
+        `StoreKit returned ${allProducts.length} product(s)` +
+        (foundIds.length ? `: ${foundIds.join(", ")}` : " (zero products).") +
+        ". Verify the product ID matches App Store Connect, the product is " +
+        "in 'Ready to Submit' or 'Approved' status, and your Offerings are " +
+        "active in the RevenueCat dashboard.",
     );
   }
 
-  const result = await Purchases.purchaseStoreProduct({ product });
+  try {
+    const result = await Purchases.purchaseStoreProduct({ product });
+    console.log("[IAP] Direct purchase completed, checking entitlement…");
+    return customerInfoToPremiumState(result.customerInfo);
+  } catch (err) {
+    throw wrapPurchaseError(err, planId);
+  }
+}
 
-  // RevenueCat validates the receipt server-side and returns CustomerInfo.
-  // Premium only unlocks if the entitlement is ACTIVE.
-  return customerInfoToPremiumState(result.customerInfo);
+/**
+ * Wrap a raw purchase error in a user-friendly message while preserving
+ * the underlying StoreKit error in the logs. User cancellations are
+ * re-thrown as-is (handled silently by the UI).
+ */
+function wrapPurchaseError(err: unknown, planId: PlanId): Error {
+  const raw = err instanceof Error ? err.message : String(err);
+  console.error(`[IAP] Purchase failed for plan="${planId}":`, err);
+
+  // User cancelled — pass through; UI handles this silently.
+  if (/cancel|user.*cancell|user.*dismiss/i.test(raw)) {
+    return new Error("Purchase cancelled by user.");
+  }
+
+  // StoreKit configuration issues — surface actionable detail.
+  if (/product.*not.*found|cannot connect|invalid/i.test(raw)) {
+    return new Error(
+      `The subscription could not be found in the store. ` +
+        `Please try again later. (StoreKit: ${raw})`,
+    );
+  }
+
+  // Generic — include the raw error for support diagnosis.
+  return new Error(`Purchase failed: ${raw}`);
 }
 
 /**
@@ -219,14 +324,25 @@ export async function purchasePlan(
  * subscription is found.
  */
 export async function restoreIAPPurchases(): Promise<PremiumState> {
-  if (!isIAPAvailable()) {
+  if (!(await ensureConfigured())) {
     throw new Error(
       "In-app purchases are not available on this platform.",
     );
   }
 
-  const { customerInfo } = await Purchases.restorePurchases();
-  return customerInfoToPremiumState(customerInfo);
+  console.log("[IAP] Restoring purchases…");
+  try {
+    const { customerInfo } = await Purchases.restorePurchases();
+    console.log("[IAP] Restore completed, checking entitlement…");
+    return customerInfoToPremiumState(customerInfo);
+  } catch (err) {
+    console.error("[IAP] Restore failed:", err);
+    throw new Error(
+      `Could not restore purchases: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
 }
 
 /**
@@ -234,8 +350,7 @@ export async function restoreIAPPurchases(): Promise<PremiumState> {
  * Called on app launch to sync entitlement state.
  */
 export async function checkSubscriptionStatus(): Promise<PremiumState> {
-  if (!isIAPAvailable()) {
-    // Web fallback: return the "everything free" state
+  if (!(await ensureConfigured())) {
     return {
       isPremium: false,
       plan: null,
@@ -268,7 +383,7 @@ export async function checkSubscriptionStatus(): Promise<PremiumState> {
 export async function onCustomerInfoUpdate(
   listener: (info: CustomerInfo) => void,
 ): Promise<string | null> {
-  if (!isIAPAvailable()) return null;
+  if (!(await ensureConfigured())) return null;
   try {
     const callbackId = await Purchases.addCustomerInfoUpdateListener(listener);
     return callbackId;
@@ -282,7 +397,7 @@ export async function onCustomerInfoUpdate(
 export async function removeCustomerInfoListener(
   callbackId: string,
 ): Promise<void> {
-  if (!isIAPAvailable()) return;
+  if (!(await ensureConfigured())) return;
   try {
     await Purchases.removeCustomerInfoUpdateListener({
       listenerToRemove: callbackId,
@@ -291,6 +406,8 @@ export async function removeCustomerInfoListener(
     console.error("[IAP] Failed to remove listener:", err);
   }
 }
+
+// ─── State conversion ──────────────────────────────────────────────────
 
 /**
  * Convert RevenueCat CustomerInfo to our PremiumState.
@@ -304,7 +421,6 @@ export function customerInfoToPremiumState(
   const entitlement = info.entitlements.active[PREMIUM_ENTITLEMENT_ID];
 
   if (entitlement && entitlement.isActive) {
-    // Determine plan from product identifier
     const productId = entitlement.productIdentifier;
     const plan: PlanId | null = productId === PRODUCT_IDS.yearly
       ? "yearly"
@@ -321,7 +437,6 @@ export function customerInfoToPremiumState(
     };
   }
 
-  // Check if there's an inactive entitlement (expired)
   const inactiveEntitlement =
     info.entitlements.all[PREMIUM_ENTITLEMENT_ID];
   if (inactiveEntitlement && !inactiveEntitlement.isActive) {
@@ -343,12 +458,14 @@ export function customerInfoToPremiumState(
   };
 }
 
+// ─── Subscription management ───────────────────────────────────────────
+
 /**
  * Open the platform's native subscription management screen
  * (App Store / Google Play subscriptions page).
  */
 export async function manageSubscription(): Promise<void> {
-  if (!isIAPAvailable()) return;
+  if (!(await ensureConfigured())) return;
   try {
     const { customerInfo } = await Purchases.getCustomerInfo();
     if (customerInfo.managementURL) {
@@ -367,8 +484,9 @@ export async function manageSubscription(): Promise<void> {
  * app sign-in. On web or when IAP isn't configured, this is a no-op.
  */
 export async function loginIAP(appUserID: string): Promise<PremiumState | null> {
-  if (!isIAPAvailable()) return null;
+  if (!(await ensureConfigured())) return null;
   try {
+    console.log(`[IAP] logIn appUserID="${appUserID}"`);
     const { customerInfo } = await Purchases.logIn({ appUserID });
     return customerInfoToPremiumState(customerInfo);
   } catch (err) {
@@ -379,11 +497,94 @@ export async function loginIAP(appUserID: string): Promise<PremiumState | null> 
 
 /** Log out the RevenueCat user (clears the appUserID). */
 export async function logoutIAP(): Promise<void> {
-  if (!isIAPAvailable()) return;
+  if (!(await ensureConfigured())) return;
   try {
     await Purchases.logOut();
+    console.log("[IAP] Logged out from RevenueCat");
   } catch (err) {
-    // "User is already logged out" — safe to ignore
     console.warn("[IAP] Logout warning:", err);
   }
+}
+
+// ─── Diagnostics ───────────────────────────────────────────────────────
+
+/**
+ * Run a full diagnostic sweep — logs platform, API key presence,
+ * configuration status, StoreKit products, and current offering.
+ * Useful for debugging "Product not found" in TestFlight.
+ *
+ * Returns a structured diagnostic object for programmatic inspection.
+ */
+export async function runIAPDiagnostics(): Promise<{
+  platform: string;
+  isNative: boolean;
+  hasApiKey: boolean;
+  configured: boolean;
+  productCount: number;
+  products: { id: string; price: string; title: string }[];
+  hasCurrentOffering: boolean;
+  offeringPackages: { packageId: string; productId: string }[];
+}> {
+  const platform = Capacitor.getPlatform();
+  const isNative = Capacitor.isNativePlatform();
+  const hasApiKey = platform === "ios" ? !!RC_IOS_API_KEY : !!RC_ANDROID_API_KEY;
+
+  console.log("[IAP Diagnostics] Platform:", platform, "Native:", isNative);
+  console.log("[IAP Diagnostics] API key present:", hasApiKey);
+
+  if (!isNative || !hasApiKey) {
+    console.log("[IAP Diagnostics] IAP not available — non-native or missing key.");
+    return {
+      platform,
+      isNative,
+      hasApiKey,
+      configured: false,
+      productCount: 0,
+      products: [],
+      hasCurrentOffering: false,
+      offeringPackages: [],
+    };
+  }
+
+  const isConfigured = await ensureConfigured();
+  console.log("[IAP Diagnostics] RevenueCat configured:", isConfigured);
+
+  if (!isConfigured) {
+    return {
+      platform,
+      isNative,
+      hasApiKey,
+      configured: false,
+      productCount: 0,
+      products: [],
+      hasCurrentOffering: false,
+      offeringPackages: [],
+    };
+  }
+
+  const products = await fetchProducts(ALL_PRODUCT_IDS);
+  const offering = await fetchOffering();
+
+  const result = {
+    platform,
+    isNative,
+    hasApiKey,
+    configured: isConfigured,
+    productCount: products.length,
+    products: products.map((p) => ({
+      id: p.identifier,
+      price: p.priceString,
+      title: p.title,
+    })),
+    hasCurrentOffering: !!offering,
+    offeringPackages: offering
+      ? offering.availablePackages.map((pkg) => ({
+          packageId: pkg.identifier,
+          productId: pkg.product.identifier,
+        }))
+      : [],
+  };
+
+  console.log("[IAP Diagnostics] Full result:", result);
+  return result;
 }

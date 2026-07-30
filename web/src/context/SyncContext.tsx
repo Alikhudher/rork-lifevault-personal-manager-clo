@@ -533,6 +533,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     stampsRef.current = null;
     setAutoRestoreComplete(false);
     pendingSyncRef.current = false;
+    autoUnlockAttemptedRef.current = null;
     if (autoSyncTimer.current) {
       clearTimeout(autoSyncTimer.current);
       autoSyncTimer.current = null;

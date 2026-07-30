@@ -339,12 +339,14 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Bump to 16 for the next App Store Connect upload. Build 15 is
-          # already uploaded. This build restricts the app to iPhone only
-          # (TARGETED_DEVICE_FAMILY = 1); iPad is no longer a supported
-          # device. No feature, design, data, authentication, or behavior
-          # changes.
-          agvtool new-version -all 16
+          # Bump to 17 for the next App Store Connect upload. Build 16 is
+          # already uploaded. This build includes: account data isolation on
+          # sign-out, automatic cloud backup (no manual setup), real cloud
+          # backup size from Supabase RPC, auto-restore on login, offline
+          # sync queue, App Store compliance (Privacy Policy, Terms of Use,
+          # subscription info), and bug fixes (Sync button, Restore button,
+          # email verification toast, Download button removal).
+          agvtool new-version -all 17
 
       - name: Apply iOS signing
         script: |

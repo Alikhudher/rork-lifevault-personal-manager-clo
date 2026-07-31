@@ -23,6 +23,7 @@
  *     never touched (it is a separate secret by design).
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { sendDirectOtp, verifyDirectOtp, type DirectOtpAction } from "@/lib/direct-otp";
 import { createEphemeralClient, REQUEST_TIMEOUT_MS, withTimeout } from "@/lib/supabase";
 
 export type RecoveryFailureCode =
@@ -171,11 +172,21 @@ export function describeSendFailure(
  * only the newest code verifies. Rapid repeats are refused with a
  * rate-limit error carrying `retryAfterS` for the UI countdown.
  */
-export async function requestEmailCode(email: string): Promise<RecoveryResult> {
+export async function requestEmailCode(
+  email: string,
+  actionType: DirectOtpAction = "signup",
+): Promise<RecoveryResult> {
   const client = createEphemeralClient();
-  if (!client) return { ok: false, error: NOT_CONFIGURED, code: "unavailable" };
+  if (!client) {
+    // Supabase client is not configured at all — try the direct fallback
+    // (which still needs a Supabase client for the Edge Function invoke).
+    console.warn("[AccountSecurity] No ephemeral client; attempting direct OTP fallback");
+    const fallback = await sendDirectOtp(email, actionType);
+    if (fallback.ok === false) return { ok: false, error: fallback.error };
+    return { ok: true };
+  }
   try {
-    console.log("[AccountSecurity] Sending verification code");
+    console.log("[AccountSecurity] Sending verification code via Supabase Auth");
     const { error } = await withTimeout(
       client.auth.signInWithOtp({ email, options: { shouldCreateUser: true } }),
       REQUEST_TIMEOUT_MS,
@@ -194,16 +205,29 @@ export async function requestEmailCode(email: string): Promise<RecoveryResult> {
       });
       if (isRateLimit(d.detail)) {
         console.warn("[AccountSecurity] Code send rate-limited:", logPayload);
-      } else {
-        console.error("[AccountSecurity] Code send failed:", logPayload);
+        return { ok: false, ...describeSendFailure(error) };
       }
-      return { ok: false, ...describeSendFailure(error) };
+      console.error("[AccountSecurity] Code send failed:", logPayload);
+      // Fall back to direct Brevo delivery if Auth's hook is unavailable.
+      console.warn("[AccountSecurity] Trying direct OTP fallback after Auth send failure");
+      const fallback = await sendDirectOtp(email, actionType);
+      if (fallback.ok === false) {
+        return { ok: false, error: fallback.error };
+      }
+      console.log("[AccountSecurity] Direct OTP fallback accepted by the mail server");
+      return { ok: true };
     }
     console.log("[AccountSecurity] Verification code accepted by the mail server");
     return { ok: true };
   } catch (err) {
     console.error("[AccountSecurity] Code send threw:", messageOf(err));
-    return { ok: false, ...describeSendFailure(err) };
+    // Network / timeout / other transient failures can also use the fallback.
+    const fallback = await sendDirectOtp(email, actionType);
+    if (fallback.ok === false) {
+      return { ok: false, error: fallback.error };
+    }
+    console.log("[AccountSecurity] Direct OTP fallback accepted after exception");
+    return { ok: true };
   }
 }
 
@@ -222,6 +246,7 @@ export interface VerifiedEmailSession {
 export async function verifyEmailCode(
   email: string,
   code: string,
+  actionType: DirectOtpAction = "signup",
 ): Promise<{ ok: true; session: VerifiedEmailSession } | { ok: false; error: string; code?: RecoveryFailureCode }> {
   const client = createEphemeralClient();
   if (!client) return { ok: false, error: NOT_CONFIGURED, code: "unavailable" };
@@ -240,21 +265,14 @@ export async function verifyEmailCode(
       }
       if (d && (d.transient || isNetwork(d.detail))) {
         console.error("[AccountSecurity] Code verification failed:", msg);
-        return {
-          ok: false,
-          error: "Couldn't reach the verification service. Check your internet connection and try again.",
-          code: "network",
-        };
+        // Network / service errors can use the direct fallback.
+        return verifyWithDirectFallback(client, email, code, actionType);
       }
-      // A wrong or expired code is expected user input — the UI shows
-      // inline guidance. Never console.error (dev overlays would report
-      // it as an app-level runtime error).
-      console.warn("[AccountSecurity] Code rejected (incorrect or expired):", msg);
-      return {
-        ok: false,
-        error: "That code is incorrect or has expired. Check the latest email or resend a new code.",
-        code: "invalid_code",
-      };
+      // A wrong or expired code may be a fallback code if the Auth email
+      // was never delivered. Try the direct fallback before telling the user
+      // the code is wrong.
+      console.warn("[AccountSecurity] Code rejected by Auth; trying direct OTP fallback");
+      return verifyWithDirectFallback(client, email, code, actionType);
     }
     console.log("[AccountSecurity] Email ownership verified");
     return {
@@ -265,13 +283,57 @@ export async function verifyEmailCode(
     const msg = messageOf(err);
     console.error("[AccountSecurity] Code verification threw:", msg);
     if (isNetwork(msg)) {
+      return verifyWithDirectFallback(client, email, code, actionType);
+    }
+    return { ok: false, error: `Couldn't check the code — ${extractAuthErrorDetail(err).detail}.` };
+  }
+}
+
+/**
+ * Verify a code through the direct OTP fallback and, on success, sign in
+ * with the temporary password returned by the Edge Function so the caller
+ * receives a real Supabase Auth session. The caller should immediately
+ * replace the temporary password with the user's chosen password via
+ * `alignCloudPasswordAfterReset`.
+ */
+async function verifyWithDirectFallback(
+  client: SupabaseClient,
+  email: string,
+  code: string,
+  actionType: DirectOtpAction,
+): Promise<{ ok: true; session: VerifiedEmailSession } | { ok: false; error: string; code?: RecoveryFailureCode }> {
+  const result = await verifyDirectOtp(email, code, actionType);
+  if (result.ok === false) {
+    // The fallback also rejected the code — surface it as a normal invalid code.
+    return { ok: false, error: result.error, code: "invalid_code" };
+  }
+  try {
+    const { data, error } = await withTimeout(
+      client.auth.signInWithPassword({ email, password: result.tempPassword }),
+      REQUEST_TIMEOUT_MS,
+      "Signing you in after code verification",
+    );
+    if (error || !data.session?.user) {
+      const detail = error ? extractAuthErrorDetail(error).detail : "No session returned";
+      console.error("[AccountSecurity] Fallback sign-in failed:", detail);
       return {
         ok: false,
-        error: "Couldn't reach the verification service. Check your internet connection and try again.",
+        error: "The code was verified, but we couldn't sign you in. Please try again.",
         code: "network",
       };
     }
-    return { ok: false, error: `Couldn't check the code — ${extractAuthErrorDetail(err).detail}.` };
+    console.log("[AccountSecurity] Email ownership verified via direct OTP fallback");
+    return {
+      ok: true,
+      session: { client, userId: data.session.user.id, email },
+    };
+  } catch (err) {
+    console.error("[AccountSecurity] Fallback sign-in threw:", messageOf(err));
+    return {
+      ok: false,
+      error: "The code was verified, but sign-in failed. Check your internet connection and try again.",
+      code: "network",
+    };
   }
 }
 

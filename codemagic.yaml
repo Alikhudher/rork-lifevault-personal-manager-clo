@@ -258,6 +258,14 @@ workflows:
           fi
           bunx cap sync ios
 
+          # Replace the Capacitor placeholder app icon with the finalized
+          # LifeVault icon across all required iPhone and App Store sizes.
+          # The source icon is the generated web/public/icon.png (1024x1024).
+          chmod +x scripts/generate-ios-icons.sh
+          ./scripts/generate-ios-icons.sh public/icon.png ios/App/App/Assets.xcassets/AppIcon.appiconset
+          echo "--- Generated iOS app icon set ---"
+          ls -la ios/App/App/Assets.xcassets/AppIcon.appiconset/
+
           # Make the app iPhone-only. Capacitor generates a universal
           # Xcode project (TARGETED_DEVICE_FAMILY = "1,2") by default, which
           # allows iPad. We force it to "1" (iPhone/iPod only) in the
@@ -339,13 +347,12 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Bump to 19 for the next App Store Connect upload. Build 18 is
-          # already uploaded but still hit "Product not found" because the
-          # RevenueCat offerings were not yet configured. The Monthly and
-          # Yearly subscriptions have now been imported into RevenueCat and
-          # linked to $rc_monthly / $rc_annual in the default offering.
-          # This build should resolve the TestFlight purchase error.
-          agvtool new-version -all 19
+          # Bump to 20 for the next App Store Connect upload. Build 19 was
+          # rejected by Apple for two issues: a placeholder app icon and an OTP
+          # signup failure on iPad. The icon is now a finalized LifeVault icon
+          # and the OTP flow has a direct Brevo fallback plus truthful delivery
+          # status so emails are never reported as sent unless they are.
+          agvtool new-version -all 20
 
       - name: Apply iOS signing
         script: |

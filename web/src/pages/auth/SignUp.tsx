@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { AlertTriangle, Eye, EyeOff, Loader2, MailCheck, Vault } from "lucide-react";
+import { AlertTriangle, Eye, EyeOff, HelpCircle, Loader2, MailCheck, Vault } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -68,10 +68,18 @@ export default function SignUp() {
     (a) => a.email.toLowerCase() === normalizedEmail,
   );
 
-  /** Email a real 6-digit code; used for both the first send and resends. */
+  /**
+   * Email a real 6-digit code; used for both the first send and resends.
+   * If the primary Supabase Auth hook fails or the email is rejected by the
+   * provider, the direct Brevo fallback is used automatically. The app never
+   * claims the email was sent until the mail provider's own logs confirm it
+   * (tracked by `trackEmailDelivery`).
+   */
   const sendCode = async (isResend: boolean): Promise<boolean> => {
     const sentAt = Date.now();
-    const result = await requestEmailCode(normalizedEmail);
+    setDelivery(null);
+    setError(null);
+    const result = await requestEmailCode(normalizedEmail, "signup");
     if (result.ok === false) {
       setError(result.error);
       toast.error(result.error);
@@ -84,14 +92,9 @@ export default function SignUp() {
     }
     setCode("");
     setResendIn(RESEND_COOLDOWN_S);
-    toast.success(isResend ? "A new code is on its way" : "Verification code sent", {
-      description: isResend
-        ? `A fresh code was emailed to ${normalizedEmail} — the previous code no longer works.`
-        : `Check ${normalizedEmail} (and Spam) for a 6-digit code.`,
-    });
-    // Follow the message all the way to the inbox via Brevo's logs and
-    // mirror the truthful status inline next to the code input.
-    setDelivery(null);
+    // Follow the message through the mail provider and mirror the truthful
+    // delivery status inline. A success toast is only shown once Brevo
+    // confirms delivery; failures and delays are reported honestly.
     void trackEmailDelivery(normalizedEmail, sentAt, setDelivery);
     return true;
   };
@@ -135,7 +138,8 @@ export default function SignUp() {
     setBusy(true);
     try {
       // Server-side check — wrong or expired codes are always rejected.
-      const result = await verifyEmailCode(normalizedEmail, code);
+      // The fallback path is tried automatically if the Auth hook failed.
+      const result = await verifyEmailCode(normalizedEmail, code, "signup");
       if (result.ok === false) {
         setError(result.error);
         setCode("");
@@ -317,6 +321,31 @@ export default function SignUp() {
             </div>
 
             <DeliveryStatusLine state={delivery} />
+
+            {delivery?.status === "failed" && (
+              <div className="rounded-xl bg-destructive/10 p-3 text-[12px] font-semibold leading-relaxed text-destructive ring-1 ring-destructive/25">
+                The email could not be delivered. Try:
+                <ul className="mt-1 list-disc pl-4">
+                  <li>Checking the email address for typos</li>
+                  <li>Looking in Spam / Junk / Promotions</li>
+                  <li>Waiting a minute, then tapping Resend code</li>
+                </ul>
+              </div>
+            )}
+
+            {delivery?.status !== "failed" && delivery?.status !== "delivered" && (
+              <div className="rounded-xl bg-muted p-3 text-[12px] font-semibold leading-relaxed text-muted-foreground">
+                <div className="mb-1 flex items-center gap-1.5">
+                  <HelpCircle className="h-3.5 w-3.5" />
+                  <span>Didn&apos;t receive it?</span>
+                </div>
+                <ul className="list-disc pl-4">
+                  <li>Check Spam / Junk / Promotions folders</li>
+                  <li>Confirm the address is typed correctly</li>
+                  <li>Wait up to a few minutes, then tap Resend code</li>
+                </ul>
+              </div>
+            )}
 
             {errorBox}
 

@@ -84,7 +84,7 @@ export default function ForgotPassword() {
     setBusy(true);
     try {
       const sentAt = Date.now();
-      const result = await requestEmailCode(normalizedEmail);
+      const result = await requestEmailCode(normalizedEmail, "recovery");
       if (result.ok === false) {
         setError(result.error);
         toast.error(result.error);
@@ -121,7 +121,7 @@ export default function ForgotPassword() {
     }
     setBusy(true);
     try {
-      const result = await verifyEmailCode(normalizedEmail, code);
+      const result = await verifyEmailCode(normalizedEmail, code, "recovery");
       if (result.ok === false) {
         setError(result.error);
         setCode("");

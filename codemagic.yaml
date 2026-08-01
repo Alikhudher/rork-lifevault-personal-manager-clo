@@ -382,12 +382,11 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Bump to 21 for the next App Store Connect upload. Build 20 was
-          # rejected because CFBundleIconName was missing from Info.plist and
-          # the 120x120 iPhone icon was a symlink instead of a real PNG. Both
-          # are now fixed: CFBundleIconName=AppIcon is injected and verified,
-          # and every icon is a real opaque PNG with build-time size checks.
-          agvtool new-version -all 21
+          # Build 22: includes responsive iPad layout changes (multi-column
+          # grids on Home, Documents, Expenses, Calendar, Premium) so the app
+          # fills the 13" iPad screen properly. Icon config from Build 21 is
+          # unchanged (CFBundleIconName=AppIcon, all real opaque PNGs).
+          agvtool new-version -all 22
 
       - name: Apply iOS signing
         script: |

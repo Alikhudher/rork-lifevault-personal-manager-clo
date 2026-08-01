@@ -26,7 +26,27 @@ if ! command -v sips >/dev/null 2>&1; then
   exit 1
 fi
 
+# Resolve SOURCE to an absolute path BEFORE any cd.
+# The old code passed a relative path (e.g. public/icon.png) and then did
+# cd "$OUT_DIR", which made the relative path unresolvable — sips silently
+# failed and zero icons were generated.
+SOURCE="$(cd "$(dirname "$SOURCE")" && pwd)/$(basename "$SOURCE")"
+
+# Create the output directory if it does not exist, then resolve to absolute.
 mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
+
+echo "--- Icon generation ---"
+echo "Source icon : $SOURCE"
+echo "Output dir  : $OUT_DIR"
+SRC_W="$(sips -g pixelWidth "$SOURCE" | awk '/pixelWidth/ {print $2}')"
+SRC_H="$(sips -g pixelHeight "$SOURCE" | awk '/pixelHeight/ {print $2}')"
+echo "Source size : ${SRC_W}x${SRC_H}"
+if [ "$SRC_W" != "$SRC_H" ]; then
+  echo "WARNING: Source icon is not square (${SRC_W}x${SRC_H}) — icons may look distorted."
+fi
+echo ""
+
 cd "$OUT_DIR"
 
 # Remove only the PNG files and Contents.json so the asset catalog folder
@@ -34,16 +54,36 @@ cd "$OUT_DIR"
 rm -f *.png Contents.json
 
 # --- Step 1: Create an opaque master copy ---
-# sips can leave an alpha channel in the resized output. We flatten the
-# source onto an opaque white background first so every derived icon is
-# guaranteed to have no transparency.
-TEMP_SOURCE="$(mktemp -d)/icon_opaque.png"
-sips -s format png "$SOURCE" --out "$TEMP_SOURCE" >/dev/null 2>&1
-# Remove alpha channel by setting hasAlpha to false.
-sips -s hasAlpha false "$TEMP_SOURCE" >/dev/null 2>&1 || true
+# sips -s hasAlpha false is a NO-OP (hasAlpha is read-only in sips). The
+# proper way to strip the alpha channel is a BMP roundtrip: BMP has no alpha
+# support, so converting PNG -> BMP -> PNG guarantees a fully opaque image
+# with a white background where transparency used to be.
+TEMP_DIR="$(mktemp -d)"
+TEMP_BMP="$TEMP_DIR/icon_opaque.bmp"
+TEMP_SOURCE="$TEMP_DIR/icon_opaque.png"
+
+# Convert source to BMP (strips alpha, flattens onto white background).
+if ! sips -s format bmp "$SOURCE" --out "$TEMP_BMP" >/dev/null 2>&1; then
+  echo "ERROR: Failed to create opaque BMP master from $SOURCE"
+  ls -la "$TEMP_DIR" 2>/dev/null || true
+  exit 1
+fi
+# Convert BMP back to PNG (now opaque, no alpha channel).
+if ! sips -s format png "$TEMP_BMP" --out "$TEMP_SOURCE" >/dev/null 2>&1; then
+  echo "ERROR: Failed to convert BMP master back to PNG"
+  ls -la "$TEMP_DIR" 2>/dev/null || true
+  exit 1
+fi
+# Verify the master copy is opaque.
+MASTER_ALPHA="$(sips -g hasAlpha "$TEMP_SOURCE" 2>/dev/null | awk '/hasAlpha/ {print $2}')"
+if [ "$MASTER_ALPHA" = "yes" ]; then
+  echo "WARNING: Master copy still has alpha after BMP roundtrip — resized icons may retain transparency."
+fi
+echo "OK  : Opaque master copy created (alpha=${MASTER_ALPHA:-unknown})"
 
 # --- Step 2: Resize into every required size ---
 # Each file is a real, independent PNG — no symlinks.
+# Alpha is stripped via BMP roundtrip on each resized file (belt and suspenders).
 resize() {
   local size="$1"
   local name="$2"
@@ -51,8 +91,12 @@ resize() {
     echo "ERROR: Failed to resize icon to ${size}x${size} ($name)"
     exit 1
   fi
-  # Force opacity on the resized file too (belt and suspenders).
-  sips -s hasAlpha false "$name" >/dev/null 2>&1 || true
+  # Strip any residual alpha via BMP roundtrip on the resized file.
+  local tmp_bmp="${name%.png}.bmp"
+  if sips -s format bmp "$name" --out "$tmp_bmp" >/dev/null 2>&1; then
+    sips -s format png "$tmp_bmp" --out "$name" >/dev/null 2>&1 || true
+    rm -f "$tmp_bmp"
+  fi
 }
 
 # iPhone sizes
@@ -271,8 +315,13 @@ if ! grep -q "AppIcon-60x60@2x.png" Contents.json; then
 fi
 echo "OK  : Contents.json references the 120x120 iPhone icon"
 
-# Cleanup
-rm -f "$(dirname "$TEMP_SOURCE")/icon_opaque.png"
-rmdir "$(dirname "$TEMP_SOURCE")" 2>/dev/null || true
+# --- Step 6: List all generated files for build log visibility ---
+echo ""
+echo "--- Generated files in $OUT_DIR ---"
+ls -la "$OUT_DIR"
 
+# Cleanup
+rm -rf "$TEMP_DIR"
+
+echo ""
 echo "OK: Generated and verified complete opaque iOS AppIcon.appiconset in $OUT_DIR"

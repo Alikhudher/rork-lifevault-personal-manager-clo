@@ -181,7 +181,7 @@ export default function CalendarPage() {
       />
 
       {view === "list" ? (
-        <div className="space-y-2.5 px-4 pt-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 px-4 pt-4">
           {upcoming.length === 0 && past.length === 0 && (
             <div className="flex flex-col items-center rounded-2xl bg-card py-14 text-center shadow-sm ring-1 ring-border">
               <CalendarX2 className="h-10 w-10 text-muted-foreground/50" />

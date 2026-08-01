@@ -69,7 +69,7 @@ export function AppShell() {
   if (!user) return <Navigate to="/signin" replace state={{ from: location.pathname }} />;
 
   return (
-    <div className="mx-auto min-h-dvh w-full max-w-md bg-background shadow-2xl shadow-primary/5">
+    <div className="mx-auto min-h-dvh w-full max-w-md md:max-w-none md:px-8 bg-background shadow-2xl shadow-primary/5">
       <main ref={scrollRef} className="pb-28">
         <Outlet />
       </main>
@@ -87,7 +87,7 @@ export function PublicShell() {
   return (
     <div
       ref={scrollRef}
-      className="mx-auto min-h-dvh w-full max-w-md bg-background shadow-2xl shadow-primary/5"
+      className="mx-auto min-h-dvh w-full max-w-md md:max-w-none md:px-8 bg-background shadow-2xl shadow-primary/5"
     >
       <Outlet />
     </div>

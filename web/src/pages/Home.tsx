@@ -178,7 +178,7 @@ export default function Home() {
       </section>
 
       {/* Stat grid */}
-      <section className="grid grid-cols-2 gap-3 px-4 pt-4">
+      <section className="grid grid-cols-2 md:grid-cols-4 gap-3 px-4 pt-4">
         <button
           onClick={() => navigate("/expenses")}
           className="rounded-2xl bg-card p-4 text-left shadow-sm ring-1 ring-border transition-transform active:scale-[0.98]"
@@ -265,11 +265,11 @@ export default function Home() {
           >
             {t("home.upcomingPayments")}
           </SectionTitle>
-          <div className="overflow-hidden rounded-2xl bg-card shadow-sm ring-1 ring-border">
-            {stats.upcoming.slice(0, 3).map((sub, i) => (
+          <div className="md:grid md:grid-cols-2 md:gap-3 space-y-2.5 md:space-y-0">
+            {stats.upcoming.slice(0, 4).map((sub) => (
               <div
                 key={sub.id}
-                className={cn("flex items-center gap-3 px-4 py-3", i > 0 && "border-t border-border/70")}
+                className="flex items-center gap-3 rounded-2xl bg-card px-4 py-3 shadow-sm ring-1 ring-border"
               >
                 <CategoryBubble meta={EXPENSE_META[sub.category]} size="sm" />
                 <div className="min-w-0 flex-1">
@@ -340,11 +340,11 @@ export default function Home() {
             <p className="mt-1 px-8 text-[12.5px] text-muted-foreground">{t("home.noActivitySub")}</p>
           </button>
         ) : (
-          <div className="overflow-hidden rounded-2xl bg-card shadow-sm ring-1 ring-border">
-            {recentExpenses.map((expense, i) => (
+          <div className="md:grid md:grid-cols-2 md:gap-3 space-y-2.5 md:space-y-0">
+            {recentExpenses.map((expense) => (
               <div
                 key={expense.id}
-                className={cn("flex items-center gap-3 px-4 py-3", i > 0 && "border-t border-border/70")}
+                className="flex items-center gap-3 rounded-2xl bg-card px-4 py-3 shadow-sm ring-1 ring-border"
               >
                 <CategoryBubble meta={EXPENSE_META[expense.category]} size="sm" />
                 <div className="min-w-0 flex-1">

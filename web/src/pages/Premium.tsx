@@ -283,7 +283,7 @@ export default function Premium() {
         <p className="mb-3 text-[13px] text-muted-foreground">
           Everything below is yours to keep — no subscription needed.
         </p>
-        <div className="grid grid-cols-1 gap-2.5">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
           {FREE_FEATURES.map((feature) => {
             const Icon = FREE_ICONS[feature.icon] ?? FileText;
             return (
@@ -310,7 +310,7 @@ export default function Premium() {
       {/* Premium perks — what upgrading unlocks */}
       <section className="px-4 pt-6">
         <SectionTitle>Premium unlocks</SectionTitle>
-        <div className="grid grid-cols-1 gap-2.5">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
           {PREMIUM_PERKS.map((perk) => {
             const Icon = PERK_ICONS[perk.icon] ?? Sparkles;
             return (

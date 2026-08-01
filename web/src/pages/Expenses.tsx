@@ -283,17 +283,14 @@ export default function Expenses() {
             <p className="mt-1 text-[13px] text-muted-foreground">{t("expenses.emptySub")}</p>
           </div>
         ) : (
-          <div className="overflow-hidden rounded-2xl bg-card shadow-sm ring-1 ring-border">
-            {recent.map((expense, i) => {
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+            {recent.map((expense) => {
               const PayIcon = PAYMENT_META[expense.paymentMethod];
               return (
                 <button
                   key={expense.id}
                   onClick={() => openEdit(expense)}
-                  className={cn(
-                    "flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-secondary/40",
-                    i > 0 && "border-t border-border/70",
-                  )}
+                  className="flex w-full items-center gap-3 rounded-2xl bg-card px-4 py-3 text-left shadow-sm ring-1 ring-border transition-colors hover:bg-secondary/40"
                 >
                   <CategoryBubble meta={EXPENSE_META[expense.category]} size="sm" />
                   <div className="min-w-0 flex-1">

@@ -266,27 +266,22 @@ workflows:
           echo "--- Generated iOS app icon set ---"
           ls -la ios/App/App/Assets.xcassets/AppIcon.appiconset/
 
-          # Make the app iPhone-only. Capacitor generates a universal
-          # Xcode project (TARGETED_DEVICE_FAMILY = "1,2") by default, which
-          # allows iPad. We force it to "1" (iPhone/iPod only) in the
-          # generated project.pbxproj so the archived IPA targets iPhone
-          # exclusively and iPad is no longer listed as a supported device.
+          # Keep the app universal (iPhone + iPad). Capacitor generates a
+          # universal Xcode project (TARGETED_DEVICE_FAMILY = "1,2") by
+          # default, which is what we want now that the icon set includes
+          # iPad sizes and Apple tests on iPad. Do not force it to iPhone-only.
           PBXPROJ="ios/App/App.xcodeproj/project.pbxproj"
           if [ ! -f "$PBXPROJ" ]; then
             echo "ERROR: project.pbxproj not found at $PBXPROJ after cap sync"
             exit 1
           fi
-          # Capacitor writes TARGETED_DEVICE_FAMILY = "1,2"; replace every
-          # occurrence with "1" (iPhone-only). This is safe to run repeatedly.
-          sed -i '' 's/TARGETED_DEVICE_FAMILY = "1,2"/TARGETED_DEVICE_FAMILY = "1"/g' "$PBXPROJ"
-          # Hard-verify: no build setting may still reference iPad family "2".
-          if grep -q 'TARGETED_DEVICE_FAMILY = "1,2"' "$PBXPROJ" \
-             || grep -q 'TARGETED_DEVICE_FAMILY = "2"' "$PBXPROJ"; then
-            echo "FAIL: iPad device family still present in $PBXPROJ"
+          # Hard-verify: the project still targets the universal device family.
+          if ! grep -q 'TARGETED_DEVICE_FAMILY = "1,2"' "$PBXPROJ"; then
+            echo "FAIL: TARGETED_DEVICE_FAMILY is not universal (1,2) in $PBXPROJ"
             grep -n 'TARGETED_DEVICE_FAMILY' "$PBXPROJ" || true
             exit 1
           fi
-          echo "OK: TARGETED_DEVICE_FAMILY set to iPhone-only (1)"
+          echo "OK: TARGETED_DEVICE_FAMILY is universal (1,2) — iPhone + iPad"
           grep -n 'TARGETED_DEVICE_FAMILY' "$PBXPROJ" || true
 
           # Inject camera, photo library & Face ID permission strings into the

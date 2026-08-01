@@ -1,7 +1,9 @@
 #!/bin/bash
-# Generate an iPhone AppIcon.appiconset from web/public/icon.png (1024x1024).
+# Generate a complete iOS AppIcon.appiconset from web/public/icon.png (1024x1024).
+# Includes all required iPhone, iPad, and App Store marketing sizes so Build 20
+# ships with the finalized LifeVault shield/vault icon and no placeholder icons.
 # Run during the Codemagic iOS build after `bunx cap sync ios` so the native
-# asset catalog is replaced with the finalized LifeVault icon.
+# asset catalog is replaced before the IPA is archived.
 set -euo pipefail
 
 SOURCE="${1:-web/public/icon.png}"
@@ -34,20 +36,28 @@ resize() {
   fi
 }
 
-# iPhone-only sizes (the app is TARGETED_DEVICE_FAMILY = 1).
-# 20pt
-resize 40  AppIcon-20x20@2x.png
-resize 60  AppIcon-20x20@3x.png
-# 29pt
-resize 58  AppIcon-29x29@2x.png
-resize 87  AppIcon-29x29@3x.png
-# 40pt
-resize 80  AppIcon-40x40@2x.png
-resize 120 AppIcon-40x40@3x.png
-# 60pt (2x is the same 120px as 40pt 3x; 3x is 180px)
+# iPhone sizes
+resize 40   AppIcon-20x20@2x.png
+resize 60   AppIcon-20x20@3x.png
+resize 58   AppIcon-29x29@2x.png
+resize 87   AppIcon-29x29@3x.png
+resize 80   AppIcon-40x40@2x.png
+resize 120  AppIcon-40x40@3x.png
 ln -sf AppIcon-40x40@3x.png AppIcon-60x60@2x.png
-resize 180 AppIcon-60x60@3x.png
-# App Store marketing icon
+resize 180  AppIcon-60x60@3x.png
+
+# iPad sizes
+resize 20   AppIcon-20x20@1x~ipad.png
+resize 40   AppIcon-20x20@2x~ipad.png
+resize 29   AppIcon-29x29@1x~ipad.png
+resize 58   AppIcon-29x29@2x~ipad.png
+resize 40   AppIcon-40x40@1x~ipad.png
+resize 80   AppIcon-40x40@2x~ipad.png
+resize 76   AppIcon-76x76@1x~ipad.png
+resize 152  AppIcon-76x76@2x~ipad.png
+resize 167  AppIcon-83.5x83.5@2x~ipad.png
+
+# App Store marketing icon (used for both iPhone and iPad listings)
 resize 1024 AppIcon-1024x1024@1x.png
 
 cat > Contents.json <<'JSON'
@@ -102,6 +112,60 @@ cat > Contents.json <<'JSON'
       "scale": "3x"
     },
     {
+      "size": "20x20",
+      "idiom": "ipad",
+      "filename": "AppIcon-20x20@1x~ipad.png",
+      "scale": "1x"
+    },
+    {
+      "size": "20x20",
+      "idiom": "ipad",
+      "filename": "AppIcon-20x20@2x~ipad.png",
+      "scale": "2x"
+    },
+    {
+      "size": "29x29",
+      "idiom": "ipad",
+      "filename": "AppIcon-29x29@1x~ipad.png",
+      "scale": "1x"
+    },
+    {
+      "size": "29x29",
+      "idiom": "ipad",
+      "filename": "AppIcon-29x29@2x~ipad.png",
+      "scale": "2x"
+    },
+    {
+      "size": "40x40",
+      "idiom": "ipad",
+      "filename": "AppIcon-40x40@1x~ipad.png",
+      "scale": "1x"
+    },
+    {
+      "size": "40x40",
+      "idiom": "ipad",
+      "filename": "AppIcon-40x40@2x~ipad.png",
+      "scale": "2x"
+    },
+    {
+      "size": "76x76",
+      "idiom": "ipad",
+      "filename": "AppIcon-76x76@1x~ipad.png",
+      "scale": "1x"
+    },
+    {
+      "size": "76x76",
+      "idiom": "ipad",
+      "filename": "AppIcon-76x76@2x~ipad.png",
+      "scale": "2x"
+    },
+    {
+      "size": "83.5x83.5",
+      "idiom": "ipad",
+      "filename": "AppIcon-83.5x83.5@2x~ipad.png",
+      "scale": "2x"
+    },
+    {
       "size": "1024x1024",
       "idiom": "ios-marketing",
       "filename": "AppIcon-1024x1024@1x.png",
@@ -115,4 +179,4 @@ cat > Contents.json <<'JSON'
 }
 JSON
 
-echo "OK: Generated iPhone AppIcon.appiconset in $OUT_DIR"
+echo "OK: Generated complete iOS AppIcon.appiconset in $OUT_DIR"

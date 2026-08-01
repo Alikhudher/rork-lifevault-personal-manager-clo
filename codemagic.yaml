@@ -338,16 +338,56 @@ workflows:
           done
           echo "--- All required privacy keys present in final Info.plist ---"
 
+          # Inject CFBundleIconName = AppIcon into Info.plist. App Store Connect
+          # rejects uploads that are missing this key (error: "Missing
+          # CFBundleIconName in Info.plist"). Capacitor's generated Info.plist
+          # does not include it by default, so we add it explicitly and then
+          # hard-verify it is present before the archive step.
+          set_perm :CFBundleIconName AppIcon
+          if /usr/libexec/PlistBuddy -c "Print :CFBundleIconName" "$PLIST" >/dev/null 2>&1; then
+            ICON_NAME_VAL="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIconName" "$PLIST")"
+            echo "OK  : CFBundleIconName = $ICON_NAME_VAL"
+            if [ "$ICON_NAME_VAL" != "AppIcon" ]; then
+              echo "FAIL: CFBundleIconName is '$ICON_NAME_VAL', expected 'AppIcon'"
+              exit 1
+            fi
+          else
+            echo "FAIL: CFBundleIconName is MISSING from $PLIST"
+            exit 1
+          fi
+
+          # Hard-verify the 120x120 iPhone icon exists as a real file in the
+          # AppIcon.appiconset. App Store Connect rejects uploads missing this
+          # exact size (error: "Missing required iPhone app icon of exactly
+          # 120x120 pixels"). The generate-ios-icons.sh script already verifies
+          # this, but we double-check here as a final gate before archiving.
+          ICON_120="ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-60x60@2x.png"
+          if [ ! -f "$ICON_120" ]; then
+            echo "FAIL: 120x120 iPhone icon not found at $ICON_120"
+            exit 1
+          fi
+          if [ -L "$ICON_120" ]; then
+            echo "FAIL: $ICON_120 is a symlink, not a real PNG file"
+            exit 1
+          fi
+          ICON120_W="$(sips -g pixelWidth "$ICON_120" | awk '/pixelWidth/ {print $2}')"
+          ICON120_H="$(sips -g pixelHeight "$ICON_120" | awk '/pixelHeight/ {print $2}')"
+          if [ "$ICON120_W" != "120" ] || [ "$ICON120_H" != "120" ]; then
+            echo "FAIL: 120x120 icon is ${ICON120_W}x${ICON120_H}, expected 120x120"
+            exit 1
+          fi
+          echo "OK  : 120x120 iPhone icon verified (${ICON120_W}x${ICON120_H}, real file)"
+
       - name: Set version and build number
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Bump to 20 for the next App Store Connect upload. Build 19 was
-          # rejected by Apple for two issues: a placeholder app icon and an OTP
-          # signup failure on iPad. The icon is now a finalized LifeVault icon
-          # and the OTP flow has a direct Brevo fallback plus truthful delivery
-          # status so emails are never reported as sent unless they are.
-          agvtool new-version -all 20
+          # Bump to 21 for the next App Store Connect upload. Build 20 was
+          # rejected because CFBundleIconName was missing from Info.plist and
+          # the 120x120 iPhone icon was a symlink instead of a real PNG. Both
+          # are now fixed: CFBundleIconName=AppIcon is injected and verified,
+          # and every icon is a real opaque PNG with build-time size checks.
+          agvtool new-version -all 21
 
       - name: Apply iOS signing
         script: |

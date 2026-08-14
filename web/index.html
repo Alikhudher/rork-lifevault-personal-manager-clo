@@ -27,6 +27,37 @@
 
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Suppress generic "Script error." reports that originate from
+      // cross-origin scripts injected by the preview/iframe environment.
+      // These have no filename, line 0, col 0 — the browser hides the
+      // real details under same-origin policy. They are never from app
+      // code (app scripts are same-origin with crossorigin attribute).
+      (function () {
+        var isCrossOriginError = function (msg, filename, lineno) {
+          return (
+            (typeof msg === 'string' && msg.toLowerCase() === 'script error.') ||
+            (lineno === 0 && (!filename || filename === ''))
+          );
+        };
+        window.addEventListener('error', function (e) {
+          if (isCrossOriginError(e.message, e.filename, e.lineno)) {
+            e.stopImmediatePropagation();
+            e.preventDefault();
+          }
+        }, true);
+        window.addEventListener('unhandledrejection', function (e) {
+          var reason = e.reason;
+          var msg =
+            reason instanceof Error ? reason.message :
+            typeof reason === 'string' ? reason : '';
+          if (msg && msg.toLowerCase() === 'script error.') {
+            e.stopImmediatePropagation();
+            e.preventDefault();
+          }
+        });
+      })();
+    </script>
+    <script type="module" crossorigin src="/src/main.tsx"></script>
   </body>
 </html>

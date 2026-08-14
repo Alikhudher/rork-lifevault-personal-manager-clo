@@ -864,7 +864,10 @@ export default function Profile() {
             right={
               <Switch
                 checked={settings.darkMode}
-                onCheckedChange={(darkMode) => updateSettings({ darkMode })}
+                onCheckedChange={(darkMode) => {
+                  localStorage.setItem("lifevault-darkmode-pref-set", "1");
+                  updateSettings({ darkMode });
+                }}
                 aria-label={t("profile.darkMode")}
               />
             }

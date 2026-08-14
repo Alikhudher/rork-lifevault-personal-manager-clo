@@ -24,6 +24,111 @@ import type {
   PurchasesStoreProduct,
 } from "@revenuecat/purchases-capacitor";
 import type { PlanId, PremiumState } from "@/lib/premium";
+import type { IntroEligibility, PurchasesIntroPrice } from "@revenuecat/purchases-capacitor";
+import { INTRO_ELIGIBILITY_STATUS } from "@revenuecat/purchases-capacitor";
+
+/** Introductory offer details extracted from a RevenueCat product. */
+export interface IntroOfferInfo {
+  /** Localized duration label, e.g. "7-day" or "1-month". */
+  durationLabel: string;
+  /** True when the intro price is zero (a free trial). */
+  isFreeTrial: boolean;
+  /** Formatted intro price string (e.g. "Free" or "$0.00"). */
+  priceString: string;
+  /** Number of billing cycles the intro price lasts. */
+  cycles: number;
+  /** Period unit: DAY, WEEK, MONTH, or YEAR. */
+  periodUnit: string;
+  /** Number of period units (e.g. 7 for a 7-day trial). */
+  periodNumberOfUnits: number;
+}
+
+/**
+ * Build a human-readable duration from a RevenueCat intro price.
+ * e.g. { periodUnit: "DAY", periodNumberOfUnits: 7 } → "7-day"
+ *      { periodUnit: "WEEK", periodNumberOfUnits: 1 } → "1-week"
+ *      { periodUnit: "MONTH", periodNumberOfUnits: 3 } → "3-month"
+ */
+function formatIntroDuration(introPrice: PurchasesIntroPrice): string {
+  const { periodUnit, periodNumberOfUnits } = introPrice;
+  const unitLower = periodUnit.toLowerCase();
+  // singular for 1, plural otherwise
+  const unit = periodNumberOfUnits === 1
+    ? unitLower
+    : `${unitLower}s`;
+  // e.g. "7-day", "1-week", "3-months"
+  // "day" stays singular even for 7 ("7-day" is idiomatic)
+  if (unitLower === "day") {
+    return `${periodNumberOfUnits}-day`;
+  }
+  if (unitLower === "week") {
+    return periodNumberOfUnits === 1 ? "1-week" : `${periodNumberOfUnits}-weeks`;
+  }
+  if (unitLower === "month") {
+    return periodNumberOfUnits === 1 ? "1-month" : `${periodNumberOfUnits}-months`;
+  }
+  if (unitLower === "year") {
+    return periodNumberOfUnits === 1 ? "1-year" : `${periodNumberOfUnits}-years`;
+  }
+  return `${periodNumberOfUnits} ${unit}`;
+}
+
+/**
+ * Extract introductory offer info from a RevenueCat product, or return null
+ * if the product has no introductory price configured.
+ */
+export function getIntroOfferInfo(introPrice: PurchasesIntroPrice | null): IntroOfferInfo | null {
+  if (!introPrice) return null;
+  return {
+    durationLabel: formatIntroDuration(introPrice),
+    isFreeTrial: introPrice.price === 0,
+    priceString: introPrice.priceString,
+    cycles: introPrice.cycles,
+    periodUnit: introPrice.periodUnit,
+    periodNumberOfUnits: introPrice.periodNumberOfUnits,
+  };
+}
+
+/**
+ * Check whether the user is eligible for an introductory free trial or
+ * intro pricing for the given product IDs.
+ *
+ * RevenueCat's server checks the user's Apple ID purchase history to
+ * determine eligibility. A user who has already used a free trial for
+ * any product in the same subscription group is ineligible.
+ *
+ * Returns a map of productId → IntroEligibility. On web or when IAP
+ * is unavailable, returns an empty map.
+ */
+export async function checkIntroEligibility(
+  productIds: string[] = ALL_PRODUCT_IDS,
+): Promise<Record<string, IntroEligibility>> {
+  if (!(await ensureConfigured())) return {};
+  try {
+    const result = await Purchases.checkTrialOrIntroductoryPriceEligibility({
+      productIdentifiers: productIds,
+    });
+    console.log("[IAP] Intro eligibility:", result);
+    return result;
+  } catch (err) {
+    console.error("[IAP] Failed to check intro eligibility:", err);
+    return {};
+  }
+}
+
+/**
+ * Check if a user is eligible for an intro offer on a specific plan.
+ * Returns true when RevenueCat confirms eligibility.
+ */
+export function isEligibleForIntro(
+  eligibilityMap: Record<string, IntroEligibility>,
+  planId: PlanId,
+): boolean {
+  const productId = PRODUCT_IDS[planId];
+  const elig = eligibilityMap[productId];
+  if (!elig) return false;
+  return elig.status === INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_ELIGIBLE;
+}
 
 /**
  * RevenueCat API keys.

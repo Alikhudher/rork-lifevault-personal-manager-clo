@@ -945,6 +945,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [state.security.biometricEnabled]);
 
+  // Apply dark mode: toggle the `.dark` class on <html> so Tailwind's
+  // dark: variants and the CSS custom-property overrides activate.
+  // On first launch (no saved preference), respect the system setting.
+  useEffect(() => {
+    const root = document.documentElement;
+    const DARK_PREF_KEY = "lifevault-darkmode-pref-set";
+
+    // First-launch detection: if the user has never toggled dark mode,
+    // check the OS preference and adopt it automatically.
+    const hasExplicitPref = localStorage.getItem(DARK_PREF_KEY) === "1";
+    if (!hasExplicitPref) {
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      if (prefersDark !== state.settings.darkMode) {
+        setState((s) => ({
+          ...s,
+          settings: { ...s.settings, darkMode: prefersDark },
+        }));
+        return; // state update triggers re-run of this effect
+      }
+    }
+
+    root.classList.toggle("dark", state.settings.darkMode);
+  }, [state.settings.darkMode]);
+
   const updateUser = useCallback((patch: Partial<UserProfile>) => {
     const s = stateRef.current;
     if (!s.user) return;

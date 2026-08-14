@@ -36,7 +36,12 @@ import {
   fetchProducts,
   findPackageForPlan,
   runIAPDiagnostics,
+  checkIntroEligibility,
+  getIntroOfferInfo,
+  isEligibleForIntro,
+  type IntroOfferInfo,
 } from "@/lib/iap";
+import type { IntroEligibility } from "@revenuecat/purchases-capacitor";
 import { LegalLinks, LegalSheet, type LegalDocType } from "@/components/lifevault/LegalLinks";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
@@ -76,6 +81,7 @@ export default function Premium() {
   const [restoring, setRestoring] = useState<boolean>(false);
   const [offering, setOffering] = useState<PurchasesOffering | null>(null);
   const [productCount, setProductCount] = useState<number>(0);
+  const [introEligibility, setIntroEligibility] = useState<Record<string, IntroEligibility>>({});
   const [legalDoc, setLegalDoc] = useState<LegalDocType | null>(null);
 
   // Fetch the current RevenueCat Offering on mount (native only) and use
@@ -115,6 +121,13 @@ export default function Premium() {
           );
         }
       }
+
+      // Check introductory offer eligibility so the paywall can show
+      // "7-day free trial, then $X" when Apple's StoreKit confirms the
+      // user hasn't used their free trial yet.
+      const eligibility = await checkIntroEligibility();
+      if (!mounted) return;
+      setIntroEligibility(eligibility);
     })();
     return () => {
       mounted = false;
@@ -134,6 +147,21 @@ export default function Premium() {
       return fallback.priceLabel;
     };
   }, [offering]);
+
+  /**
+   * Get the introductory offer info for a plan, if the user is eligible.
+   * Returns null when there's no intro offer, or the user has already used it.
+   */
+  const getIntroOffer = useMemo(() => {
+    return (planId: PlanId): IntroOfferInfo | null => {
+      const pkg = findPackageForPlan(offering, planId);
+      if (!pkg) return null;
+      const intro = getIntroOfferInfo(pkg.product.introPrice);
+      if (!intro) return null;
+      if (!isEligibleForIntro(introEligibility, planId)) return null;
+      return intro;
+    };
+  }, [offering, introEligibility]);
 
   const handlePurchase = async () => {
     setPurchasing(true);
@@ -200,6 +228,14 @@ export default function Premium() {
             <p className="mt-1.5 text-[14px] font-semibold text-white/80">
               Advanced tools for power users. Free forever for the basics.
             </p>
+            {!isPremium && iapAvailable && getIntroOffer(selectedPlan) && (
+              <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-4 py-2 text-[13px] font-bold ring-1 ring-white/30 backdrop-blur-sm">
+                <Sparkles className="h-4 w-4" />
+                {getIntroOffer(selectedPlan)!.isFreeTrial
+                  ? `${getIntroOffer(selectedPlan)!.durationLabel} free trial`
+                  : `Save with ${getIntroOffer(selectedPlan)!.durationLabel} intro`}
+              </div>
+            )}
             {isPremium && (
               <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-4 py-2 text-[13px] font-bold ring-1 ring-white/30 backdrop-blur-sm">
                 <ShieldCheck className="h-4 w-4" />
@@ -344,6 +380,7 @@ export default function Premium() {
             {PREMIUM_PLANS.map((p) => {
               const isSelected = selectedPlan === p.id;
               const priceLabel = getPriceLabel(p.id);
+              const intro = getIntroOffer(p.id);
               return (
                 <button
                   key={p.id}
@@ -380,10 +417,26 @@ export default function Premium() {
                           Best value
                         </span>
                       )}
+                      {intro && intro.isFreeTrial && (
+                        <span
+                          className={cn(
+                            "rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wide",
+                            isSelected ? "bg-emerald-400/20 text-emerald-200" : "bg-success/15 text-success",
+                          )}
+                        >
+                          Free trial
+                        </span>
+                      )}
                     </div>
-                    <p className={cn("mt-0.5 text-[13px]", isSelected ? "text-white/70" : "text-muted-foreground")}>
-                      {p.periodLabel}
-                    </p>
+                    {intro && intro.isFreeTrial ? (
+                      <p className={cn("mt-0.5 text-[13px] font-semibold", isSelected ? "text-emerald-200" : "text-success")}>
+                        {intro.durationLabel} free trial, then {priceLabel}
+                      </p>
+                    ) : (
+                      <p className={cn("mt-0.5 text-[13px]", isSelected ? "text-white/70" : "text-muted-foreground")}>
+                        {p.periodLabel}
+                      </p>
+                    )}
                     {p.savingsLabel && (
                       <p className={cn("mt-0.5 text-[12px] font-bold", isSelected ? "text-emerald-300" : "text-success")}>
                         {p.savingsLabel}
@@ -391,9 +444,19 @@ export default function Premium() {
                     )}
                   </div>
                   <div className="text-right">
+                    {intro && intro.isFreeTrial && (
+                      <p className={cn("text-[11px] font-bold uppercase tracking-wide", isSelected ? "text-emerald-200" : "text-success")}>
+                        Free
+                      </p>
+                    )}
                     <p className={cn("text-[22px] font-extrabold tabular", isSelected ? "text-white" : "text-foreground")}>
                       {priceLabel}
                     </p>
+                    {intro && intro.isFreeTrial && (
+                      <p className={cn("text-[11px] font-medium", isSelected ? "text-white/50" : "text-muted-foreground")}>
+                        after trial
+                      </p>
+                    )}
                   </div>
                 </button>
               );
@@ -432,6 +495,11 @@ export default function Premium() {
                 <>
                   <Loader2 className="mr-2 h-5 w-5 animate-spin" />
                   Processing…
+                </>
+              ) : getIntroOffer(selectedPlan)?.isFreeTrial ? (
+                <>
+                  <Sparkles className="mr-2 h-5 w-5" />
+                  Start {getIntroOffer(selectedPlan)!.durationLabel} free trial
                 </>
               ) : (
                 <>
@@ -475,6 +543,11 @@ export default function Premium() {
                 ? `${getPriceLabel("yearly")} per year — billed annually.`
                 : `${getPriceLabel("monthly")} per month — billed monthly.`}
             </p>
+            {getIntroOffer(selectedPlan)?.isFreeTrial && (
+              <p className="mt-1.5 text-[12.5px] font-semibold text-success">
+                Includes a {getIntroOffer(selectedPlan)!.durationLabel} free trial. You won't be charged until the trial ends. Your subscription automatically converts to the paid plan after the trial period unless you cancel at least 24 hours before the trial ends.
+              </p>
+            )}
             <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">
               This is an auto-renewable subscription. Payment is charged to your Apple App Store or
               Google Play account at confirmation of purchase. The subscription automatically renews

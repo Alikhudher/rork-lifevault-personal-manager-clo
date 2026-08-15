@@ -154,7 +154,7 @@ export default function BackupSync() {
     if (sync.status === "syncing")
       return { label: "Syncing", cls: "bg-amber-500/15 text-amber-700 dark:text-amber-300", icon: Loader2 };
     if (sync.status === "preparing")
-      return { label: "Connecting…", cls: "bg-blue-500/15 text-blue-700 dark:text-blue-300", icon: Cloud };
+      return { label: "Preparing…", cls: "bg-blue-500/15 text-blue-700 dark:text-blue-300", icon: Cloud };
     if (sync.status === "restoring")
       return { label: "Restoring…", cls: "bg-indigo-500/15 text-indigo-700 dark:text-indigo-300", icon: CloudDownload };
     if (sync.status === "offline")
@@ -163,12 +163,8 @@ export default function BackupSync() {
       return { label: "Sync failed", cls: "bg-destructive/15 text-destructive", icon: AlertTriangle };
     if (!sync.cloudUnlocked && !sync.autoRestoreComplete)
       return { label: "Connecting…", cls: "bg-muted text-muted-foreground", icon: Cloud };
-    if (sync.cloudUnlocked && !sync.isOnline)
-      return { label: "Offline", cls: "bg-muted text-muted-foreground", icon: WifiOff };
     if (sync.metadata?.lastBackupAt)
-      return { label: "Connected", cls: "bg-success/15 text-success", icon: CheckCircle2 };
-    if (sync.cloudUnlocked)
-      return { label: "Connected", cls: "bg-success/15 text-success", icon: CheckCircle2 };
+      return { label: "Up to date", cls: "bg-success/15 text-success", icon: CheckCircle2 };
     return { label: "Ready", cls: "bg-muted text-muted-foreground", icon: Cloud };
   })();
 
@@ -191,7 +187,7 @@ export default function BackupSync() {
         </section>
       )}
 
-      {/* Cloud status hero */}
+      {/* Backup status hero */}
       <section className="px-4 pt-4">
         <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[hsl(219,60%,15%)] to-[hsl(216,55%,28%)] p-5 text-white shadow-lg shadow-primary/15">
           <div className="pointer-events-none absolute -right-12 -top-12 h-40 w-40 rounded-full bg-white/10 blur-2xl" aria-hidden />
@@ -208,7 +204,7 @@ export default function BackupSync() {
                   const Icon = statusPill.icon;
                   return <Icon className={cn("h-3 w-3", busy && "animate-spin")} />;
                 })()}
-                Cloud: {statusPill.label}
+                {statusPill.label}
               </span>
             </div>
           </div>
@@ -275,12 +271,12 @@ export default function BackupSync() {
         <div className="grid grid-cols-2 gap-3">
           <Button
             onClick={() => {
-              if (!busy) void sync.backupNow();
+              if (!busy) void sync.syncNow();
             }}
             disabled={busy}
             className="h-[52px] rounded-2xl text-[14px] font-bold shadow-sm"
           >
-            <Cloud className={cn("mr-2 h-5 w-5", busy && "animate-spin")} /> Backup Now
+            <RefreshCw className={cn("mr-2 h-5 w-5", busy && "animate-spin")} /> Sync now
           </Button>
           <Button
             onClick={() => navigate("/restore")}
@@ -288,19 +284,7 @@ export default function BackupSync() {
             variant="outline"
             className="h-[52px] rounded-2xl text-[14px] font-bold"
           >
-            <CloudDownload className="mr-2 h-5 w-5" /> Restore from Cloud
-          </Button>
-        </div>
-        <div className="mt-3 grid grid-cols-1 gap-3">
-          <Button
-            onClick={() => {
-              if (!busy) void sync.syncNow();
-            }}
-            disabled={busy}
-            variant="ghost"
-            className="h-[44px] rounded-2xl text-[13px] font-bold"
-          >
-            <RefreshCw className={cn("mr-2 h-4 w-4", busy && "animate-spin")} /> Sync Changes (Incremental)
+            <CloudDownload className="mr-2 h-5 w-5" /> Restore
           </Button>
         </div>
         {!sync.cloudUnlocked && !sync.autoRestoreComplete && (
@@ -311,8 +295,7 @@ export default function BackupSync() {
         )}
         {sync.cloudUnlocked && (
           <p className="mt-3 text-center text-[12px] text-muted-foreground">
-            Changes are backed up automatically. Use Backup Now for a full backup, or Sync Changes
-            for an incremental sync.
+            Changes are backed up automatically. Use Sync now to force an immediate sync.
           </p>
         )}
         {sync.status === "offline" && (

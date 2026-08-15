@@ -65,6 +65,14 @@ const FREE_ICONS: Record<string, typeof Crown> = {
   Cloud,
 };
 
+/** Capitalize each part of a hyphenated duration label (e.g. "14-day" → "14-Day"). */
+function capitalizeDuration(label: string): string {
+  return label
+    .split("-")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("-");
+}
+
 export default function Premium() {
   const {
     isPremium,
@@ -232,7 +240,7 @@ export default function Premium() {
               <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-4 py-2 text-[13px] font-bold ring-1 ring-white/30 backdrop-blur-sm">
                 <Sparkles className="h-4 w-4" />
                 {getIntroOffer(selectedPlan)!.isFreeTrial
-                  ? `${getIntroOffer(selectedPlan)!.durationLabel} free trial`
+                  ? `${capitalizeDuration(getIntroOffer(selectedPlan)!.durationLabel)} Free Trial`
                   : `Save with ${getIntroOffer(selectedPlan)!.durationLabel} intro`}
               </div>
             )}
@@ -430,7 +438,7 @@ export default function Premium() {
                     </div>
                     {intro && intro.isFreeTrial ? (
                       <p className={cn("mt-0.5 text-[13px] font-semibold", isSelected ? "text-emerald-200" : "text-success")}>
-                        {intro.durationLabel} free trial, then {priceLabel}
+                        {capitalizeDuration(intro.durationLabel)} free trial, then {priceLabel}
                       </p>
                     ) : (
                       <p className={cn("mt-0.5 text-[13px]", isSelected ? "text-white/70" : "text-muted-foreground")}>
@@ -485,29 +493,46 @@ export default function Premium() {
       {!isPremium && (
         <section className="px-4 pt-6">
           {iapAvailable ? (
-            <Button
-              onClick={handlePurchase}
-              disabled={purchasing}
-              className="h-13 w-full rounded-2xl bg-gradient-to-r from-[hsl(43,90%,55%)] to-[hsl(33,85%,48%)] py-3.5 text-[15px] font-extrabold text-white shadow-lg shadow-amber-500/25 transition-transform active:scale-[0.98]"
-              style={{ height: "52px" }}
-            >
-              {purchasing ? (
-                <>
-                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                  Processing…
-                </>
-              ) : getIntroOffer(selectedPlan)?.isFreeTrial ? (
-                <>
-                  <Sparkles className="mr-2 h-5 w-5" />
-                  Start {getIntroOffer(selectedPlan)!.durationLabel} free trial
-                </>
+            <>
+              <Button
+                onClick={handlePurchase}
+                disabled={purchasing}
+                className="h-13 w-full rounded-2xl bg-gradient-to-r from-[hsl(43,90%,55%)] to-[hsl(33,85%,48%)] py-3.5 text-[15px] font-extrabold text-white shadow-lg shadow-amber-500/25 transition-transform active:scale-[0.98]"
+                style={{ height: "52px" }}
+              >
+                {purchasing ? (
+                  <>
+                    <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                    Processing…
+                  </>
+                ) : getIntroOffer(selectedPlan)?.isFreeTrial ? (
+                  <>
+                    <Sparkles className="mr-2 h-5 w-5" />
+                    Start {capitalizeDuration(getIntroOffer(selectedPlan)!.durationLabel)} Free Trial
+                  </>
+                ) : (
+                  <>
+                    <Crown className="mr-2 h-5 w-5" />
+                    Continue with {selectedPlan === "yearly" ? "Yearly" : "Monthly"}
+                  </>
+                )}
+              </Button>
+              {/* Price after trial + auto-renew notice — directly below the button */}
+              {getIntroOffer(selectedPlan)?.isFreeTrial ? (
+                <div className="mt-2.5 text-center">
+                  <p className="text-[13px] font-bold text-muted-foreground">
+                    Then {getPriceLabel(selectedPlan)}{selectedPlan === "yearly" ? "/year" : "/month"} after your free trial
+                  </p>
+                  <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
+                    Auto-renews after the trial unless cancelled at least 24 hours before it ends.
+                  </p>
+                </div>
               ) : (
-                <>
-                  <Crown className="mr-2 h-5 w-5" />
-                  Continue with {selectedPlan === "yearly" ? "Yearly" : "Monthly"}
-                </>
+                <p className="mt-2.5 text-center text-[13px] font-bold text-muted-foreground">
+                  {getPriceLabel(selectedPlan)}{selectedPlan === "yearly" ? "/year" : "/month"} · auto-renews unless cancelled
+                </p>
               )}
-            </Button>
+            </>
           ) : (
             <div className="rounded-2xl bg-muted/50 px-4 py-5 text-center ring-1 ring-border">
               <p className="text-[13px] font-bold text-muted-foreground">
@@ -523,7 +548,7 @@ export default function Premium() {
               type="button"
               onClick={handleRestore}
               disabled={restoring || purchasing}
-              className="mt-3 w-full text-center text-[13px] font-bold text-muted-foreground transition-colors hover:text-foreground active:scale-95"
+              className="mt-4 w-full text-center text-[13px] font-bold text-muted-foreground transition-colors hover:text-foreground active:scale-95"
             >
               {restoring ? "Restoring…" : "Restore purchases"}
             </button>
@@ -545,7 +570,7 @@ export default function Premium() {
             </p>
             {getIntroOffer(selectedPlan)?.isFreeTrial && (
               <p className="mt-1.5 text-[12.5px] font-semibold text-success">
-                Includes a {getIntroOffer(selectedPlan)!.durationLabel} free trial. You won't be charged until the trial ends. Your subscription automatically converts to the paid plan after the trial period unless you cancel at least 24 hours before the trial ends.
+                Includes a {capitalizeDuration(getIntroOffer(selectedPlan)!.durationLabel)} free trial. You won't be charged until the trial ends. Your subscription automatically converts to the paid plan after the trial period unless you cancel at least 24 hours before the trial ends.
               </p>
             )}
             <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">

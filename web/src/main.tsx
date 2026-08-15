@@ -21,4 +21,26 @@ void ensureKeyboardResizeNone();
 // keyboard is open blurs the field and hides the keyboard (iOS-style).
 installInteractiveKeyboardDismiss();
 
+// Suppress cross-origin "Script error." reports that originate from preview
+// environment injected scripts (e.g. React Grab). Browsers report these as the
+// literal string "Script error." with no stack trace due to same-origin policy.
+// They are not app bugs and should not surface as runtime errors.
+if (typeof window !== "undefined") {
+  const isCrossOriginScriptError = (message: unknown): boolean =>
+    typeof message === "string" && message.toLowerCase().startsWith("script error");
+
+  window.addEventListener("error", (event: ErrorEvent) => {
+    if (isCrossOriginScriptError(event.message) && event.filename === "" && event.lineno === 0) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
+
+  window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
+    if (isCrossOriginScriptError(event.reason)) {
+      event.preventDefault();
+    }
+  });
+}
+
 createRoot(document.getElementById("root")!).render(<App />);

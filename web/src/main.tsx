@@ -4,12 +4,19 @@ import App from "./App.tsx";
 import "./index.css";
 import { ensureKeyboardResizeNone, installInteractiveKeyboardDismiss } from "./lib/keyboard";
 import { installStaleChunkRecovery } from "./lib/stale-chunk-recovery";
+import { installScriptErrorSuppression } from "./lib/script-error-suppression";
 
 // Every deploy rotates the hashed chunk filenames; a tab still holding the
 // previous HTML then fails lazy imports with "Failed to fetch dynamically
 // imported module". Install recovery FIRST so any such failure triggers one
 // automatic reload onto the fresh build instead of a dead app.
 installStaleChunkRecovery();
+
+// Suppress cross-origin "Script error." reported by the preview iframe's
+// monitoring scripts (React Grab). This module runs as a deferred ES module,
+// so it executes AFTER React Grab has installed its own window.onerror —
+// wrapping it makes our filter the final handler. No-op in production.
+installScriptErrorSuppression();
 
 // Force the keyboard into "overlay" (none) resize mode at runtime. The
 // Capacitor config also sets this, but setResizeMode is a hard guarantee that

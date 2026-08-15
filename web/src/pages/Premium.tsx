@@ -84,6 +84,20 @@ function formatDurationWords(intro: IntroOfferInfo): string {
   return `${n} ${unit}${n > 1 ? "s" : ""}`;
 }
 
+/**
+ * Preview intro offer shown when IAP is unavailable (web preview).
+ * Lets the paywall design be reviewed in the browser. On native iOS,
+ * the real introductory offer from RevenueCat/App Store is used instead.
+ */
+const PREVIEW_INTRO_OFFER: IntroOfferInfo = {
+  durationLabel: "7-day",
+  isFreeTrial: true,
+  priceString: "Free",
+  cycles: 1,
+  periodUnit: "DAY",
+  periodNumberOfUnits: 7,
+};
+
 export default function Premium() {
   const {
     isPremium,
@@ -168,11 +182,20 @@ export default function Premium() {
   }, [offering]);
 
   /**
-   * Get the introductory offer info for a plan, if the user is eligible.
-   * Returns null when there's no intro offer, or the user has already used it.
+   * Get the introductory offer info for a plan.
+   *
+   * On native: returns the real intro offer from RevenueCat when the user
+   * is eligible (Apple determines eligibility server-side).
+   *
+   * On web preview: returns a static 7-day free trial preview so the
+   * paywall design can be reviewed in the browser. This does NOT affect
+   * actual purchases — web purchases remain disabled.
    */
   const getIntroOffer = useMemo(() => {
     return (planId: PlanId): IntroOfferInfo | null => {
+      // Web preview: return the static preview offer for design review.
+      if (!iapAvailable) return PREVIEW_INTRO_OFFER;
+      // Native: use the real RevenueCat intro offer + eligibility.
       const pkg = findPackageForPlan(offering, planId);
       if (!pkg) return null;
       const intro = getIntroOfferInfo(pkg.product.introPrice);
@@ -180,7 +203,7 @@ export default function Premium() {
       if (!isEligibleForIntro(introEligibility, planId)) return null;
       return intro;
     };
-  }, [offering, introEligibility]);
+  }, [offering, introEligibility, iapAvailable]);
 
   const handlePurchase = async () => {
     setPurchasing(true);
@@ -247,7 +270,7 @@ export default function Premium() {
             <p className="mt-1.5 text-[14px] font-semibold text-white/80">
               Advanced tools for power users. Free forever for the basics.
             </p>
-            {!isPremium && iapAvailable && getIntroOffer(selectedPlan) && (
+            {!isPremium && getIntroOffer(selectedPlan) && (
               <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-4 py-2 text-[13px] font-bold ring-1 ring-white/30 backdrop-blur-sm">
                 <Sparkles className="h-4 w-4" />
                 {getIntroOffer(selectedPlan)!.isFreeTrial
@@ -395,6 +418,20 @@ export default function Premium() {
       {!isPremium && (
         <section className="px-4 pt-6">
           <SectionTitle>Choose your plan</SectionTitle>
+
+          {/* Free trial badge — visible on all platforms including web preview */}
+          {getIntroOffer(selectedPlan)?.isFreeTrial && (
+            <div className="mb-3 flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500/10 to-teal-500/10 px-4 py-3 ring-1 ring-emerald-500/20">
+              <Sparkles className="h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+              <p className="text-[13px] font-extrabold text-emerald-700 dark:text-emerald-300">
+                7-Day Free Trial
+                <span className="ml-1.5 font-semibold text-emerald-600/80 dark:text-emerald-400/80">
+                  — no charge until it ends
+                </span>
+              </p>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 gap-3">
             {PREMIUM_PLANS.map((p) => {
               const isSelected = selectedPlan === p.id;

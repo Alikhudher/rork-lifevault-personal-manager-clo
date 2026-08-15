@@ -2,47 +2,6 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <script>
-      // ── Prevent cross-origin "Script error." at its source ────────
-      // The preview iframe injects a React Grab loader BEFORE our HTML.
-      // That loader creates a <script async=false> tag pointing to
-      // unpkg.com/react-grab (cross-origin). React Grab throws during
-      // execution, and because it's cross-origin the browser reports
-      // "Script error." — which the preview system surfaces as a
-      // runtime error. Event suppression doesn't work because the
-      // preview likely monitors via CDP, which can't be intercepted
-      // from JS.
-      //
-      // Fix: remove the React Grab script tag before it executes.
-      // async=false scripts wait for synchronous scripts to finish,
-      // so the tag is in the DOM but hasn't run yet when this code
-      // executes. Removing it prevents the error entirely.
-      (function () {
-        var scripts = document.querySelectorAll(
-          'script[src*="react-grab"], script[src*="grab@"]'
-        );
-        for (var i = 0; i < scripts.length; i++) {
-          scripts[i].remove();
-        }
-
-        // Belt & suspenders: also suppress any "Script error." events
-        // that might come from other cross-origin sources.
-        window.addEventListener('error', function (e) {
-          if (typeof e.message === 'string' &&
-              e.message.toLowerCase() === 'script error.') {
-            e.stopImmediatePropagation();
-            e.preventDefault();
-          }
-        }, true);
-
-        window.onerror = function (msg) {
-          if (typeof msg === 'string' &&
-              msg.toLowerCase() === 'script error.') {
-            return true;
-          }
-        };
-      })();
-    </script>
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"

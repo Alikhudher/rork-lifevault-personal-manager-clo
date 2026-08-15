@@ -73,6 +73,17 @@ function capitalizeDuration(label: string): string {
     .join("-");
 }
 
+/** Format the intro trial duration as lowercase words, e.g. "7 days", "1 week", "3 months". */
+function formatDurationWords(intro: IntroOfferInfo): string {
+  const unit = intro.periodUnit.toLowerCase();
+  const n = intro.periodNumberOfUnits;
+  if (unit === "day") return n === 1 ? "1 day" : `${n} days`;
+  if (unit === "week") return n === 1 ? "1 week" : `${n} weeks`;
+  if (unit === "month") return n === 1 ? "1 month" : `${n} months`;
+  if (unit === "year") return n === 1 ? "1 year" : `${n} years`;
+  return `${n} ${unit}${n > 1 ? "s" : ""}`;
+}
+
 export default function Premium() {
   const {
     isPremium,
@@ -438,7 +449,7 @@ export default function Premium() {
                     </div>
                     {intro && intro.isFreeTrial ? (
                       <p className={cn("mt-0.5 text-[13px] font-semibold", isSelected ? "text-emerald-200" : "text-success")}>
-                        {capitalizeDuration(intro.durationLabel)} free trial, then {priceLabel}
+                        {formatDurationWords(intro)} free, then {priceLabel}{p.id === "yearly" ? "/year" : "/month"}
                       </p>
                     ) : (
                       <p className={cn("mt-0.5 text-[13px]", isSelected ? "text-white/70" : "text-muted-foreground")}>
@@ -513,7 +524,7 @@ export default function Premium() {
                 ) : (
                   <>
                     <Crown className="mr-2 h-5 w-5" />
-                    Continue with {selectedPlan === "yearly" ? "Yearly" : "Monthly"}
+                    Subscribe
                   </>
                 )}
               </Button>
@@ -521,7 +532,7 @@ export default function Premium() {
               {getIntroOffer(selectedPlan)?.isFreeTrial ? (
                 <div className="mt-2.5 text-center">
                   <p className="text-[13px] font-bold text-muted-foreground">
-                    Then {getPriceLabel(selectedPlan)}{selectedPlan === "yearly" ? "/year" : "/month"} after your free trial
+                    {formatDurationWords(getIntroOffer(selectedPlan)!)} free, then {getPriceLabel(selectedPlan)}{selectedPlan === "yearly" ? "/year" : "/month"}
                   </p>
                   <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
                     Auto-renews after the trial unless cancelled at least 24 hours before it ends.

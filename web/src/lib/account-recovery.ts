@@ -285,7 +285,10 @@ export async function verifyEmailCode(
     if (isNetwork(msg)) {
       return verifyWithDirectFallback(client, email, code, actionType);
     }
-    return { ok: false, error: `Couldn't check the code — ${extractAuthErrorDetail(err).detail}.` };
+    // Non-network exceptions from verifyOtp — log the real error but show
+    // a user-friendly message. Raw backend errors must never reach the UI.
+    console.warn("[AccountSecurity] Verification error detail:", extractAuthErrorDetail(err).detail);
+    return { ok: false, error: "Incorrect or expired verification code. Please try again.", code: "invalid_code" };
   }
 }
 

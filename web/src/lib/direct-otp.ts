@@ -76,9 +76,15 @@ export async function verifyDirectOtp(
   actionType: DirectOtpAction,
 ): Promise<DirectOtpVerifyResponse> {
   const result = await invokeOtp<DirectOtpVerifyResult>({ action: "verify", email, code, actionType });
-  if (result.ok === false) return result;
+  if (result.ok === false) {
+    // Log the real backend error for diagnostics, but return a user-friendly
+    // message — raw errors like "Edge Function returned a non-2xx status code"
+    // must never reach the UI.
+    console.warn("[DirectOTP] Verification failed:", result.error);
+    return { ok: false, error: "Incorrect or expired verification code. Please try again." };
+  }
   if (typeof result.tempPassword === "string") {
     return { ok: true, tempPassword: result.tempPassword };
   }
-  return { ok: false, error: "The fallback verification returned an unexpected response." };
+  return { ok: false, error: "Incorrect or expired verification code. Please try again." };
 }

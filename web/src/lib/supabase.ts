@@ -283,7 +283,7 @@ export function createEphemeralClient(): SupabaseClient | null {
       global: { fetch: fetchWithTimeout },
     });
   } catch (err) {
-    console.error(
+    console.warn(
       "[CloudBackup] Failed to create ephemeral Supabase client:",
       err instanceof Error ? err.message : err,
     );
@@ -312,7 +312,7 @@ export function getSupabase(): SupabaseClient | null {
       console.log("[CloudBackup] Supabase client initialised (request timeout 30s)");
     } catch (err) {
       clientCreationFailed = true;
-      console.error(
+      console.warn(
         "[CloudBackup] Failed to create Supabase client:",
         err instanceof Error ? err.message : err,
       );

@@ -558,7 +558,7 @@ async function chatComplete(
   // missing config so the user sees a clear error instead of a server denial.
   const isPlaceholderSecret = TOOLKIT_SECRET === "rork_web_delegated_auth";
   if (isNativeApp() && (!TOOLKIT_SECRET || isPlaceholderSecret)) {
-    console.error(
+    console.warn(
       "[ai] Native build missing real RORK_TOOLKIT_SECRET_KEY. " +
         "The TestFlight / App Store bundle must be built with a valid " +
         "EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY or VITE_RORK_TOOLKIT_SECRET_KEY.",
@@ -597,7 +597,7 @@ async function chatComplete(
     } catch {
       // ignore
     }
-    console.error(
+    console.warn(
       `[ai] HTTP ${res.status} from gateway | model=${MODEL_ID} | body=${detail.slice(0, 500)} | reqMsgs=${reqSummary}`,
     );
     const err = new Error(

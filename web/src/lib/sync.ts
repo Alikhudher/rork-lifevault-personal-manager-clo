@@ -221,7 +221,7 @@ export async function backupAll(
 
     return { ok: true, disabled: false, uploaded: total, downloaded: 0, conflicts: 0 };
   } catch (err) {
-    console.error(
+    console.warn(
       `[CloudBackup] backupAll failed after ${done}/${total} records:`,
       err instanceof Error ? err.message : err,
     );
@@ -330,7 +330,7 @@ export async function restoreAll(
     }
     return { ok: true, disabled: false, records };
   } catch (err) {
-    console.error("[CloudBackup] restoreAll failed:", err instanceof Error ? err.message : err);
+    console.warn("[CloudBackup] restoreAll failed:", err instanceof Error ? err.message : err);
     return {
       ok: false,
       disabled: false,
@@ -481,7 +481,7 @@ export async function syncIncremental(
       remoteNewer,
     };
   } catch (err) {
-    console.error("[CloudBackup] syncIncremental failed:", err instanceof Error ? err.message : err);
+    console.warn("[CloudBackup] syncIncremental failed:", err instanceof Error ? err.message : err);
     return {
       ok: false,
       disabled: false,
@@ -539,12 +539,12 @@ export async function storeSalt(salt: string): Promise<{ ok: boolean; error?: st
       .from(TABLE_STATE)
       .upsert({ user_id: userId, salt }, { onConflict: "user_id" });
     if (error) {
-      console.error("[CloudBackup] storeSalt failed:", error.message);
+      console.warn("[CloudBackup] storeSalt failed:", error.message);
       return { ok: false, error: error.message };
     }
     return { ok: true };
   } catch (err) {
-    console.error("[CloudBackup] storeSalt threw:", err instanceof Error ? err.message : err);
+    console.warn("[CloudBackup] storeSalt threw:", err instanceof Error ? err.message : err);
     return { ok: false, error: err instanceof Error ? err.message : "Could not store encryption salt." };
   }
 }
@@ -575,14 +575,14 @@ export async function fetchSalt(): Promise<SaltFetchResult> {
       .eq("user_id", userId)
       .maybeSingle();
     if (error) {
-      console.error("[CloudBackup] fetchSalt query failed:", error.message);
+      console.warn("[CloudBackup] fetchSalt query failed:", error.message);
       return { ok: false, salt: null, error: error.message };
     }
     const row = data as { salt: string | null } | null;
     const salt = row?.salt ?? null;
     return { ok: true, salt: salt && salt.length > 0 ? salt : null };
   } catch (err) {
-    console.error("[CloudBackup] fetchSalt threw:", err instanceof Error ? err.message : err);
+    console.warn("[CloudBackup] fetchSalt threw:", err instanceof Error ? err.message : err);
     return {
       ok: false,
       salt: null,
@@ -679,7 +679,7 @@ export async function wipeCloudRecords(): Promise<{ ok: boolean; error?: string 
   try {
     const { error } = await sb.from(TABLE_RECORDS).delete().eq("user_id", userId);
     if (error) {
-      console.error("[CloudBackup] wipeCloudRecords failed:", error.message);
+      console.warn("[CloudBackup] wipeCloudRecords failed:", error.message);
       return { ok: false, error: error.message };
     }
     return { ok: true };

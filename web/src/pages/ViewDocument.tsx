@@ -303,7 +303,7 @@ function PdfViewer({ src, fileName }: { src: string; fileName: string }) {
         setLoading(false);
       } catch (err) {
         if (cancelled) return;
-        console.error("PDF load failed", err);
+        console.warn("PDF load failed", err);
         setError("Could not open this PDF.");
         setLoading(false);
       }

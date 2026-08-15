@@ -561,7 +561,7 @@ export default function Profile() {
         description: `${docCount} doc(s)${fileCount > 0 ? ` (${fileCount} with files)` : ""}, ${expCount} expense(s), ${subCount} subscription(s), ${aptCount} appointment(s) restored`,
       });
     } catch (err) {
-      console.error("[Import] Failed:", err);
+      console.warn("[Import] Failed:", err);
       toast.error("Import failed", {
         description: "Could not read this file. Make sure it's a valid LifeVault export.",
       });

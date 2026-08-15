@@ -121,7 +121,7 @@ export default function Premium() {
         if (!mounted) return;
         setProductCount(products.length);
         if (products.length === 0) {
-          console.error(
+          console.warn(
             "[Premium] StoreKit returned ZERO products. " +
               "Check App Store Connect: products must be in 'Ready to Submit' " +
               "or 'Approved' status, with a valid price tier, and the bundle ID " +

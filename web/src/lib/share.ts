@@ -46,7 +46,7 @@ async function dataUrlToCacheFile(
     const uri = await Filesystem.getUri({ path, directory: Directory.Cache });
     return uri.uri; // file:// URI
   } catch (err) {
-    console.error("dataUrlToCacheFile failed", err);
+    console.warn("dataUrlToCacheFile failed", err);
     return null;
   }
 }

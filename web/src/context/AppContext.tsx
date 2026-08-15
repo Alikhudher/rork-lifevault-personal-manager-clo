@@ -288,7 +288,7 @@ function loadState(): PersistedState {
       lastEmail: parsed.lastEmail ?? parsed.user?.email ?? null,
     });
   } catch (error) {
-    console.error("Failed to load saved state, starting fresh", error);
+    console.warn("Failed to load saved state, starting fresh", error);
     return freshSeed();
   }
 }
@@ -482,7 +482,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }));
         console.log(`[Auth] Migrated ${upgraded.size} account(s) to hashed passwords`);
       } catch (error) {
-        console.error("[Auth] Password hash migration failed", error);
+        console.warn("[Auth] Password hash migration failed", error);
       }
     })();
     return () => {

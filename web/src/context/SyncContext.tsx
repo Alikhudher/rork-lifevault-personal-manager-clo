@@ -195,7 +195,7 @@ function cloudLog(step: string): void {
 }
 
 function cloudError(step: string, err: unknown): void {
-  console.error(
+  console.warn(
     `[CloudBackup] ${step}:`,
     err instanceof Error ? `${err.name}: ${err.message}` : err,
   );

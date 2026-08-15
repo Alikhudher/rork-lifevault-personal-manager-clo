@@ -207,7 +207,7 @@ export async function requestEmailCode(
         console.warn("[AccountSecurity] Code send rate-limited:", logPayload);
         return { ok: false, ...describeSendFailure(error) };
       }
-      console.error("[AccountSecurity] Code send failed:", logPayload);
+      console.warn("[AccountSecurity] Code send failed:", logPayload);
       // Fall back to direct Brevo delivery if Auth's hook is unavailable.
       console.warn("[AccountSecurity] Trying direct OTP fallback after Auth send failure");
       const fallback = await sendDirectOtp(email, actionType);
@@ -220,7 +220,7 @@ export async function requestEmailCode(
     console.log("[AccountSecurity] Verification code accepted by the mail server");
     return { ok: true };
   } catch (err) {
-    console.error("[AccountSecurity] Code send threw:", messageOf(err));
+    console.warn("[AccountSecurity] Code send threw:", messageOf(err));
     // Network / timeout / other transient failures can also use the fallback.
     const fallback = await sendDirectOtp(email, actionType);
     if (fallback.ok === false) {
@@ -264,7 +264,7 @@ export async function verifyEmailCode(
         return { ok: false, error: describeSendFailure(error).error, code: "rate_limited" };
       }
       if (d && (d.transient || isNetwork(d.detail))) {
-        console.error("[AccountSecurity] Code verification failed:", msg);
+        console.warn("[AccountSecurity] Code verification failed:", msg);
         // Network / service errors can use the direct fallback.
         return verifyWithDirectFallback(client, email, code, actionType);
       }
@@ -281,7 +281,7 @@ export async function verifyEmailCode(
     };
   } catch (err) {
     const msg = messageOf(err);
-    console.error("[AccountSecurity] Code verification threw:", msg);
+    console.warn("[AccountSecurity] Code verification threw:", msg);
     if (isNetwork(msg)) {
       return verifyWithDirectFallback(client, email, code, actionType);
     }
@@ -315,7 +315,7 @@ async function verifyWithDirectFallback(
     );
     if (error || !data.session?.user) {
       const detail = error ? extractAuthErrorDetail(error).detail : "No session returned";
-      console.error("[AccountSecurity] Fallback sign-in failed:", detail);
+      console.warn("[AccountSecurity] Fallback sign-in failed:", detail);
       return {
         ok: false,
         error: "The code was verified, but we couldn't sign you in. Please try again.",
@@ -328,7 +328,7 @@ async function verifyWithDirectFallback(
       session: { client, userId: data.session.user.id, email },
     };
   } catch (err) {
-    console.error("[AccountSecurity] Fallback sign-in threw:", messageOf(err));
+    console.warn("[AccountSecurity] Fallback sign-in threw:", messageOf(err));
     return {
       ok: false,
       error: "The code was verified, but sign-in failed. Check your internet connection and try again.",
@@ -420,7 +420,7 @@ export async function verifyCloudPassword(email: string, password: string): Prom
         };
       }
       const d = extractAuthErrorDetail(error);
-      console.error("[AccountSecurity] Password verification failed:", d.detail);
+      console.warn("[AccountSecurity] Password verification failed:", d.detail);
       return {
         ok: false,
         error:
@@ -435,7 +435,7 @@ export async function verifyCloudPassword(email: string, password: string): Prom
     return { ok: true };
   } catch (err) {
     const msg = messageOf(err);
-    console.error("[AccountSecurity] Password verification threw:", msg);
+    console.warn("[AccountSecurity] Password verification threw:", msg);
     return {
       ok: false,
       error: isNetwork(msg)

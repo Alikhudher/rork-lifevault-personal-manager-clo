@@ -129,7 +129,7 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
           setPremium(state);
         }
       } catch (err) {
-        console.error("[Premium] Failed to check subscription on launch:", err);
+        console.warn("[Premium] Failed to check subscription on launch:", err);
       } finally {
         if (mounted) setCheckingStatus(false);
       }
@@ -192,7 +192,7 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
         }
         lastAppUserIdRef.current = appUserID;
       } catch (err) {
-        console.error("[Premium] Failed to sync RevenueCat identity:", err);
+        console.warn("[Premium] Failed to sync RevenueCat identity:", err);
       } finally {
         setCheckingStatus(false);
       }

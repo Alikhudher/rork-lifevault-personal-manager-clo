@@ -51,7 +51,7 @@ async function invokeOtp<T>(body: Record<string, unknown>): Promise<T | DirectOt
       "Sending the verification code (fallback)",
     );
     if (error) {
-      console.error("[DirectOTP] Edge function error:", error);
+      console.warn("[DirectOTP] Edge function error:", error);
       return { ok: false, error: describeInvokeError(error) };
     }
     if (!data || typeof data !== "object") {
@@ -59,7 +59,7 @@ async function invokeOtp<T>(body: Record<string, unknown>): Promise<T | DirectOt
     }
     return data as T;
   } catch (err) {
-    console.error("[DirectOTP] Invoke threw:", err);
+    console.warn("[DirectOTP] Invoke threw:", err);
     return { ok: false, error: describeInvokeError(err) };
   }
 }

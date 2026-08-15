@@ -85,7 +85,7 @@ export function installStaleChunkRecovery(options: RecoveryOptions = {}): void {
 
   const recover = (source: string, detail: unknown): boolean => {
     if (!shouldAttemptReload(Date.now(), storage)) {
-      console.error(
+      console.warn(
         `[stale-chunk] ${source}: chunks still failing right after a recovery reload — not looping. Original error:`,
         detail,
       );

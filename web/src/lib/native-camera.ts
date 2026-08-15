@@ -224,7 +224,7 @@ export async function captureImage(
         return null;
       }
       const msg = err instanceof Error ? err.message : String(err);
-      console.error("[native-camera] capture failed:", source, msg);
+      console.warn("[native-camera] capture failed:", source, msg);
       toast.error("Could not capture that photo. Please try again.");
       return null;
     }

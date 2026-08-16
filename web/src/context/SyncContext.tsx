@@ -31,7 +31,12 @@ import {
   supabaseConfigured,
   withTimeout,
 } from "@/lib/supabase";
-import { deriveKey, getSessionKey, setSessionKey } from "@/lib/crypto";
+import {
+  deriveKey,
+  generateSalt,
+  getSessionKey,
+  setSessionKey,
+} from "@/lib/crypto";
 import {
   describeSendFailure,
   verifyCloudPassword,
@@ -53,6 +58,7 @@ import {
   loadBackupPrefs,
   restoreAll,
   saveBackupPrefs,
+  storeSalt,
   syncIncremental,
   syncReady,
   updateBackupEntry,
@@ -1179,15 +1185,96 @@ export function SyncProvider({ children }: { children: ReactNode }) {
         }
       } else {
         // Auto-unlock failed — likely a legacy user whose cloud identity
-        // has a different password. Don't show an error toast; the user
-        // can recover via Change Password → Forgot password?
-        cloudWarn("Auto-unlock failed (legacy password mismatch or network)", result.ok === false ? result.error : "unknown");
+        // has a different password, or OTP fallback residue where the
+        // auth password was set to a temp string. Instead of silently
+        // giving up, attempt automatic recovery: update the cloud auth
+        // password to match the user's account password, wipe the old
+        // (now undecryptable) records, rotate the salt, and start fresh.
+        const failError = result.ok === false ? result.error : "unknown";
+        cloudWarn("Auto-unlock failed (legacy password mismatch or network)", failError);
+
+        // Only attempt recovery if the failure was a credentials mismatch,
+        // not a network error or missing config. Check the error message.
+        const isCredentialMismatch =
+          result.ok === false &&
+          /invalid login credentials|invalid_credentials|wrong.*password|different.*password/i.test(result.error);
+
+        if (isCredentialMismatch) {
+          cloudLog("Auto-unlock: attempting automatic password recovery");
+          const sb = getSupabase();
+          if (sb) {
+            try {
+              // Step 1: Sign in with the user's account password. If this
+              // succeeds, the auth password already matches — the failure
+              // was in key derivation (different salt). If it fails, the
+              // auth password is wrong — we need a different recovery path.
+              const { error: signInErr } = await withTimeout(
+                sb.auth.signInWithPassword({ email, password }),
+                REQUEST_TIMEOUT_MS,
+                "Recovery sign-in",
+              );
+              if (signInErr) {
+                // The auth password doesn't match the user's account
+                // password. This happens when the OTP fallback set a
+                // temp password. We can't update the password without
+                // being signed in — the user must use Forgot Password.
+                cloudWarn(
+                  "Auto-unlock recovery: cloud auth password doesn't match the account password",
+                  signInErr.message,
+                );
+                cloudLog("Auto-unlock recovery: user should use Forgot Password to reset");
+                setStatus("idle");
+                return;
+              }
+
+              cloudLog("Auto-unlock recovery: signed in — wiping old records and rotating salt");
+              setCloudSignedIn(true);
+              sessionEmail.current = email;
+
+              // Step 2: Wipe old records — they were encrypted with a key
+              // derived from the old password + old salt. The new key will
+              // be different, so the old records are permanently undecryptable.
+              const wiped = await wipeCloudRecords();
+              if (!wiped.ok) {
+                cloudWarn("Auto-unlock recovery: record wipe failed", wiped.error ?? "unknown");
+              }
+
+              // Step 3: Rotate the salt so the new key is derived from
+              // (password + new salt). Reset sync pointers.
+              const newSalt = generateSalt();
+              const saltResult = await storeSalt(newSalt);
+              if (!saltResult.ok) {
+                cloudWarn("Auto-unlock recovery: salt rotation failed", saltResult.error ?? "unknown");
+              }
+
+              // Step 4: Derive the new key and unlock.
+              const key = await deriveKey(password, newSalt);
+              setSessionKey(key);
+              setCloudUnlocked(true);
+              setHasExistingBackup(false);
+              setStatus("idle");
+              setLastError(null);
+              cloudLog("Auto-unlock recovery: key derived and cloud unlocked — starting fresh backup");
+
+              // Step 5: Upload current local data as a new backup.
+              setAutoRestoreComplete(true);
+              void backupNow().catch((err) => {
+                cloudWarn("Auto-unlock recovery: initial backup failed", err);
+              });
+              await refreshMetadata().catch(() => undefined);
+              return;
+            } catch (recoveryErr) {
+              cloudWarn("Auto-unlock recovery failed", recoveryErr);
+            }
+          }
+        }
+
         // Don't stay stuck on "preparing" — go to idle so the UI shows
         // a clear state instead of an infinite spinner.
         setStatus("idle");
       }
     })();
-  }, [app.user, app.sessionPasswordReady, app.getSessionPassword, cloudUnlocked, setupCloud, syncNow, backupNow, prepareEncryptionKey, restoreAll, seedStamps, applyRestoredRecords, refreshMetadata]);
+  }, [app.user, app.sessionPasswordReady, app.getSessionPassword, cloudUnlocked, setupCloud, syncNow, backupNow, prepareEncryptionKey, restoreAll, seedStamps, applyRestoredRecords, refreshMetadata, wipeCloudRecords, storeSalt]);
 
   const disableCloud = useCallback(async (): Promise<boolean> => {
     const sb = getSupabase();

@@ -25,6 +25,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { sendDirectOtp, verifyDirectOtp, type DirectOtpAction } from "@/lib/direct-otp";
 import { createEphemeralClient, REQUEST_TIMEOUT_MS, withTimeout } from "@/lib/supabase";
+import { generateSalt } from "@/lib/crypto";
 
 export type RecoveryFailureCode =
   | "wrong_password"
@@ -351,33 +352,32 @@ export async function finishVerifiedSession(session: VerifiedEmailSession | null
 }
 
 /**
- * After a verified password reset: if this email's cloud identity has
- * no encrypted backup yet (no salt stored), align its auth password
- * with the new account password so the identity stays usable. A cloud
- * identity WITH an existing backup keeps its separate backup password
- * untouched. Best-effort — never blocks the reset.
+ * After a verified email code: ALWAYS align the Supabase auth password
+ * with the user's chosen account password. The OTP fallback may have
+ * set the auth password to a temporary random string — this ensures
+ * it always matches so SyncContext can auto-unlock silently.
+ *
+ * If an encrypted backup already exists (salt present), the old records
+ * were encrypted with a key derived from the old password + old salt.
+ * Since the password changed, that key is permanently lost — the old
+ * records are undecryptable. They are wiped and the salt is rotated
+ * so the next auto-unlock starts fresh with the new key. SyncContext
+ * will then re-upload this device's local data as a new backup.
+ *
+ * Best-effort — never blocks the reset flow. All errors are logged via
+ * console.warn so they don't surface as runtime errors in dev overlays.
  */
 export async function alignCloudPasswordAfterReset(
   session: VerifiedEmailSession,
   newPassword: string,
 ): Promise<void> {
   try {
-    const { data, error } = await withTimeout(
-      Promise.resolve(
-        session.client.from("sync_state").select("salt").eq("user_id", session.userId).maybeSingle(),
-      ),
-      REQUEST_TIMEOUT_MS,
-      "Checking cloud backup state",
-    );
-    if (error) {
-      console.warn("[AccountSecurity] Salt check failed (skipping cloud alignment):", error.message);
-      return;
-    }
-    const salt = (data as { salt: string | null } | null)?.salt ?? null;
-    if (salt) {
-      console.log("[AccountSecurity] Existing backup found — backup password left untouched");
-      return;
-    }
+    // Step 1: ALWAYS update the auth password to the user's chosen
+    // password. This is the critical fix: previously, when a salt
+    // existed (existing backup), this step was SKIPPED — leaving the
+    // auth password as the OTP fallback's temporary string. The user's
+    // real password then failed on auto-unlock with "Invalid login
+    // credentials" and cloud backup was permanently broken.
     const { error: updateErr } = await withTimeout(
       session.client.auth.updateUser({ password: newPassword }),
       REQUEST_TIMEOUT_MS,
@@ -386,7 +386,54 @@ export async function alignCloudPasswordAfterReset(
     if (updateErr) {
       console.warn("[AccountSecurity] Cloud password alignment failed:", updateErr.message);
     } else {
-      console.log("[AccountSecurity] Cloud identity password aligned with the new account password");
+      console.log("[AccountSecurity] Cloud identity password aligned with the account password");
+    }
+
+    // Step 2: Check if an encrypted backup exists. If so, the old data
+    // was encrypted with a key derived from the old password + old salt.
+    // The new password derives a different key — the old records are
+    // permanently undecryptable. Wipe them and rotate the salt.
+    const { data, error: saltErr } = await withTimeout(
+      Promise.resolve(
+        session.client.from("sync_state").select("salt").eq("user_id", session.userId).maybeSingle(),
+      ),
+      REQUEST_TIMEOUT_MS,
+      "Checking cloud backup state",
+    );
+    if (saltErr) {
+      console.warn("[AccountSecurity] Salt check failed:", saltErr.message);
+      return;
+    }
+    const salt = (data as { salt: string | null } | null)?.salt ?? null;
+    if (!salt) {
+      console.log("[AccountSecurity] No existing backup — salt will be created on first sync");
+      return;
+    }
+
+    console.log("[AccountSecurity] Existing backup found — wiping undecryptable records and rotating salt");
+
+    // Wipe old records (encrypted with the old key, permanently undecryptable).
+    const { error: wipeErr } = await session.client
+      .from("vault_records")
+      .delete()
+      .eq("user_id", session.userId);
+    if (wipeErr) {
+      console.warn("[AccountSecurity] Record wipe failed:", wipeErr.message);
+    }
+
+    // Rotate the salt so the new key is derived from (new password + new salt).
+    // Reset sync pointers so incremental sync starts fresh.
+    const newSalt = generateSalt();
+    const { error: saltUpdateErr } = await session.client
+      .from("sync_state")
+      .upsert(
+        { user_id: session.userId, salt: newSalt, last_synced_at: null, last_backup_at: null },
+        { onConflict: "user_id" },
+      );
+    if (saltUpdateErr) {
+      console.warn("[AccountSecurity] Salt rotation failed:", saltUpdateErr.message);
+    } else {
+      console.log("[AccountSecurity] Salt rotated and old records wiped — ready for fresh backup");
     }
   } catch (err) {
     console.warn("[AccountSecurity] Cloud alignment skipped:", messageOf(err));

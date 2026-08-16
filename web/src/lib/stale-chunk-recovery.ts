@@ -106,18 +106,6 @@ export function installStaleChunkRecovery(options: RecoveryOptions = {}): void {
     }
   });
 
-  // Safari / WebKit reports failed module script loads as regular 'error'
-  // events (message: "Importing a module script failed.") rather than as
-  // promise rejections. Catch them here so recovery still fires.
-  window.addEventListener("error", (event: ErrorEvent) => {
-    if (!isStaleChunkError(event.message) && !isStaleChunkError(event.error)) return;
-    if (recover("window:error", event.error ?? event.message)) {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
-    }
-  }, true);
-
   // Belt and braces: import() rejections that bypass Vite's preload helper
   // (e.g. Capacitor's lazily loaded web plugin implementations).
   window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {

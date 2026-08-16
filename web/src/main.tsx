@@ -21,23 +21,26 @@ void ensureKeyboardResizeNone();
 // keyboard is open blurs the field and hides the keyboard (iOS-style).
 installInteractiveKeyboardDismiss();
 
-// Suppress cross-origin "Script error." reports that originate from preview
-// environment injected scripts (e.g. React Grab). Browsers report these as the
-// literal string "Script error." with no stack trace due to same-origin policy.
-// They are not app bugs and should not surface as runtime errors.
+// Suppress cross-origin "Script error." reports from preview-injected scripts
+// (React Grab). The inline <head> script handles the earliest interception;
+// this runs as a deferred module (after React Grab) as a second layer.
 if (typeof window !== "undefined") {
-  const isCrossOriginScriptError = (message: unknown): boolean =>
-    typeof message === "string" && message.toLowerCase().startsWith("script error");
+  const isCrossOriginScriptError = (message: unknown): boolean => {
+    if (typeof message === "string") return message.toLowerCase().startsWith("script error");
+    if (message instanceof Error) return message.message.toLowerCase().startsWith("script error");
+    return false;
+  };
 
   window.addEventListener("error", (event: ErrorEvent) => {
-    if (isCrossOriginScriptError(event.message) && event.filename === "" && event.lineno === 0) {
+    if (isCrossOriginScriptError(event.message)) {
+      event.stopImmediatePropagation();
       event.preventDefault();
-      event.stopPropagation();
     }
   }, true);
 
   window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
     if (isCrossOriginScriptError(event.reason)) {
+      event.stopImmediatePropagation();
       event.preventDefault();
     }
   });

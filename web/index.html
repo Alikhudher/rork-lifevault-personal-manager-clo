@@ -2,6 +2,37 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      // Suppress cross-origin "Script error." from preview-injected monitoring
+      // scripts (React Grab). When a cross-origin script throws, the browser
+      // reports the literal string "Script error." with no useful details.
+      // This inline script runs before React Grab, so our capture-phase
+      // listener + stopImmediatePropagation prevents React Grab from seeing it.
+      (function () {
+        function isScriptError(msg) {
+          if (typeof msg === 'string') return msg.toLowerCase() === 'script error.';
+          if (msg instanceof Error) return msg.message.toLowerCase() === 'script error.';
+          return false;
+        }
+        window.addEventListener('error', function (e) {
+          if (isScriptError(e.message)) {
+            e.stopImmediatePropagation();
+            e.preventDefault();
+          }
+        }, true);
+        window.onerror = function (msg) {
+          if (isScriptError(msg)) return true;
+        };
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e.reason;
+          var m = r instanceof Error ? r.message : typeof r === 'string' ? r : '';
+          if (m && m.toLowerCase() === 'script error.') {
+            e.stopImmediatePropagation();
+            e.preventDefault();
+          }
+        });
+      })();
+    </script>
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"

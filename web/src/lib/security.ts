@@ -281,6 +281,38 @@ export async function clearSessionPasswordSecure(email: string): Promise<void> {
   await secureRemove(`${KEY_SESSION_PASSWORD}:${email.toLowerCase()}`);
 }
 
+/**
+ * Fallback recovery: scan secure storage for ANY session password key
+ * when the primary lookup for the current email returns null. This
+ * handles users who changed their email before the key-migration fix
+ * — their password is still stored under the OLD email key.
+ *
+ * Returns the password and the email it was found under, or null.
+ * On native (Keychain), key enumeration isn't available — returns null.
+ */
+export async function findAnySessionPassword(
+  currentEmail: string,
+): Promise<{ password: string; storedEmail: string } | null> {
+  const currentKey = `${KEY_SESSION_PASSWORD}:${currentEmail.toLowerCase()}`;
+  if (!isNative) {
+    // Web fallback: scan localStorage for any session-pwd key.
+    const prefix = FALLBACK_PREFIX + KEY_SESSION_PASSWORD + ":";
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(prefix) || key === FALLBACK_PREFIX + currentKey) continue;
+      const val = localStorage.getItem(key);
+      if (val) {
+        const storedEmail = key.slice(prefix.length);
+        return { password: val, storedEmail };
+      }
+    }
+    return null;
+  }
+  // Native: Keychain doesn't support enumeration. Can't recover here —
+  // the user must sign in again with their password.
+  return null;
+}
+
 /* ------------------------------------------------------------------ */
 /* Privacy screen (hide app in App Switcher)                          */
 /* ------------------------------------------------------------------ */

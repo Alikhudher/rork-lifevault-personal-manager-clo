@@ -22,6 +22,7 @@ import {
   authenticateWithBiometry,
   clearPin,
   clearSessionPasswordSecure,
+  findAnySessionPassword,
   getSessionPasswordSecure,
   hasPin,
   setPin as secureSetPin,
@@ -437,12 +438,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // On mount or when the signed-in user changes, load the session password
   // from secure storage (Keychain / Keystore) so cloud backup can auto-unlock
   // silently on app restart — exactly like iCloud reconnecting.
+  //
+  // Fallback: if the primary lookup returns null (e.g. the user changed
+  // their email before the key-migration fix was deployed), scan for any
+  // session password stored under a different email key and migrate it.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       const email = stateRef.current.user?.email;
       if (email) {
-        const pwd = await getSessionPasswordSecure(email);
+        let pwd = await getSessionPasswordSecure(email);
+        if (!pwd) {
+          // Fallback: scan for a session password stored under any email
+          // key. This recovers users whose email changed before the
+          // updateUser migration fix was deployed.
+          const found = await findAnySessionPassword(email);
+          if (found) {
+            pwd = found.password;
+            console.log(
+              `[Auth] Session password recovered from old email key (${found.storedEmail}) — migrating to current email`,
+            );
+            // Migrate to the current email key and remove the old one.
+            await setSessionPasswordSecure(email, pwd);
+            await clearSessionPasswordSecure(found.storedEmail);
+          }
+        }
         if (!cancelled && pwd) {
           sessionPasswordRef.current = pwd;
         }
@@ -972,10 +992,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const updateUser = useCallback((patch: Partial<UserProfile>) => {
     const s = stateRef.current;
     if (!s.user) return;
+    const oldEmail = s.user.email;
     const updatedUser: UserProfile = { ...s.user, ...patch };
     // Keep the account registry in sync with name/photo/email/verified changes.
     const accounts = s.accounts.map((a) =>
-      a.email.toLowerCase() === s.user.email.toLowerCase()
+      a.email.toLowerCase() === oldEmail.toLowerCase()
         ? {
             ...a,
             name: updatedUser.name,
@@ -988,6 +1009,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const next: PersistedState = { ...s, user: updatedUser, accounts, lastEmail: updatedUser.email };
     stateRef.current = next;
     setState(next);
+
+    // When the email changes, migrate the session password in secure
+    // storage from the old email key to the new email key. The password
+    // itself doesn't change — only the lookup key (scoped by email) needs
+    // updating so the next app restart can find it under the new email
+    // and auto-unlock cloud backup silently.
+    if (
+      patch.email &&
+      patch.email.toLowerCase() !== oldEmail.toLowerCase()
+    ) {
+      const newEmail = patch.email;
+      void (async () => {
+        const pwd = await getSessionPasswordSecure(oldEmail);
+        if (pwd) {
+          await setSessionPasswordSecure(newEmail, pwd);
+          await clearSessionPasswordSecure(oldEmail);
+          console.log("[Auth] Session password migrated to new email key in secure storage");
+        }
+      })();
+    }
   }, []);
 
   const addDocument = useCallback((doc: Omit<VaultDocument, "id" | "createdAt">) => {

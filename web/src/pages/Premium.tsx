@@ -197,10 +197,27 @@ export default function Premium() {
       if (!iapAvailable) return PREVIEW_INTRO_OFFER;
       // Native: use the real RevenueCat intro offer + eligibility.
       const pkg = findPackageForPlan(offering, planId);
-      if (!pkg) return null;
+      if (!pkg) {
+        console.warn(
+          `[Premium] No package found for plan="${planId}" — ` +
+            `offering=${offering ? JSON.stringify(offering.availablePackages.map(p => p.identifier)) : 'null'}`,
+        );
+        return null;
+      }
       const intro = getIntroOfferInfo(pkg.product.introPrice);
-      if (!intro) return null;
-      if (!isEligibleForIntro(introEligibility, planId)) return null;
+      if (!intro) {
+        console.warn(
+          `[Premium] Product "${pkg.product.identifier}" has no introPrice. ` +
+            `Check App Store Connect: ensure a 7-day Free Trial introductory offer is configured.`,
+        );
+        return null;
+      }
+      const eligible = isEligibleForIntro(introEligibility, planId);
+      console.log(
+        `[Premium] Intro offer for plan="${planId}": ` +
+          `duration=${intro.durationLabel}, freeTrial=${intro.isFreeTrial}, eligible=${eligible}`,
+      );
+      if (!eligible) return null;
       return intro;
     };
   }, [offering, introEligibility, iapAvailable]);
@@ -569,10 +586,7 @@ export default function Premium() {
               {getIntroOffer(selectedPlan)?.isFreeTrial ? (
                 <div className="mt-2.5 text-center">
                   <p className="text-[13px] font-bold text-muted-foreground">
-                    {formatDurationWords(getIntroOffer(selectedPlan)!)} free, then {getPriceLabel(selectedPlan)}{selectedPlan === "yearly" ? "/year" : "/month"}
-                  </p>
-                  <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
-                    Auto-renews after the trial unless cancelled at least 24 hours before it ends.
+                    {formatDurationWords(getIntroOffer(selectedPlan)!)} free, then {getPriceLabel(selectedPlan)}{selectedPlan === "yearly" ? "/year" : "/month"} · auto-renews unless cancelled
                   </p>
                 </div>
               ) : (

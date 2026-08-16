@@ -108,17 +108,37 @@ export async function checkIntroEligibility(
     const result = await Purchases.checkTrialOrIntroductoryPriceEligibility({
       productIdentifiers: productIds,
     });
-    console.log("[IAP] Intro eligibility:", result);
+    // Log detailed eligibility info for each product to aid on-device debugging.
+    for (const [pid, elig] of Object.entries(result)) {
+      console.log(
+        `[IAP] Intro eligibility for "${pid}": status=${elig.status} ` +
+        `(ELIGIBLE=2, UNKNOWN=0, INELIGIBLE=1, NO_INTRO_OFFER=3)`,
+      );
+    }
     return result;
   } catch (err) {
-    console.error("[IAP] Failed to check intro eligibility:", err);
+    console.warn("[IAP] Failed to check intro eligibility:", err);
     return {};
   }
 }
 
 /**
  * Check if a user is eligible for an intro offer on a specific plan.
- * Returns true when RevenueCat confirms eligibility.
+ *
+ * Returns true when RevenueCat confirms eligibility OR when the status is
+ * unknown. This is the standard approach because:
+ *
+ * - ELIGIBLE: user hasn't used their intro offer → show trial.
+ * - UNKNOWN: RevenueCat couldn't determine eligibility (common in sandbox,
+ *   new subscription groups, or on Android). Show the trial optimistically;
+ *   StoreKit handles the actual eligibility check at the purchase sheet.
+ *   If the user turns out to be ineligible, Apple's purchase sheet shows
+ *   the regular price instead of the trial.
+ * - Not in map (check hasn't completed or failed): show trial optimistically
+ *   to prevent the trial UI from flickering off while the async check runs.
+ *
+ * Returns false only when explicitly INELIGIBLE (user already used their
+ * trial) or NO_INTRO_OFFER_EXISTS.
  */
 export function isEligibleForIntro(
   eligibilityMap: Record<string, IntroEligibility>,
@@ -126,8 +146,29 @@ export function isEligibleForIntro(
 ): boolean {
   const productId = PRODUCT_IDS[planId];
   const elig = eligibilityMap[productId];
-  if (!elig) return false;
-  return elig.status === INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_ELIGIBLE;
+
+  // Eligibility hasn't been checked yet (empty map or missing entry).
+  // Be optimistic — show the trial. StoreKit handles eligibility at purchase.
+  if (!elig) return true;
+
+  const status = elig.status;
+
+  // ELIGIBLE — user hasn't used their intro offer yet.
+  if (status === INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_ELIGIBLE) return true;
+
+  // UNKNOWN — RevenueCat couldn't determine eligibility (common in sandbox).
+  // Show the trial optimistically; StoreKit handles the real check at purchase.
+  if (status === INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_UNKNOWN) return true;
+
+  // INELIGIBLE — user has already used their intro offer. Don't show trial.
+  // NO_INTRO_OFFER_EXISTS — no intro offer configured. Don't show trial.
+  if (status === INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_INELIGIBLE) {
+    console.warn(`[IAP] User is INELIGIBLE for intro offer on "${planId}" (${productId})`);
+  }
+  if (status === INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_NO_INTRO_OFFER_EXISTS) {
+    console.warn(`[IAP] No intro offer exists for "${planId}" (${productId}) — check App Store Connect`);
+  }
+  return false;
 }
 
 /**

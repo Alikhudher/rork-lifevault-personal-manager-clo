@@ -382,12 +382,13 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Build 23: cloud backup auto-unlock fix — session password key
-          # migration on email change + fallback recovery for already-broken
-          # users. Also fixes test setup (matchMedia mock). All prior fixes
-          # from Build 22 included (iPad layout, dark mode, free trial UI,
-          # email change flow, OTP error messages).
-          agvtool new-version -all 23
+          # Build 24: paywall free trial UI fix — treats UNKNOWN intro
+          # eligibility as eligible (common in sandbox/TestFlight),
+          # adds detailed diagnostic logging for intro offer + eligibility,
+          # and updates button subtext format. All prior fixes from Build 23
+          # included (cloud backup auto-unlock, email change, iPad layout,
+          # dark mode, OTP error messages).
+          agvtool new-version -all 24
 
       - name: Apply iOS signing
         script: |

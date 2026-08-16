@@ -382,13 +382,17 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Build 24: paywall free trial UI fix — treats UNKNOWN intro
-          # eligibility as eligible (common in sandbox/TestFlight),
-          # adds detailed diagnostic logging for intro offer + eligibility,
-          # and updates button subtext format. All prior fixes from Build 23
-          # included (cloud backup auto-unlock, email change, iPad layout,
-          # dark mode, OTP error messages).
-          agvtool new-version -all 24
+          # Build 25: Apple setup complete (Paid Apps Agreement, bank
+          # account, ABN/GST, W-8BEN all Active). 7-day free trial
+          # configured in App Store Connect. This build includes the
+          # full paywall fix: isEligibleForIntro treats UNKNOWN/empty
+          # eligibility as eligible (optimistic — StoreKit handles the
+          # real check at the purchase sheet), detailed diagnostic
+          # logging for intro offer + eligibility + product fetch, and
+          # single-line button subtext format. All prior fixes from
+          # Build 24 included (cloud backup auto-unlock, email change,
+          # iPad layout, dark mode, OTP error messages).
+          agvtool new-version -all 25
 
       - name: Apply iOS signing
         script: |

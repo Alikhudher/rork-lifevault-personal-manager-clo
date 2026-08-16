@@ -53,6 +53,8 @@ import {
   alignCloudPasswordAfterReset,
   finishVerifiedSession,
   requestEmailCode,
+  requestEmailChange,
+  verifyEmailChange,
   verifyEmailCode,
   type VerifiedEmailSession,
 } from "@/lib/account-recovery";
@@ -145,10 +147,10 @@ export function EditProfileSheet({
     return accountHasPassword(account);
   }, [accounts, user?.email]);
 
-  /** Send a REAL 6-digit code to the new address via the auth server. */
+  /** Send a verification code to the NEW email via Supabase Auth's built-in email change. */
   const sendCode = useCallback(async (): Promise<boolean> => {
     const sentAt = Date.now();
-    const result = await requestEmailCode(normalizedEmail);
+    const result = await requestEmailChange(normalizedEmail);
     if (result.ok === false) {
       setError(result.error);
       toast.error(result.error);
@@ -162,8 +164,6 @@ export function EditProfileSheet({
     toast.success("Verification code sent", {
       description: `Check ${normalizedEmail} (and Spam) for a 6-digit code.`,
     });
-    // Follow the message all the way to the inbox via Brevo's logs and
-    // mirror the truthful status inline next to the code input.
     setDelivery(null);
     void trackEmailDelivery(normalizedEmail, sentAt, setDelivery);
     return true;
@@ -235,16 +235,17 @@ export function EditProfileSheet({
     }
     setBusy(true);
     try {
-      // Server-side check — a wrong or expired code is always rejected.
-      const result = await verifyEmailCode(normalizedEmail, code);
+      // Verify the email change code on the MAIN client — this updates
+      // the existing user's email, same user ID, same password, same data.
+      const result = await verifyEmailChange(normalizedEmail, code);
       if (result.ok === false) {
         setError(result.error);
         setCode("");
         return;
       }
-      await finishVerifiedSession(result.session);
-      updateUser({ name: name.trim(), email: normalizedEmail, photo, emailVerified: true });
-      toast.success("Email verified & profile saved");
+      // Update local state to reflect the new email immediately.
+      updateUser({ name: name.trim(), email: result.email, photo, emailVerified: true });
+      toast.success("Email updated & profile saved");
       onOpenChange(false);
     } finally {
       setBusy(false);

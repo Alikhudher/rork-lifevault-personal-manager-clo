@@ -24,7 +24,7 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { sendDirectOtp, verifyDirectOtp, type DirectOtpAction } from "@/lib/direct-otp";
-import { createEphemeralClient, REQUEST_TIMEOUT_MS, withTimeout } from "@/lib/supabase";
+import { createEphemeralClient, getSupabase, REQUEST_TIMEOUT_MS, withTimeout } from "@/lib/supabase";
 import { generateSalt } from "@/lib/crypto";
 
 export type RecoveryFailureCode =
@@ -437,6 +437,115 @@ export async function alignCloudPasswordAfterReset(
     }
   } catch (err) {
     console.warn("[AccountSecurity] Cloud alignment skipped:", messageOf(err));
+  }
+}
+
+/**
+ * Request an email change for the SIGNED-IN user. Uses Supabase Auth's
+ * built-in email change flow: `auth.updateUser({ email })` on the MAIN
+ * client (the one with the user's active session). Supabase sends a
+ * verification code to the NEW address via the send-email hook; the
+ * old email is unchanged until the code is verified.
+ *
+ * The user ID, password, encryption key, and cloud backup are NOT
+ * touched — only the email field on the existing auth user is pending
+ * change.
+ */
+export async function requestEmailChange(newEmail: string): Promise<RecoveryResult> {
+  const sb = getSupabase();
+  if (!sb) return { ok: false, error: NOT_CONFIGURED, code: "unavailable" };
+  try {
+    console.log("[AccountSecurity] Requesting email change to", newEmail);
+    const { error } = await withTimeout(
+      sb.auth.updateUser({ email: newEmail }),
+      REQUEST_TIMEOUT_MS,
+      "Requesting the email change",
+    );
+    if (error) {
+      const d = extractAuthErrorDetail(error);
+      console.warn("[AccountSecurity] Email change request failed:", d.detail);
+      if (isRateLimit(d.detail)) {
+        return { ok: false, ...describeSendFailure(error) };
+      }
+      if (d.transient || isNetwork(d.detail)) {
+        return {
+          ok: false,
+          error: "Couldn't reach the server to request the email change. Check your internet and try again.",
+          code: "network",
+        };
+      }
+      return { ok: false, error: `Couldn't send the verification email — ${d.detail}` };
+    }
+    console.log("[AccountSecurity] Email change verification code sent to", newEmail);
+    return { ok: true };
+  } catch (err) {
+    const msg = messageOf(err);
+    console.warn("[AccountSecurity] Email change request threw:", msg);
+    return {
+      ok: false,
+      error: isNetwork(msg)
+        ? "Couldn't reach the server. Check your internet and try again."
+        : `Couldn't request the email change: ${msg}`,
+      code: isNetwork(msg) ? "network" : undefined,
+    };
+  }
+}
+
+/**
+ * Verify the email change code sent to the NEW address. Uses Supabase
+ * Auth's `verifyOtp` with type `"email_change"` on the MAIN client.
+ * On success, the existing auth user's email is updated to the new
+ * address — same user ID, same password, same data. The old email is
+ * no longer valid for sign-in.
+ *
+ * Returns the verified email so the caller can update local state.
+ */
+export async function verifyEmailChange(
+  newEmail: string,
+  code: string,
+): Promise<{ ok: true; email: string } | { ok: false; error: string; code?: RecoveryFailureCode }> {
+  const sb = getSupabase();
+  if (!sb) return { ok: false, error: NOT_CONFIGURED, code: "unavailable" };
+  try {
+    console.log("[AccountSecurity] Verifying email change code");
+    const { data, error } = await withTimeout(
+      sb.auth.verifyOtp({ email: newEmail, token: code.trim(), type: "email_change" }),
+      REQUEST_TIMEOUT_MS,
+      "Verifying the email change code",
+    );
+    if (error || !data.user) {
+      const d = error ? extractAuthErrorDetail(error) : null;
+      const msg = d?.detail ?? "No user returned";
+      console.warn("[AccountSecurity] Email change verification failed:", msg);
+      if (d && isRateLimit(d.detail)) {
+        return { ok: false, error: describeSendFailure(error).error, code: "rate_limited" };
+      }
+      if (d && (d.transient || isNetwork(d.detail))) {
+        return {
+          ok: false,
+          error: "Couldn't reach the server to verify the code. Try again.",
+          code: "network",
+        };
+      }
+      // Wrong/expired code — user-friendly message, never raw backend error.
+      return {
+        ok: false,
+        error: "Incorrect or expired verification code. Please try again.",
+        code: "invalid_code",
+      };
+    }
+    console.log("[AccountSecurity] Email change verified — user email updated to", data.user.email);
+    return { ok: true, email: data.user.email ?? newEmail };
+  } catch (err) {
+    const msg = messageOf(err);
+    console.warn("[AccountSecurity] Email change verification threw:", msg);
+    return {
+      ok: false,
+      error: isNetwork(msg)
+        ? "Couldn't reach the server. Check your internet and try again."
+        : "Incorrect or expired verification code. Please try again.",
+      code: isNetwork(msg) ? "network" : "invalid_code",
+    };
   }
 }
 

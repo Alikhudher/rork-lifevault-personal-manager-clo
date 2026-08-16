@@ -382,11 +382,12 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Build 22: includes responsive iPad layout changes (multi-column
-          # grids on Home, Documents, Expenses, Calendar, Premium) so the app
-          # fills the 13" iPad screen properly. Icon config from Build 21 is
-          # unchanged (CFBundleIconName=AppIcon, all real opaque PNGs).
-          agvtool new-version -all 22
+          # Build 23: cloud backup auto-unlock fix — session password key
+          # migration on email change + fallback recovery for already-broken
+          # users. Also fixes test setup (matchMedia mock). All prior fixes
+          # from Build 22 included (iPad layout, dark mode, free trial UI,
+          # email change flow, OTP error messages).
+          agvtool new-version -all 23
 
       - name: Apply iOS signing
         script: |

@@ -382,18 +382,18 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Build 26: Latest subscription and 7-day free trial changes.
-          # Apple setup complete — Paid Apps Agreement, bank account,
-          # ABN/GST, W-8BEN all Active. 7-day free trial configured
-          # in App Store Connect. Includes full paywall fix:
-          # isEligibleForIntro treats UNKNOWN/empty eligibility as
-          # eligible (optimistic — StoreKit handles real check at
-          # purchase sheet), detailed diagnostic logging for intro
-          # offer + eligibility + product fetch, single-line button
-          # subtext format. All prior fixes included (cloud backup
-          # auto-unlock, email change, iPad layout, dark mode, OTP
-          # error messages).
-          agvtool new-version -all 26
+          # Build 27: Full Free vs Premium feature gating audit
+          # and implementation. AI scans limited to 3/month for free
+          # users (scan-usage.ts), content creation limits enforced
+          # (10 docs, 20 expenses, 5 subscriptions, 10 appointments),
+          # cloud backup capped at 25 records for free, share/export
+          # gated to premium, subscription status banner on Home driven
+          # by real RevenueCat entitlement, premium badge on AI link,
+          # profile shows real subscription status with manage button.
+          # Removed unimplemented perks from paywall. All prior fixes
+          # included (7-day trial display, cloud backup auto-unlock,
+          # email change, iPad layout, dark mode, OTP errors).
+          agvtool new-version -all 27
 
       - name: Apply iOS signing
         script: |

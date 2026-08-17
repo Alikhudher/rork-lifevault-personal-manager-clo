@@ -59,13 +59,17 @@ function useAutoLockLifecycle() {
 
 /** Layout for authenticated tab screens: centered mobile frame + bottom navigation. */
 export function AppShell() {
-  const { user, onboarded } = useApp();
+  const { user, onboarded, authReady } = useApp();
   const location = useLocation();
   const scrollRef = useKeyboardAvoidance();
 
   useAutoLockLifecycle();
 
   if (!onboarded) return <Navigate to="/onboarding" replace />;
+  // Wait for the initial Supabase session check to complete before
+  // deciding to redirect. Without this, a page reload with a valid
+  // session would flash the sign-in page before getSession() returns.
+  if (!authReady) return null;
   if (!user) return <Navigate to="/signin" replace state={{ from: location.pathname }} />;
 
   return (
@@ -81,8 +85,12 @@ export function AppShell() {
 
 /** Layout for public screens (onboarding / auth) — no bottom nav. */
 export function PublicShell() {
-  // Auth screens (sign in/up, forgot password) have text inputs too — give
-  // them the same keyboard avoidance as the main app shell.
+  const { authReady } = useApp();
+  // Auth screens also wait for authReady so that a reload with a valid
+  // session doesn't briefly show the sign-in page before the session
+  // restore completes and redirects to the app.
+  if (!authReady) return null;
+  // Auth screen scroll avoidance
   const scrollRef = useKeyboardAvoidance<HTMLDivElement>();
   return (
     <div

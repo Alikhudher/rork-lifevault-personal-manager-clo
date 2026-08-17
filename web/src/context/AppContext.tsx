@@ -55,6 +55,7 @@ import {
   saveFileData,
 } from "@/lib/file-store";
 import { getSupabase } from "@/lib/supabase";
+import type { Session, User as SupabaseAuthUser } from "@supabase/supabase-js";
 import { setSessionKey } from "@/lib/crypto";
 
 const STORAGE_KEY = "lifevault-state-v1";
@@ -95,14 +96,18 @@ export type AuthResult =
 
 interface AppContextValue extends PersistedState {
   completeOnboarding: () => void;
-  /** Validates the password against the stored hash before signing in. */
+  /** Supabase Auth is the only source of authentication truth. Every
+   *  email/password login calls sb.auth.signInWithPassword() first. */
   signIn: (email: string, password: string) => Promise<AuthResult>;
-  /** Convenience for Face ID unlock — skips password validation. */
-  signInWithBiometric: () => AuthResult;
+  /** Face ID unlock — loads password from secure storage and authenticates
+   *  via sb.auth.signInWithPassword(). Async because it calls Supabase. */
+  signInWithBiometric: () => Promise<AuthResult>;
   /**
    * Create and sign in a new account. Call ONLY after the email address
    * has been verified with a real emailed 6-digit code — the Sign Up
    * screen enforces this, so every stored account is email-verified.
+   * After the OTP verification sets the Supabase password, this calls
+   * sb.auth.signInWithPassword() to create a real Supabase session.
    */
   signUp: (name: string, email: string, password: string) => Promise<AuthResult>;
   signOut: () => void;
@@ -110,6 +115,12 @@ interface AppContextValue extends PersistedState {
   getSessionPassword: () => string | null;
   /** True once the session password has been loaded from secure storage on app start. SyncContext waits for this before auto-unlocking. */
   sessionPasswordReady: boolean;
+  /** True once the initial Supabase session check has completed on mount.
+   *  Route guards wait for this before deciding to redirect to /signin. */
+  authReady: boolean;
+  /** The current Supabase user.id UUID (or null if not signed in).
+   *  This is the RevenueCat appUserID. */
+  supabaseUserId: string | null;
   deleteAccount: () => void;
   updateSettings: (patch: Partial<Settings>) => void;
   updateSecurity: (patch: Partial<SecuritySettings>) => void;
@@ -281,7 +292,10 @@ function loadState(): PersistedState {
     return purgeDemoData({
       ...seed,
       ...parsed,
-      user: sanitizeUser(parsed.user),
+      // NEVER restore user from localStorage — Supabase session is the
+      // only source of auth truth. The session restore effect on mount
+      // populates the user from sb.auth.getSession().
+      user: null,
       settings: { ...seed.settings, ...parsed.settings, notifications: { ...seed.settings.notifications, ...parsed.settings?.notifications } },
       security: { ...seed.security, ...parsed.security },
       sessions: parsed.sessions && parsed.sessions.length > 0 ? parsed.sessions : seed.sessions,
@@ -302,6 +316,30 @@ function profileFromAccount(account: RegisteredAccount): UserProfile {
     photo: account.photo,
     createdAt: account.createdAt,
     emailVerified: account.emailVerified,
+  };
+}
+
+/** Build a UserProfile from a Supabase auth user, falling back to the
+ *  local cached account for name/photo when the Supabase user doesn't
+ *  carry them in user_metadata. */
+function profileFromSupabaseUser(
+  user: SupabaseAuthUser,
+  cachedAccount?: RegisteredAccount,
+): UserProfile {
+  const email = user.email ?? cachedAccount?.email ?? "";
+  return {
+    name:
+      (user.user_metadata?.name as string | undefined) ??
+      cachedAccount?.name ??
+      email.split("@")[0],
+    email,
+    photo:
+      (user.user_metadata?.photo as string | null | undefined) ??
+      cachedAccount?.photo ??
+      null,
+    createdAt: user.created_at ?? cachedAccount?.createdAt ?? new Date().toISOString(),
+    emailVerified:
+      user.email_confirmed_at != null || (cachedAccount?.emailVerified ?? true),
   };
 }
 
@@ -365,6 +403,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // auto-unlock (avoids racing with the async secure-storage read).
   const [sessionPasswordReady, setSessionPasswordReady] = useState<boolean>(false);
 
+  // ─── Supabase session state ───────────────────────────────────────────
+  // authReady: true once the initial sb.auth.getSession() check has
+  //   completed on mount. Route guards wait for this before deciding
+  //   to redirect to /signin (prevents a flash of the sign-in page on
+  //   reload when a valid session exists).
+  const [authReady, setAuthReady] = useState<boolean>(false);
+  // The current Supabase user.id UUID (or null if not signed in).
+  // This is the RevenueCat appUserID.
+  const [supabaseUserId, setSupabaseUserId] = useState<string | null>(null);
+
   // Keep a synchronous ref to the latest state so auth methods can read
   // accounts/user synchronously and return a result before React re-renders.
   const stateRef = useRef<PersistedState>(state);
@@ -374,13 +422,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   // Persist state to localStorage, stripping fileData (base64 data URLs)
   // from documents — those live in IndexedDB to avoid quota errors.
+  // Also strips the `user` field — Supabase session is the only source
+  // of auth truth, so the user is NEVER persisted to localStorage.
+  // A page reload restores the user from sb.auth.getSession(), not from here.
   // Uses console.warn (not console.error) so the dev error overlay doesn't
   // fire for a non-fatal quota issue — state stays in memory regardless.
   useEffect(() => {
     try {
-      const { documents, ...rest } = state;
+      const { documents, user: _persistedUser, ...rest } = state;
       const stripped = documents.map(({ fileData: _fd, ...doc }) => doc);
-      const json = JSON.stringify({ ...rest, documents: stripped });
+      const json = JSON.stringify({ ...rest, documents: stripped, user: null });
       try {
         localStorage.setItem(STORAGE_KEY, json);
       } catch {
@@ -511,120 +562,197 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ─── Supabase session restore + onAuthStateChange listener ────────────────
+  //
+  // On mount: call sb.auth.getSession() to check if a valid session exists.
+  // If it does, populate the AppContext user from the Supabase session —
+  // NEVER from localStorage. This is the only way a user survives a page
+  // reload or app restart.
+  //
+  // Also register sb.auth.onAuthStateChange() so the context stays
+  // synchronised with the real Supabase session. When Supabase fires
+  // SIGNED_OUT (token expired, signOut on another device, etc.), the
+  // context user is cleared immediately.
+  useEffect(() => {
+    const sb = getSupabase();
+    if (!sb) {
+      // Supabase not configured — mark auth ready so the route guard
+      // proceeds (will redirect to /signin since there's no session).
+      setAuthReady(true);
+      return;
+    }
+
+    let cancelled = false;
+
+    /** Populate (or clear) the AppContext user from a Supabase session. */
+    function applySession(session: Session | null) {
+      if (cancelled) return;
+      if (session?.user) {
+        const user = session.user;
+        const email = user.email ?? "";
+        const cachedAccount = findAccount(stateRef.current.accounts, email);
+        // Rebuild or update the local account cache (profile only —
+        // never a source of auth truth, just a profile cache).
+        const profile = profileFromSupabaseUser(user, cachedAccount);
+        const account: RegisteredAccount = {
+          email,
+          name: profile.name,
+          photo: profile.photo,
+          passwordHash: cachedAccount?.passwordHash,
+          passwordSalt: cachedAccount?.passwordSalt,
+          passwordChangedAt: cachedAccount?.passwordChangedAt,
+          createdAt: profile.createdAt,
+          emailVerified: profile.emailVerified,
+        };
+        const s = stateRef.current;
+        const accounts = cachedAccount
+          ? s.accounts.map((a) =>
+              a.email.toLowerCase() === email.toLowerCase() ? account : a,
+            )
+          : [...s.accounts, account];
+        const next: PersistedState = {
+          ...s,
+          onboarded: true,
+          user: profile,
+          lastEmail: email,
+          accounts,
+        };
+        stateRef.current = next;
+        setState(next);
+        setSupabaseUserId(user.id);
+      } else {
+        // No session — clear the user but keep the accounts registry
+        // and lastEmail (for Face ID unlock).
+        const s = stateRef.current;
+        if (s.user) {
+          const next: PersistedState = {
+            ...s,
+            user: null,
+          };
+          stateRef.current = next;
+          setState(next);
+        }
+        setSupabaseUserId(null);
+      }
+    }
+
+    // 1. Check for an existing session on mount.
+    void (async () => {
+      try {
+        const { data } = await sb.auth.getSession();
+        applySession(data.session);
+      } catch (err) {
+        console.warn("[Auth] getSession failed:", err);
+      } finally {
+        if (!cancelled) setAuthReady(true);
+      }
+    })();
+
+    // 2. Listen for auth state changes (sign-in, sign-out, token refresh).
+    const { data: listener } = sb.auth.onAuthStateChange((_event, session) => {
+      applySession(session);
+    });
+
+    return () => {
+      cancelled = true;
+      listener?.subscription?.unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const completeOnboarding = useCallback(() => {
     setState((s) => ({ ...s, onboarded: true }));
   }, []);
 
   const signIn = useCallback(async (email: string, password: string): Promise<AuthResult> => {
     const normalized = email.trim().toLowerCase();
-    const account = findAccount(stateRef.current.accounts, normalized);
-
-    if (!account) {
-      // Local account not found — this happens after a new build install
-      // or when localStorage was cleared. Fall back to Supabase Auth to
-      // verify the credentials and recover the account WITHOUT creating
-      // a new user (which would produce a different Supabase user.id and
-      // cause RevenueCat RECEIPT_ALREADY_IN_USE errors).
-      //
-      // This calls signInWithPassword() ONLY — never signUp(). Signup and
-      // login remain separate actions. If the email doesn't exist in
-      // Supabase, the user is directed to the SignUp page.
-      const sb = getSupabase();
-      if (sb) {
-        try {
-          const { data, error } = await sb.auth.signInWithPassword({
-            email: normalized,
-            password,
-          });
-          if (error || !data.user) {
-            // Supabase returns the same error for "no account" and
-            // "wrong password" — we can't distinguish. Return not_found
-            // so the user is directed to sign up or reset password.
-            return { ok: false, error: "not_found" };
-          }
-          // Supabase sign-in succeeded — register the account locally
-          // so future sign-ins work even without a Supabase call.
-          // The Supabase user.id is preserved (same UUID every time).
-          const rec = await hashPassword(password);
-          const supabaseUser = data.user;
-          const recoveredAccount: RegisteredAccount = {
-            email: normalized,
-            name:
-              (supabaseUser.user_metadata?.name as string | undefined) ??
-              normalized.split("@")[0],
-            photo: null,
-            passwordHash: rec.hash,
-            passwordSalt: rec.salt,
-            passwordChangedAt: Date.now(),
-            createdAt: supabaseUser.created_at ?? new Date().toISOString(),
-            emailVerified: true,
-          };
-          const s = stateRef.current;
-          const next: PersistedState = {
-            ...s,
-            onboarded: true,
-            lastEmail: recoveredAccount.email,
-            accounts: [...s.accounts, recoveredAccount],
-            user: profileFromAccount(recoveredAccount),
-          };
-          // Store the plaintext password so SyncContext can auto-unlock
-          // cloud backup and so the Supabase session stays connected.
-          sessionPasswordRef.current = password;
-          void setSessionPasswordSecure(normalized, password);
-          stateRef.current = next;
-          setState(next);
-          console.log(
-            `[Auth] Account recovered via Supabase sign-in for ${normalized} — same user.id preserved`,
-          );
-          return { ok: true, error: null };
-        } catch {
-          // Network error or Supabase not configured — return not_found
-          // so the user can sign up or reset password.
-          return { ok: false, error: "not_found" };
-        }
-      }
+    // ─── Supabase Auth is the ONLY source of authentication truth ──────────
+    // Every login attempt calls sb.auth.signInWithPassword() first.
+    // The user is NEVER set from the local account registry.
+    // If Supabase returns a session + user.id, the local registry is
+    // rebuilt as a profile cache AFTER authentication succeeds.
+    const sb = getSupabase();
+    if (!sb) {
+      // Supabase not configured — no authentication possible.
       return { ok: false, error: "not_found" };
     }
-    const matches = await accountPasswordMatches(account, password);
-    if (!matches) {
-      return { ok: false, error: "wrong_password" };
-    }
-    // Unverified accounts can never log in. Accounts created by the
-    // verified sign-up flow are always verified; this guards any account
-    // left in an unverified state (recovery via Forgot Password verifies
-    // the email and lifts the block).
-    if (account.emailVerified === false) {
-      return { ok: false, error: "email_unverified" };
-    }
-    // Opportunistic upgrade: a legacy plaintext account is re-stored as
-    // a salted hash on its first successful sign-in.
-    let upgraded: RegisteredAccount | null = null;
-    if (!account.passwordHash || !account.passwordSalt) {
+    try {
+      const { data, error } = await sb.auth.signInWithPassword({
+        email: normalized,
+        password,
+      });
+      if (error || !data.session || !data.user?.id) {
+        // Supabase returns the same error for "no account" and
+        // "wrong password". Map common error messages to the right
+        // AuthResult so the UI can direct the user appropriately.
+        const msg = error?.message ?? "";
+        if (/invalid login credentials/i.test(msg)) {
+          // Check if the email exists locally — if not, direct to sign up.
+          const localAccount = findAccount(stateRef.current.accounts, normalized);
+          if (!localAccount) {
+            return { ok: false, error: "not_found" };
+          }
+          return { ok: false, error: "wrong_password" };
+        }
+        if (/email.*not.*confirmed|not.*verified/i.test(msg)) {
+          return { ok: false, error: "email_unverified" };
+        }
+        // Unknown error — check local registry for a hint.
+        const localAccount = findAccount(stateRef.current.accounts, normalized);
+        if (!localAccount) {
+          return { ok: false, error: "not_found" };
+        }
+        return { ok: false, error: "wrong_password" };
+      }
+      // ─── Supabase authentication succeeded ────────────────────────────
+      // data.session and data.user.id are both present.
+      // Rebuild the local account registry as a profile cache.
+      const supabaseUser = data.user;
+      const cachedAccount = findAccount(stateRef.current.accounts, normalized);
+      const profile = profileFromSupabaseUser(supabaseUser, cachedAccount);
+      // Update or create the local account cache (profile only).
       const rec = await hashPassword(password);
-      upgraded = withCredentials(account, rec.hash, rec.salt, account.passwordChangedAt ?? 0);
+      const account: RegisteredAccount = {
+        email: normalized,
+        name: profile.name,
+        photo: profile.photo,
+        passwordHash: rec.hash,
+        passwordSalt: rec.salt,
+        passwordChangedAt: Date.now(),
+        createdAt: profile.createdAt,
+        emailVerified: profile.emailVerified,
+      };
+      const s = stateRef.current;
+      const accounts = cachedAccount
+        ? s.accounts.map((a) =>
+            a.email.toLowerCase() === normalized ? account : a,
+          )
+        : [...s.accounts, account];
+      const next: PersistedState = {
+        ...s,
+        onboarded: true,
+        lastEmail: normalized,
+        accounts,
+        user: profile,
+      };
+      // Store the plaintext password so SyncContext can auto-unlock
+      // cloud backup.
+      sessionPasswordRef.current = password;
+      void setSessionPasswordSecure(normalized, password);
+      stateRef.current = next;
+      setState(next);
+      setSupabaseUserId(supabaseUser.id);
+      console.log(
+        `[Auth] Supabase sign-in succeeded for ${normalized} — user.id=${supabaseUser.id}`,
+      );
+      return { ok: true, error: null };
+    } catch {
+      // Network error — cannot authenticate.
+      return { ok: false, error: "not_found" };
     }
-    const s = stateRef.current;
-    const active = upgraded ?? findAccount(s.accounts, normalized) ?? account;
-    const next: PersistedState = {
-      ...s,
-      onboarded: true,
-      lastEmail: active.email,
-      accounts: upgraded
-        ? s.accounts.map((a) => (a.email.toLowerCase() === normalized ? upgraded! : a))
-        : s.accounts,
-      user: profileFromAccount(active),
-    };
-    // Store the plaintext password so SyncContext can auto-unlock cloud backup.
-    sessionPasswordRef.current = password;
-    // Persist to secure storage (Keychain / Keystore) so the app can
-    // silently reconnect to cloud backup on restart.
-    void setSessionPasswordSecure(normalized, password);
-    stateRef.current = next;
-    setState(next);
-    return { ok: true, error: null };
   }, []);
 
-  const signInWithBiometric = useCallback((): AuthResult => {
+  const signInWithBiometric = useCallback(async (): Promise<AuthResult> => {
     const s = stateRef.current;
     if (!s.lastEmail) {
       return { ok: false, error: "not_found" };
@@ -633,55 +761,103 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!account) {
       return { ok: false, error: "not_found" };
     }
-    const next: PersistedState = {
-      ...s,
-      onboarded: true,
-      user: profileFromAccount(account),
-    };
-    // Face ID unlock — try loading the persisted password from secure
-    // storage so cloud backup can still auto-unlock silently. If not found,
-    // sessionPasswordRef stays null and the user can unlock manually.
-    void (async () => {
-      const pwd = await getSessionPasswordSecure(account.email);
-      if (pwd) sessionPasswordRef.current = pwd;
-    })();
-    stateRef.current = next;
-    setState(next);
-    return { ok: true, error: null };
+    // Face ID unlock — load the persisted password from secure storage
+    // and authenticate via Supabase Auth. This ensures a real Supabase
+    // session is created, even when the user unlocks with Face ID.
+    const pwd = await getSessionPasswordSecure(account.email);
+    if (!pwd) {
+      // No persisted password — can't authenticate via Supabase.
+      return { ok: false, error: "not_found" };
+    }
+    const sb = getSupabase();
+    if (!sb) {
+      return { ok: false, error: "not_found" };
+    }
+    try {
+      const { data, error } = await sb.auth.signInWithPassword({
+        email: account.email,
+        password: pwd,
+      });
+      if (error || !data.session || !data.user?.id) {
+        return { ok: false, error: "wrong_password" };
+      }
+      const profile = profileFromSupabaseUser(data.user, account);
+      const next: PersistedState = {
+        ...s,
+        onboarded: true,
+        user: profile,
+        lastEmail: account.email,
+      };
+      sessionPasswordRef.current = pwd;
+      stateRef.current = next;
+      setState(next);
+      setSupabaseUserId(data.user.id);
+      return { ok: true, error: null };
+    } catch {
+      return { ok: false, error: "not_found" };
+    }
   }, []);
 
   const signUp = useCallback(async (name: string, email: string, password: string): Promise<AuthResult> => {
     const normalized = email.trim().toLowerCase();
+    // Check the local registry for an early "email_taken" hint.
+    // The real check is Supabase Auth — if the email already exists there,
+    // signInWithPassword will be used instead (handled by the caller).
     const existing = findAccount(stateRef.current.accounts, normalized);
     if (existing) {
       return { ok: false, error: "email_taken" };
     }
-    const rec = await hashPassword(password);
-    const s = stateRef.current;
-    const account: RegisteredAccount = {
-      email: normalized,
-      name: name.trim(),
-      photo: null,
-      passwordHash: rec.hash,
-      passwordSalt: rec.salt,
-      passwordChangedAt: Date.now(),
-      createdAt: new Date().toISOString(),
-      emailVerified: true,
-    };
-    const next: PersistedState = {
-      ...s,
-      onboarded: true,
-      lastEmail: account.email,
-      accounts: [...s.accounts, account],
-      user: profileFromAccount(account),
-    };
-    // Store the plaintext password so SyncContext can auto-setup cloud backup.
-    sessionPasswordRef.current = password;
-    // Persist to secure storage for silent reconnection on app restart.
-    void setSessionPasswordSecure(normalized, password);
-    stateRef.current = next;
-    setState(next);
-    return { ok: true, error: null };
+    // The SignUp screen verifies the email via OTP before calling this.
+    // After OTP verification, the Supabase auth password is aligned to the
+    // user's chosen password by `alignCloudPasswordAfterReset`. So we can
+    // sign in with signInWithPassword() to create a real Supabase session.
+    const sb = getSupabase();
+    if (!sb) {
+      return { ok: false, error: "not_found" };
+    }
+    try {
+      const { data, error } = await sb.auth.signInWithPassword({
+        email: normalized,
+        password,
+      });
+      if (error || !data.session || !data.user?.id) {
+        // If sign-in fails, the OTP flow may not have created the auth
+        // user yet. Return not_found so the user can try again.
+        return { ok: false, error: "not_found" };
+      }
+      // Supabase session created. Build the local account cache.
+      const supabaseUser = data.user;
+      const rec = await hashPassword(password);
+      const account: RegisteredAccount = {
+        email: normalized,
+        name: name.trim(),
+        photo: null,
+        passwordHash: rec.hash,
+        passwordSalt: rec.salt,
+        passwordChangedAt: Date.now(),
+        createdAt: supabaseUser.created_at ?? new Date().toISOString(),
+        emailVerified: true,
+      };
+      const s = stateRef.current;
+      const next: PersistedState = {
+        ...s,
+        onboarded: true,
+        lastEmail: account.email,
+        accounts: [...s.accounts, account],
+        user: profileFromAccount(account),
+      };
+      sessionPasswordRef.current = password;
+      void setSessionPasswordSecure(normalized, password);
+      stateRef.current = next;
+      setState(next);
+      setSupabaseUserId(supabaseUser.id);
+      console.log(
+        `[Auth] Supabase sign-up succeeded for ${normalized} — user.id=${supabaseUser.id}`,
+      );
+      return { ok: true, error: null };
+    } catch {
+      return { ok: false, error: "not_found" };
+    }
   }, []);
 
   /**
@@ -711,6 +887,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const signingOutEmail = s.user?.email;
     sessionPasswordRef.current = null;
     setSessionKey(null);
+    setSupabaseUserId(null);
     // Clear the persisted session password from secure storage.
     if (signingOutEmail) void clearSessionPasswordSecure(signingOutEmail);
     // 3. Wipe IndexedDB file data.
@@ -760,6 +937,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const s = stateRef.current;
     sessionPasswordRef.current = null;
     setSessionKey(null);
+    setSupabaseUserId(null);
     void clearAllFileData();
     if (s.user?.email) void clearSessionPasswordSecure(s.user.email);
     for (const key of ACCOUNT_SCOPED_LS_KEYS) {
@@ -784,6 +962,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (accountHasPassword(account)) {
       const ok = await accountPasswordMatches(account, current);
       if (!ok) return false;
+    }
+    // Update the Supabase auth password so the cloud identity stays in sync.
+    const sb = getSupabase();
+    if (sb) {
+      try {
+        const { error: updateErr } = await sb.auth.updateUser({ password: next });
+        if (updateErr) {
+          console.warn("[Auth] Supabase password update failed:", updateErr.message);
+          return false;
+        }
+      } catch (err) {
+        console.warn("[Auth] Supabase password update threw:", err);
+        return false;
+      }
     }
     const rec = await hashPassword(next);
     const changedAt = Date.now();
@@ -870,6 +1062,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const s = stateRef.current;
     sessionPasswordRef.current = null;
     setSessionKey(null);
+    setSupabaseUserId(null);
     void clearAllFileData();
     if (s.user?.email) void clearSessionPasswordSecure(s.user.email);
     for (const key of ACCOUNT_SCOPED_LS_KEYS) {
@@ -1363,6 +1556,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       signOut,
       getSessionPassword,
       sessionPasswordReady,
+      authReady,
+      supabaseUserId,
       deleteAccount,
       updateSettings,
       updateSecurity,
@@ -1412,6 +1607,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       signOut,
       getSessionPassword,
       sessionPasswordReady,
+      authReady,
+      supabaseUserId,
       deleteAccount,
       updateSettings,
       updateSecurity,

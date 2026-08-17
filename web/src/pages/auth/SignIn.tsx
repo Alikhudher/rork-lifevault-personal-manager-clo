@@ -109,8 +109,8 @@ export default function SignIn() {
             variant="outline"
             size="lg"
             className="h-[52px] w-full rounded-2xl text-[15px] font-bold"
-            onClick={() => {
-              const result = signInWithBiometric();
+            onClick={async () => {
+              const result = await signInWithBiometric();
               if (!result.ok) {
                 toast.error("No saved account to unlock. Please sign in with your password.");
                 return;

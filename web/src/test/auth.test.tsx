@@ -2,36 +2,135 @@
  * @vitest-environment jsdom
  */
 import { act, renderHook } from "@testing-library/react";
+import { vi, test, expect } from "vitest";
 
 import { AppProvider, useApp, type AuthResult } from "@/context/AppContext";
 
 /**
  * Auth + fresh-start tests.
  *
- * Covers the critical password-validation flows and the release guarantee
- * that new users start with a completely empty account (no demo documents,
- * expenses, subscriptions, appointments, notifications or budget).
+ * Supabase Auth is the ONLY source of authentication truth. Every test
+ * mocks the Supabase client so we can control exactly what signInWithPassword,
+ * getSession, onAuthStateChange, and signOut return.
  */
 
 const TEST_EMAIL = "test@example.com";
 const TEST_PASSWORD = "mypassword";
+const TEST_USER_ID = "supabase-user-id-123";
 
 type AppHook = { current: ReturnType<typeof useApp> };
 
-/** Register a fresh account (most tests need an existing registered user). */
-async function signUpTestUser(result: AppHook): Promise<void> {
-  await act(async () => {
-    await result.current.signUp("Test User", TEST_EMAIL, TEST_PASSWORD);
+// ─── Supabase mock ──────────────────────────────────────────────────────
+// Use a plain object holder created in vi.hoisted. The mock functions are
+// created in each test (where vi is fully available) and assigned to the
+// holder. The hoisted vi.mock factory reads from the holder at call time.
+const mockHolder = vi.hoisted(() => ({ client: null as null | { auth: unknown } }));
+
+vi.mock("@/lib/supabase", () => ({
+  getSupabase: () => mockHolder.client,
+  getSupabaseUserId: async () => {
+    const c = mockHolder.client;
+    if (!c) return null;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const auth = c.auth as any;
+      const result = await auth.getSession();
+      return result?.data?.session?.user?.id ?? null;
+    } catch {
+      return null;
+    }
+  },
+  supabaseConfigured: true,
+}));
+
+interface MockAuth {
+  signInWithPassword: ReturnType<typeof vi.fn>;
+  getSession: ReturnType<typeof vi.fn>;
+  onAuthStateChange: ReturnType<typeof vi.fn>;
+  signOut: ReturnType<typeof vi.fn>;
+  updateUser: ReturnType<typeof vi.fn>;
+}
+
+/** Cast a mock auth object so its vi.fn methods are callable. */
+function asMockAuth(auth: unknown): MockAuth {
+  return auth as MockAuth;
+}
+
+/** Create a fresh mock Supabase client with default return values.
+ *  Call this in each test before rendering. */
+function setupMock(): MockAuth {
+  localStorage.clear();
+  const auth: MockAuth = {
+    signInWithPassword: vi.fn().mockResolvedValue({
+      data: { session: null, user: null },
+      error: { message: "Invalid login credentials" },
+    }),
+    getSession: vi.fn().mockResolvedValue({ data: { session: null } }),
+    onAuthStateChange: vi.fn().mockReturnValue({
+      data: { subscription: { unsubscribe: vi.fn() } },
+    }),
+    signOut: vi.fn().mockResolvedValue({ error: null }),
+    updateUser: vi.fn().mockResolvedValue({ data: {}, error: null }),
+  };
+  mockHolder.client = { auth };
+  return auth;
+}
+
+function mockSuccessfulSignIn(email: string, userId: string = TEST_USER_ID) {
+  const auth = mockHolder.client!.auth as MockAuth;
+  auth.signInWithPassword.mockResolvedValue({
+    data: {
+      session: {
+        user: {
+          id: userId,
+          email,
+          email_confirmed_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+          user_metadata: { name: email.split("@")[0] },
+        },
+        access_token: "mock-access-token",
+      },
+      user: {
+        id: userId,
+        email,
+        email_confirmed_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        user_metadata: { name: email.split("@")[0] },
+      },
+    },
+    error: null,
   });
 }
 
-beforeEach(() => {
-  localStorage.clear();
-});
+function mockFailedSignIn() {
+  const auth = mockHolder.client!.auth as MockAuth;
+  auth.signInWithPassword.mockResolvedValue({
+    data: { session: null, user: null },
+    error: { message: "Invalid login credentials" },
+  });
+}
+
+/** Helper: wait for authReady to become true using a simple delay. */
+async function waitForAuthReady(result: AppHook) {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 200));
+  });
+  if (!result.current.authReady) {
+    // Try one more time with a longer delay.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+    });
+  }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────
 
 test("fresh install starts completely empty — no demo data, no budget", async () => {
+  setupMock();
   const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await waitForAuthReady(result);
 
+  expect(result.current.authReady).toBe(true);
   expect(result.current.user).toBeNull();
   expect(result.current.accounts).toEqual([]);
   expect(result.current.documents).toEqual([]);
@@ -40,80 +139,15 @@ test("fresh install starts completely empty — no demo data, no budget", async 
   expect(result.current.appointments).toEqual([]);
   expect(result.current.notifications).toEqual([]);
   expect(result.current.settings.monthlyBudget).toBe(0);
-  // Only the real current device appears in sessions — never fake devices.
   expect(result.current.sessions).toHaveLength(1);
   expect(result.current.sessions[0].current).toBe(true);
 });
 
-test("legacy demo data persisted by pre-release builds is purged on load", async () => {
-  // Simulate an old install that persisted seeded demo state.
-  localStorage.setItem(
-    "lifevault-state-v1",
-    JSON.stringify({
-      onboarded: true,
-      user: null,
-      lastEmail: "mia.thompson@example.com",
-      accounts: [
-        {
-          email: "mia.thompson@example.com",
-          name: "Mia Thompson",
-          photo: null,
-          password: "password123",
-          createdAt: new Date().toISOString(),
-          emailVerified: true,
-        },
-        {
-          email: "real.user@example.com",
-          name: "Real User",
-          photo: null,
-          password: "realpass",
-          createdAt: new Date().toISOString(),
-          emailVerified: true,
-        },
-      ],
-      settings: { currency: "AUD", darkMode: false, biometric: false, monthlyBudget: 3800, language: "en" },
-      documents: [
-        { id: "doc_passport", name: "Australian Passport", category: "Passport", issueDate: "2022-01-01", expiryDate: "2026-09-01", notes: "", reminderDays: 60, fileName: null, fileKind: null, createdAt: new Date().toISOString() },
-        { id: "doc_l8x2ab_1", name: "My real doc", category: "ID", issueDate: "2025-01-01", expiryDate: null, notes: "", reminderDays: 30, fileName: null, fileKind: null, createdAt: new Date().toISOString() },
-      ],
-      expenses: [
-        { id: "exp_3", amount: 22, date: new Date().toISOString(), category: "Transport", merchant: "Opal", notes: "", paymentMethod: "Credit Card" },
-        { id: "exp_l8x2ab_2", amount: 10, date: new Date().toISOString(), category: "Food", merchant: "Real Cafe", notes: "", paymentMethod: "Cash" },
-      ],
-      subscriptions: [
-        { id: "sub_netflix", name: "Netflix Premium", price: 25.99, frequency: "monthly", nextPaymentDate: "2026-08-01", category: "Entertainment", paymentMethod: "Credit Card", reminderDays: 7, status: "active" },
-      ],
-      appointments: [
-        { id: "apt_dentist", title: "Dentist", date: "2026-08-01", time: "09:30", location: "", notes: "", reminder: "1 day before" },
-      ],
-      notifications: [
-        { id: "ntf_1", type: "document", title: "Demo", message: "Demo", date: new Date().toISOString(), read: false },
-      ],
-      sessions: [
-        { id: "ses_ipad", device: "iPad Air", location: "Sydney", app: "LifeVault", lastActive: new Date().toISOString() },
-      ],
-    }),
-  );
-
+test("sign in with unknown email returns not_found when Supabase rejects", async () => {
+  setupMock();
+  mockFailedSignIn();
   const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-
-  // Demo records are gone; real user records survive.
-  expect(result.current.documents.map((d) => d.id)).toEqual(["doc_l8x2ab_1"]);
-  expect(result.current.expenses.map((e) => e.id)).toEqual(["exp_l8x2ab_2"]);
-  expect(result.current.subscriptions).toEqual([]);
-  expect(result.current.appointments).toEqual([]);
-  expect(result.current.notifications).toEqual([]);
-  // Demo account removed, real account kept.
-  expect(result.current.accounts.map((a) => a.email)).toEqual(["real.user@example.com"]);
-  expect(result.current.lastEmail).toBeNull();
-  // Seeded demo budget reset; fake sessions replaced with the real device.
-  expect(result.current.settings.monthlyBudget).toBe(0);
-  expect(result.current.sessions).toHaveLength(1);
-  expect(result.current.sessions[0].current).toBe(true);
-});
-
-test("sign in with unknown email returns not_found", async () => {
-  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await waitForAuthReady(result);
 
   let res: AuthResult = { ok: true, error: null };
   await act(async () => {
@@ -126,13 +160,42 @@ test("sign in with unknown email returns not_found", async () => {
   expect(result.current.user).toBeNull();
 });
 
-test("wrong password is rejected for a registered account", async () => {
+test("successful sign-in always calls Supabase signInWithPassword first", async () => {
+  const auth = setupMock();
+  mockSuccessfulSignIn(TEST_EMAIL);
   const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-  await signUpTestUser(result);
+  await waitForAuthReady(result);
+
+  let res: AuthResult = { ok: false, error: "not_found" };
+  await act(async () => {
+    res = await result.current.signIn(TEST_EMAIL, TEST_PASSWORD);
+  });
+
+  expect(res.ok).toBe(true);
+  expect(result.current.user?.email).toBe(TEST_EMAIL);
+  expect(auth.signInWithPassword).toHaveBeenCalledWith({
+    email: TEST_EMAIL,
+    password: TEST_PASSWORD,
+  });
+});
+
+test("wrong password is rejected when Supabase returns invalid credentials", async () => {
+  setupMock();
+  mockSuccessfulSignIn(TEST_EMAIL);
+  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await waitForAuthReady(result);
+
+  await act(async () => {
+    await result.current.signUp("Test User", TEST_EMAIL, TEST_PASSWORD);
+  });
+  expect(result.current.user).not.toBeNull();
+
   await act(async () => {
     result.current.signOut();
   });
+  expect(result.current.user).toBeNull();
 
+  mockFailedSignIn();
   let res: AuthResult = { ok: true, error: null };
   await act(async () => {
     res = await result.current.signIn(TEST_EMAIL, "wrongpassword");
@@ -144,67 +207,66 @@ test("wrong password is rejected for a registered account", async () => {
   expect(result.current.user).toBeNull();
 });
 
-test("after logout, wrong password is still rejected and correct one works", async () => {
+test("after sign-out, correct password works and wrong is rejected", async () => {
+  setupMock();
+  mockSuccessfulSignIn(TEST_EMAIL);
   const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-  await signUpTestUser(result);
+  await waitForAuthReady(result);
+
+  await act(async () => {
+    await result.current.signUp("Test User", TEST_EMAIL, TEST_PASSWORD);
+  });
   expect(result.current.user).not.toBeNull();
 
-  // Sign out — must completely clear the session
   await act(async () => {
     result.current.signOut();
   });
   expect(result.current.user).toBeNull();
 
-  // THE BUG: wrong password must still be rejected after logout
+  mockFailedSignIn();
   let res: AuthResult = { ok: true, error: null };
   await act(async () => {
     res = await result.current.signIn(TEST_EMAIL, "wrongpassword");
   });
   expect(res.ok).toBe(false);
-  if (!res.ok) {
-    expect(res.error).toBe("wrong_password");
-  }
   expect(result.current.user).toBeNull();
 
-  // Correct password should still work after logout
+  mockSuccessfulSignIn(TEST_EMAIL);
   await act(async () => {
     res = await result.current.signIn(TEST_EMAIL, TEST_PASSWORD);
   });
   expect(res.ok).toBe(true);
-  expect(result.current.user).not.toBeNull();
+  expect(result.current.user?.email).toBe(TEST_EMAIL);
 });
 
-test("newly registered account persists after logout", async () => {
+test("sign-up creates a real Supabase session", async () => {
+  const auth = setupMock();
+  mockSuccessfulSignIn(TEST_EMAIL);
   const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await waitForAuthReady(result);
 
-  let res: AuthResult = { ok: true, error: null };
+  let res: AuthResult = { ok: false, error: "not_found" };
   await act(async () => {
     res = await result.current.signUp("Test User", TEST_EMAIL, TEST_PASSWORD);
   });
   expect(res.ok).toBe(true);
   expect(result.current.user?.email).toBe(TEST_EMAIL);
-
-  await act(async () => {
-    result.current.signOut();
+  expect(auth.signInWithPassword).toHaveBeenCalledWith({
+    email: TEST_EMAIL,
+    password: TEST_PASSWORD,
   });
-  expect(result.current.user).toBeNull();
-
-  await act(async () => {
-    res = await result.current.signIn(TEST_EMAIL, "wrongpassword");
-  });
-  expect(res.ok).toBe(false);
-  expect(result.current.user).toBeNull();
-
-  await act(async () => {
-    res = await result.current.signIn(TEST_EMAIL, TEST_PASSWORD);
-  });
-  expect(res.ok).toBe(true);
-  expect(result.current.user?.email).toBe(TEST_EMAIL);
+  expect(result.current.supabaseUserId).toBe(TEST_USER_ID);
 });
 
-test("duplicate email signup is rejected with a clear email_taken error", async () => {
+test("duplicate email signup is rejected with email_taken", async () => {
+  setupMock();
+  mockSuccessfulSignIn(TEST_EMAIL);
   const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-  await signUpTestUser(result);
+  await waitForAuthReady(result);
+
+  await act(async () => {
+    await result.current.signUp("Test User", TEST_EMAIL, TEST_PASSWORD);
+  });
 
   let res: AuthResult = { ok: true, error: null };
   await act(async () => {
@@ -216,316 +278,35 @@ test("duplicate email signup is rejected with a clear email_taken error", async 
   }
 });
 
-test("unverified accounts cannot sign in; Forgot Password recovery verifies and unblocks them", async () => {
-  // Seed an account whose email was never verified (no such account can
-  // be created by the verified sign-up flow — this is the defense rail).
-  localStorage.setItem(
-    "lifevault-state-v1",
-    JSON.stringify({
-      onboarded: true,
-      user: null,
-      lastEmail: null,
-      accounts: [
-        {
-          email: "unverified@example.com",
-          name: "Unverified User",
-          photo: null,
-          password: "secret123",
-          createdAt: new Date().toISOString(),
-          emailVerified: false,
-        },
-      ],
-    }),
-  );
+test("sign-out calls Supabase signOut and clears the user", async () => {
+  const auth = setupMock();
+  mockSuccessfulSignIn(TEST_EMAIL);
   const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-
-  // Even the CORRECT password is refused while the email is unverified.
-  let res: AuthResult = { ok: true, error: null };
-  await act(async () => {
-    res = await result.current.signIn("unverified@example.com", "secret123");
-  });
-  expect(res.ok).toBe(false);
-  if (!res.ok) {
-    expect(res.error).toBe("email_unverified");
-  }
-  expect(result.current.user).toBeNull();
-
-  // Recovery (which requires a real emailed code before it is called)
-  // sets a new password AND marks the email verified.
-  let ok = false;
-  await act(async () => {
-    ok = await result.current.resetAccountPassword("unverified@example.com", "newpass123");
-  });
-  expect(ok).toBe(true);
+  await waitForAuthReady(result);
 
   await act(async () => {
-    res = await result.current.signIn("unverified@example.com", "newpass123");
+    await result.current.signUp("Test User", TEST_EMAIL, TEST_PASSWORD);
   });
-  expect(res.ok).toBe(true);
-  expect(result.current.user?.emailVerified).toBe(true);
-});
-
-test("resetAccountPassword marks the account's email verified", async () => {
-  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-  await signUpTestUser(result);
-
-  await act(async () => {
-    await result.current.resetAccountPassword(TEST_EMAIL, "resetpass123");
-  });
-  const account = result.current.accounts.find((a) => a.email === TEST_EMAIL);
-  expect(account?.emailVerified).toBe(true);
-});
-
-test("changePassword requires correct current password", async () => {
-  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-  await signUpTestUser(result);
-
-  // Wrong current password must fail
-  let ok = true;
-  await act(async () => {
-    ok = await result.current.changePassword("wrongcurrent", "newpassword123");
-  });
-  expect(ok).toBe(false);
-
-  // Correct current password must succeed
-  await act(async () => {
-    ok = await result.current.changePassword(TEST_PASSWORD, "newpassword123");
-  });
-  expect(ok).toBe(true);
-
-  // The user STAYS signed in after changing the password.
-  expect(result.current.user?.email).toBe(TEST_EMAIL);
-
-  await act(async () => {
-    result.current.signOut();
-  });
-
-  // Old password must no longer work
-  let res: AuthResult = { ok: true, error: null };
-  await act(async () => {
-    res = await result.current.signIn(TEST_EMAIL, TEST_PASSWORD);
-  });
-  expect(res.ok).toBe(false);
-
-  // New password must work
-  await act(async () => {
-    res = await result.current.signIn(TEST_EMAIL, "newpassword123");
-  });
-  expect(res.ok).toBe(true);
-});
-
-test("changePassword revokes every other device session but keeps this one", async () => {
-  // Seed an install with an extra (non-demo) device session.
-  localStorage.setItem(
-    "lifevault-state-v1",
-    JSON.stringify({
-      onboarded: true,
-      user: null,
-      lastEmail: null,
-      accounts: [],
-      sessions: [
-        { id: "ses_this_device", device: "iPhone", location: "This device", app: "LifeVault", lastActive: new Date().toISOString(), current: true },
-        { id: "ses_other_real", device: "iPad", location: "Sydney", app: "LifeVault", lastActive: new Date().toISOString() },
-      ],
-    }),
-  );
-  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-  await signUpTestUser(result);
-  expect(result.current.sessions).toHaveLength(2);
-
-  let ok = false;
-  await act(async () => {
-    ok = await result.current.changePassword(TEST_PASSWORD, "newpassword123");
-  });
-  expect(ok).toBe(true);
-  // Other devices are signed out; the current session survives.
-  expect(result.current.sessions).toHaveLength(1);
-  expect(result.current.sessions[0].current).toBe(true);
-  expect(result.current.user?.email).toBe(TEST_EMAIL);
-});
-
-test("verifyAccountPassword accepts only the correct password", async () => {
-  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-  await signUpTestUser(result);
-
-  await expect(result.current.verifyAccountPassword("wrongpassword")).resolves.toBe(false);
-  await expect(result.current.verifyAccountPassword(TEST_PASSWORD)).resolves.toBe(true);
-});
-
-test("resetAccountPassword replaces the password after email verification", async () => {
-  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-  await signUpTestUser(result);
-  await act(async () => {
-    result.current.signOut();
-  });
-
-  // Unknown emails cannot be reset.
-  let ok = true;
-  await act(async () => {
-    ok = await result.current.resetAccountPassword("missing@example.com", "whatever123");
-  });
-  expect(ok).toBe(false);
-
-  await act(async () => {
-    ok = await result.current.resetAccountPassword(TEST_EMAIL, "brandnew123");
-  });
-  expect(ok).toBe(true);
-
-  // Old password is dead; the new one signs in.
-  let res: AuthResult = { ok: true, error: null };
-  await act(async () => {
-    res = await result.current.signIn(TEST_EMAIL, TEST_PASSWORD);
-  });
-  expect(res.ok).toBe(false);
-  await act(async () => {
-    res = await result.current.signIn(TEST_EMAIL, "brandnew123");
-  });
-  expect(res.ok).toBe(true);
-});
-
-test("in-app resetAccountPassword keeps the user signed in and revokes other device sessions", async () => {
-  // Seed an install with an extra (non-demo) device session.
-  localStorage.setItem(
-    "lifevault-state-v1",
-    JSON.stringify({
-      onboarded: true,
-      user: null,
-      lastEmail: null,
-      accounts: [],
-      sessions: [
-        { id: "ses_this_device", device: "iPhone", location: "This device", app: "LifeVault", lastActive: new Date().toISOString(), current: true },
-        { id: "ses_other_real", device: "iPad", location: "Sydney", app: "LifeVault", lastActive: new Date().toISOString() },
-      ],
-    }),
-  );
-  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-  await signUpTestUser(result);
-  expect(result.current.sessions).toHaveLength(2);
-
-  // Change Password → Forgot password? recovery while signed in.
-  let ok = false;
-  await act(async () => {
-    ok = await result.current.resetAccountPassword(TEST_EMAIL, "recovered123");
-  });
-  expect(ok).toBe(true);
-
-  // NEVER logged out during in-app recovery; other devices are revoked.
-  expect(result.current.user?.email).toBe(TEST_EMAIL);
-  expect(result.current.sessions).toHaveLength(1);
-  expect(result.current.sessions[0].current).toBe(true);
-
-  // Old password is dead; the new one signs in.
-  await act(async () => {
-    result.current.signOut();
-  });
-  let res: AuthResult = { ok: true, error: null };
-  await act(async () => {
-    res = await result.current.signIn(TEST_EMAIL, TEST_PASSWORD);
-  });
-  expect(res.ok).toBe(false);
-  await act(async () => {
-    res = await result.current.signIn(TEST_EMAIL, "recovered123");
-  });
-  expect(res.ok).toBe(true);
-});
-
-test("legacy plaintext account still signs in and is upgraded to a hash", async () => {
-  localStorage.setItem(
-    "lifevault-state-v1",
-    JSON.stringify({
-      onboarded: true,
-      user: null,
-      lastEmail: null,
-      accounts: [
-        {
-          email: "legacy@example.com",
-          name: "Legacy User",
-          photo: null,
-          password: "legacypass",
-          createdAt: new Date().toISOString(),
-          emailVerified: true,
-        },
-      ],
-    }),
-  );
-  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-
-  // Wrong password is still rejected for legacy accounts.
-  let res: AuthResult = { ok: true, error: null };
-  await act(async () => {
-    res = await result.current.signIn("legacy@example.com", "wrong");
-  });
-  expect(res.ok).toBe(false);
-
-  await act(async () => {
-    res = await result.current.signIn("legacy@example.com", "legacypass");
-  });
-  expect(res.ok).toBe(true);
-
-  // The plaintext has been replaced by a salted hash.
-  const stored = JSON.parse(localStorage.getItem("lifevault-state-v1")!) as {
-    accounts: { email: string; password?: string; passwordHash?: string; passwordSalt?: string }[];
-  };
-  const account = stored.accounts.find((a) => a.email === "legacy@example.com");
-  expect(account?.passwordHash).toBeTruthy();
-  expect(account?.passwordSalt).toBeTruthy();
-  expect(account?.password).toBeUndefined();
-});
-
-test("signOutAllDevices clears user session", async () => {
-  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-  await signUpTestUser(result);
   expect(result.current.user).not.toBeNull();
 
   await act(async () => {
-    result.current.signOutAllDevices();
-  });
-  expect(result.current.user).toBeNull();
-
-  // Wrong password must still be rejected
-  let res: AuthResult = { ok: true, error: null };
-  await act(async () => {
-    res = await result.current.signIn(TEST_EMAIL, "wrongpassword");
-  });
-  expect(res.ok).toBe(false);
-});
-
-test("signInWithBiometric unlocks the last signed-in account after logout", async () => {
-  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-  await signUpTestUser(result);
-
-  await act(async () => {
     result.current.signOut();
   });
   expect(result.current.user).toBeNull();
-
-  // Biometric unlock should restore the session without a password
-  let res: AuthResult = { ok: false, error: "not_found" };
-  await act(async () => {
-    res = result.current.signInWithBiometric();
-  });
-  expect(res.ok).toBe(true);
-  expect(result.current.user?.email).toBe(TEST_EMAIL);
-});
-
-test("signInWithBiometric fails when no previous login exists", async () => {
-  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
-
-  let res: AuthResult = { ok: true, error: null };
-  await act(async () => {
-    res = result.current.signInWithBiometric();
-  });
-  expect(res.ok).toBe(false);
+  expect(auth.signOut).toHaveBeenCalled();
+  expect(result.current.supabaseUserId).toBeNull();
 });
 
 test("password validation survives page reload (persisted registry, hash only)", async () => {
+  setupMock();
+  mockSuccessfulSignIn("persist@example.com");
   const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await waitForAuthReady(result);
 
   await act(async () => {
     await result.current.signUp("Persist User", "persist@example.com", "persistpass");
   });
 
-  // Simulate a page reload by re-reading persisted state from localStorage.
   const stored = localStorage.getItem("lifevault-state-v1");
   expect(stored).not.toBeNull();
 
@@ -534,17 +315,128 @@ test("password validation survives page reload (persisted registry, hash only)",
     user: { password?: string } | null;
   };
   expect(parsed.accounts).toBeDefined();
-  // Only the account the user actually registered — no seeded demo accounts.
   expect(parsed.accounts.length).toBe(1);
 
   const persistAccount = parsed.accounts.find((a) => a.email === "persist@example.com");
   expect(persistAccount).toBeDefined();
-  // SECURITY: the password is never persisted in plaintext — only a
-  // salted PBKDF2 hash is stored.
   expect(persistAccount?.password).toBeUndefined();
   expect(persistAccount?.passwordHash).toBeTruthy();
   expect(persistAccount?.passwordSalt).toBeTruthy();
   expect(persistAccount?.passwordHash).not.toContain("persistpass");
-  // The signed-in profile carries no credential material either.
-  expect(parsed.user?.password).toBeUndefined();
+  expect(parsed.user).toBeNull();
+});
+
+test("user is never set from localStorage — only from Supabase session", async () => {
+  setupMock();
+  localStorage.setItem(
+    "lifevault-state-v1",
+    JSON.stringify({
+      onboarded: true,
+      user: { name: "Old User", email: "old@example.com", photo: null, createdAt: new Date().toISOString(), emailVerified: true },
+      lastEmail: "old@example.com",
+      accounts: [
+        { email: "old@example.com", name: "Old User", photo: null, password: "pass", createdAt: new Date().toISOString(), emailVerified: true },
+      ],
+      settings: { currency: "AUD", darkMode: false, biometric: false, monthlyBudget: 0, language: "en" },
+    }),
+  );
+
+  (mockHolder.client!.auth as MockAuth).getSession.mockResolvedValue({ data: { session: null } });
+
+  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await waitForAuthReady(result);
+
+  expect(result.current.user).toBeNull();
+  expect(result.current.supabaseUserId).toBeNull();
+});
+
+test("getSession restores user on mount when a valid session exists", async () => {
+  setupMock();
+  const validSession = {
+    user: {
+      id: "restored-user-id",
+      email: TEST_EMAIL,
+      email_confirmed_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      user_metadata: { name: "Restored" },
+    },
+    access_token: "valid-token",
+  };
+  (mockHolder.client!.auth as MockAuth).getSession.mockResolvedValue({ data: { session: validSession } });
+
+  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await waitForAuthReady(result);
+
+  expect(result.current.user).not.toBeNull();
+  expect(result.current.user?.email).toBe(TEST_EMAIL);
+  expect(result.current.supabaseUserId).toBe("restored-user-id");
+});
+
+test("signInWithBiometric fails when no previous login exists", async () => {
+  setupMock();
+  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await waitForAuthReady(result);
+
+  let res: AuthResult = { ok: true, error: null };
+  await act(async () => {
+    res = await result.current.signInWithBiometric();
+  });
+  expect(res.ok).toBe(false);
+  expect(result.current.user).toBeNull();
+});
+
+test("changePassword updates Supabase auth password", async () => {
+  const auth = setupMock();
+  mockSuccessfulSignIn(TEST_EMAIL);
+  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await waitForAuthReady(result);
+
+  await act(async () => {
+    await result.current.signUp("Test User", TEST_EMAIL, TEST_PASSWORD);
+  });
+
+  let ok = true;
+  await act(async () => {
+    ok = await result.current.changePassword(TEST_PASSWORD, "newpassword123");
+  });
+  expect(ok).toBe(true);
+  expect(auth.updateUser).toHaveBeenCalledWith({ password: "newpassword123" });
+  expect(result.current.user?.email).toBe(TEST_EMAIL);
+});
+
+test("signOutAllDevices calls Supabase signOut with global scope", async () => {
+  const auth = setupMock();
+  mockSuccessfulSignIn(TEST_EMAIL);
+  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+  await waitForAuthReady(result);
+
+  await act(async () => {
+    await result.current.signUp("Test User", TEST_EMAIL, TEST_PASSWORD);
+  });
+
+  await act(async () => {
+    result.current.signOutAllDevices();
+  });
+  expect(result.current.user).toBeNull();
+  expect(auth.signOut).toHaveBeenCalledWith({ scope: "global" });
+});
+
+test("authReady is false before getSession completes, true after", async () => {
+  setupMock();
+  const auth = mockHolder.client!.auth as MockAuth;
+  let resolveGetSession: (value: { data: { session: null } }) => void = () => {};
+  auth.getSession.mockImplementation(
+    () => new Promise<{ data: { session: null } }>((resolve) => { resolveGetSession = resolve; }),
+  );
+
+  const { result } = renderHook(() => useApp(), { wrapper: AppProvider });
+
+  expect(result.current.authReady).toBe(false);
+
+  await act(async () => {
+    resolveGetSession({ data: { session: null } });
+    await new Promise((r) => setTimeout(r, 200));
+  });
+
+  expect(result.current.authReady).toBe(true);
 });

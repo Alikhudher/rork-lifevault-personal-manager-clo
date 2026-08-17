@@ -32,7 +32,11 @@ import NotFound from "./pages/NotFound";
 const queryClient = new QueryClient();
 
 function PublicOnly({ children }: { children: React.ReactNode }) {
-  const { user } = useApp();
+  const { user, authReady } = useApp();
+  // Wait for the Supabase session check before deciding to redirect.
+  // Without this, a reload with a valid session would briefly show the
+  // auth page before the session restore completes.
+  if (!authReady) return null;
   if (user) return <Navigate to="/" replace />;
   return <>{children}</>;
 }

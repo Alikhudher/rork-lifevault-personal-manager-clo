@@ -10,6 +10,7 @@ import { Capacitor } from "@capacitor/core";
 import { getSupabaseUserId } from "@/lib/supabase";
 import { getDiagnosticsInfo, isIAPAvailable } from "@/lib/iap";
 import { usePremium } from "@/context/PremiumContext";
+import { useApp } from "@/context/AppContext";
 
 const APP_BUILD_NUMBER = "30";
 const GIT_COMMIT_SHA = import.meta.env.VITE_GIT_SHA ?? "dev";
@@ -36,7 +37,8 @@ interface DiagnosticsSheetProps {
 }
 
 export default function DiagnosticsSheet({ open, onOpenChange }: DiagnosticsSheetProps) {
-  const { supabaseUid, rcAppUserID } = usePremium();
+  const { supabaseUid: contextUid } = usePremium();
+  const { supabaseUserId: appUid } = useApp();
   const [loading, setLoading] = useState(true);
   const [supabaseUserId, setSupabaseUserId] = useState<string | null>(null);
   const [rcInfo, setRcInfo] = useState<{
@@ -51,6 +53,7 @@ export default function DiagnosticsSheet({ open, onOpenChange }: DiagnosticsShee
     if (!open) return;
     setLoading(true);
     void (async () => {
+      // Call sb.auth.getSession() directly — this is the real source of truth.
       const uid = await getSupabaseUserId();
       setSupabaseUserId(uid);
       if (isIAPAvailable()) {
@@ -120,7 +123,7 @@ export default function DiagnosticsSheet({ open, onOpenChange }: DiagnosticsShee
               />
               <DiagRow
                 label="Context UID"
-                value={supabaseUid ?? "null"}
+                value={appUid ?? contextUid ?? "null"}
               />
             </DiagSection>
 

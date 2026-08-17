@@ -239,11 +239,17 @@ function ScanPanel({ pages, setPages, onScanComplete, isPremium, iapAvailable }:
             note, contract, ID, or boarding pass. LifeVault reads, understands, and
             organises it for you. English & Arabic supported.
           </p>
-          {/* Free-tier scan quota indicator */}
+          {/* Scan quota indicator — Unlimited for premium, limited for free */}
           {iapAvailable && !isPremium && (
             <div className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-[12px] font-bold text-white/80 ring-1 ring-white/15">
               <Sparkles className="h-3 w-3" />
               {remainingFreeScans(FREE_TIER_LIMITS.monthlyAiScans)} of {FREE_TIER_LIMITS.monthlyAiScans} free scans left this month
+            </div>
+          )}
+          {iapAvailable && isPremium && (
+            <div className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-emerald-400/15 px-3 py-1 text-[12px] font-bold text-emerald-300 ring-1 ring-emerald-400/20">
+              <Sparkles className="h-3 w-3" />
+              Unlimited scans
             </div>
           )}
 

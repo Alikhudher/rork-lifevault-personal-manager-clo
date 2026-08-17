@@ -274,6 +274,32 @@ export default function Premium() {
     ? format(new Date(premium.expiryDate), "MMM d, yyyy")
     : null;
 
+  // Real trial/subscription state from RevenueCat — no local countdown.
+  // periodType === "TRIAL" means the user is in the free trial period.
+  // willRenew === true means auto-renew is on (subscription or trial will continue).
+  // willRenew === false with isActive means cancelled but still active until expiry.
+  const isTrialActive = premium.isPremium && premium.isTrial;
+  const isPaidActive = premium.isPremium && !premium.isTrial;
+  const isCancelled = premium.isPremium && !premium.willRenew;
+
+  // Status banner text based on real RC entitlement state.
+  const statusTitle = isTrialActive
+    ? "Premium Free Trial"
+    : isPaidActive
+      ? "LifeVault Premium — Active"
+      : "";
+  const statusSubtitle = isTrialActive
+    ? isCancelled
+      ? `Trial cancelled — Premium remains available until ${expiryFormatted}.`
+      : premium.willRenew
+        ? `Trial ends ${expiryFormatted}. Your paid plan starts after the trial.`
+        : `Trial ends ${expiryFormatted}.`
+    : isPaidActive
+      ? isCancelled
+        ? `Cancelled — Premium remains available until ${expiryFormatted}.`
+        : `Renews ${expiryFormatted}.`
+      : "";
+
   return (
     <div className="animate-fade-in">
       <PageHeader
@@ -292,7 +318,9 @@ export default function Premium() {
               <Crown className="h-8 w-8" strokeWidth={2.2} />
             </div>
             <h2 className="mt-4 text-[24px] font-extrabold tracking-tight">
-              {isPremium ? "Premium Active" : "Upgrade to Premium"}
+              {isPremium
+                ? premium.isTrial ? "Premium Free Trial" : "Premium Active"
+                : "Upgrade to Premium"}
             </h2>
             <p className="mt-1.5 text-[14px] font-semibold text-white/80">
               Advanced tools for power users. Free forever for the basics.
@@ -301,14 +329,18 @@ export default function Premium() {
               <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-4 py-2 text-[13px] font-bold ring-1 ring-white/30 backdrop-blur-sm">
                 <Sparkles className="h-4 w-4" />
                 {getIntroOffer(selectedPlan)!.isFreeTrial
-                  ? `${capitalizeDuration(getIntroOffer(selectedPlan)!.durationLabel)} Free Trial`
+                  ? "7-DAY FREE TRIAL"
                   : `Save with ${getIntroOffer(selectedPlan)!.durationLabel} intro`}
               </div>
             )}
             {isPremium && (
               <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-4 py-2 text-[13px] font-bold ring-1 ring-white/30 backdrop-blur-sm">
                 <ShieldCheck className="h-4 w-4" />
-                {plan ? `Active · ${plan === "yearly" ? "Yearly" : "Monthly"}` : "All features unlocked"}
+                {premium.isTrial
+                  ? `Free Trial · Ends ${expiryFormatted}`
+                  : plan
+                    ? `Active · ${plan === "yearly" ? "Yearly" : "Monthly"}`
+                    : "All features unlocked"}
               </div>
             )}
           </div>
@@ -332,11 +364,10 @@ export default function Premium() {
               </span>
               <div className="min-w-0 flex-1">
                 <p className="text-[14px] font-bold text-success">
-                  Premium is active
+                  {statusTitle}
                 </p>
                 <p className="text-[12.5px] text-muted-foreground">
-                  All premium features are unlocked.
-                  {expiryFormatted && ` Renews ${expiryFormatted}.`}
+                  {statusSubtitle || "All premium features are unlocked."}
                 </p>
               </div>
             </div>
@@ -446,12 +477,17 @@ export default function Premium() {
         <section className="px-4 pt-6">
           <SectionTitle>Choose your plan</SectionTitle>
 
-          {/* Free trial badge — visible on all platforms including web preview */}
+          {/* Always-visible informational trial line */}
+          <p className="mb-3 text-[13px] font-semibold text-muted-foreground">
+            7-day free trial for eligible new subscribers.
+          </p>
+
+          {/* Visible 7-DAY FREE TRIAL badge — only when eligible */}
           {getIntroOffer(selectedPlan)?.isFreeTrial && (
             <div className="mb-3 flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500/10 to-teal-500/10 px-4 py-3 ring-1 ring-emerald-500/20">
               <Sparkles className="h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
               <p className="text-[13px] font-extrabold text-emerald-700 dark:text-emerald-300">
-                7-Day Free Trial
+                7-DAY FREE TRIAL
                 <span className="ml-1.5 font-semibold text-emerald-600/80 dark:text-emerald-400/80">
                   — no charge until it ends
                 </span>

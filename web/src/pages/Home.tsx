@@ -88,9 +88,11 @@ export default function Home() {
   );
 
   const renewalDate = premium.expiryDate ? new Date(premium.expiryDate) : null;
-  const isTrial = premium.status === "active" && renewalDate && premium.purchaseDate
-    ? new Date(premium.purchaseDate) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-    : false;
+  // Real trial state from RevenueCat — no local countdown.
+  // `premium.isTrial` is true when RevenueCat reports periodType === "TRIAL".
+  // `premium.willRenew` is false when the user cancelled but the entitlement is still active.
+  const isTrial = premium.isPremium && premium.isTrial;
+  const isCancelled = premium.isPremium && !premium.willRenew;
   const showBanner = !checkingStatus && (iapAvailable ? true : !isPremium);
 
   return (
@@ -138,14 +140,18 @@ export default function Home() {
               </span>
               <div className="min-w-0 flex-1 text-left">
                 <p className="text-[13px] font-extrabold text-amber-700 dark:text-amber-300">
-                  {isTrial ? "Free trial active" : "Premium active"}
+                  {isTrial ? "Premium Free Trial" : "Premium Active"}
                 </p>
                 <p className="truncate text-[11.5px] text-muted-foreground">
                   {isTrial
-                    ? `Trial ends ${fmtDate(renewalDate!.toISOString(), "d MMM yyyy")}`
-                    : renewalDate
-                      ? `Renews ${fmtDate(renewalDate.toISOString(), "d MMM yyyy")}`
-                      : "All features unlocked"}
+                    ? isCancelled
+                      ? `Trial cancelled — Premium until ${fmtDate(renewalDate!.toISOString(), "d MMM yyyy")}`
+                      : `Trial ends ${fmtDate(renewalDate!.toISOString(), "d MMM yyyy")}`
+                    : isCancelled
+                      ? `Cancelled — Premium until ${fmtDate(renewalDate!.toISOString(), "d MMM yyyy")}`
+                      : renewalDate
+                        ? `Renews ${fmtDate(renewalDate.toISOString(), "d MMM yyyy")}`
+                        : "All features unlocked"}
                 </p>
               </div>
             </button>

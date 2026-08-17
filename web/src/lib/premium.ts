@@ -117,6 +117,9 @@ export const PREMIUM_PLANS: PremiumPlan[] = [
 /** Subscription status as reported by RevenueCat's server-side validation. */
 export type SubscriptionStatus = "active" | "expired" | "none";
 
+/** The type of billing period, as reported by RevenueCat. */
+export type PeriodType = "NORMAL" | "INTRO" | "TRIAL" | "PREPAID";
+
 export interface PremiumState {
   /** Whether the user has an active Premium subscription (verified by Apple/Google). */
   isPremium: boolean;
@@ -128,6 +131,16 @@ export interface PremiumState {
   purchaseDate: string | null;
   /** ISO datetime the subscription expires or renews, if any. */
   expiryDate: string | null;
+  /** True when the active entitlement is in a free trial period (periodType === "TRIAL"). */
+  isTrial: boolean;
+  /** Whether the subscription will renew at the end of the current period. */
+  willRenew: boolean;
+  /** The RevenueCat period type: NORMAL, INTRO, TRIAL, or PREPAID. */
+  periodType: PeriodType | null;
+  /** The product identifier that unlocked the entitlement (e.g. com.lifevault.premium.monthly). */
+  productIdentifier: string | null;
+  /** ISO datetime when an unsubscribe was detected (cancelled but still active). Null if not cancelled. */
+  unsubscribeDetectedAt: string | null;
 }
 
 /**
@@ -142,6 +155,11 @@ export const DEFAULT_PREMIUM_STATE: PremiumState = {
   status: "none",
   purchaseDate: null,
   expiryDate: null,
+  isTrial: false,
+  willRenew: false,
+  periodType: null,
+  productIdentifier: null,
+  unsubscribeDetectedAt: null,
 };
 
 /**

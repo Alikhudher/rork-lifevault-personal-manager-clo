@@ -680,11 +680,16 @@ export default function Profile() {
               </span>
               <div className="min-w-0 flex-1">
                 <p className="text-[15px] font-extrabold tracking-tight text-emerald-700 dark:text-emerald-300">
-                  Premium Active
+                  {premium.isTrial ? "Premium Free Trial" : "LifeVault Premium — Active"}
                 </p>
                 <p className="truncate text-[12px] text-muted-foreground">
-                  {premium.plan === "yearly" ? "Yearly plan" : premium.plan === "monthly" ? "Monthly plan" : "Active"}
-                  {premium.expiryDate && ` · Renews ${format(new Date(premium.expiryDate), "d MMM yyyy")}`}
+                  {premium.isTrial
+                    ? premium.willRenew
+                      ? `Trial ends ${format(new Date(premium.expiryDate!), "d MMM yyyy")} · Paid plan starts after`
+                      : `Trial cancelled — Premium until ${format(new Date(premium.expiryDate!), "d MMM yyyy")}`
+                    : premium.willRenew
+                      ? `${premium.plan === "yearly" ? "Yearly" : premium.plan === "monthly" ? "Monthly" : "Active"} · Renews ${format(new Date(premium.expiryDate!), "d MMM yyyy")}`
+                      : `Cancelled — Premium until ${format(new Date(premium.expiryDate!), "d MMM yyyy")}`}
                 </p>
               </div>
             </div>

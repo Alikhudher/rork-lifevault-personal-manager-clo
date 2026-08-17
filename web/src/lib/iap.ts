@@ -23,7 +23,8 @@ import type {
   PurchasesPackage,
   PurchasesStoreProduct,
 } from "@revenuecat/purchases-capacitor";
-import type { PlanId, PremiumState } from "@/lib/premium";
+import type { PlanId, PremiumState, PeriodType } from "@/lib/premium";
+import { DEFAULT_PREMIUM_STATE } from "@/lib/premium";
 import type { IntroEligibility, PurchasesIntroPrice } from "@revenuecat/purchases-capacitor";
 import { INTRO_ELIGIBILITY_STATUS } from "@revenuecat/purchases-capacitor";
 
@@ -450,6 +451,14 @@ export async function purchasePlan(
  * Wrap a raw purchase error in a user-friendly message while preserving
  * the underlying StoreKit error in the logs. User cancellations are
  * re-thrown as-is (handled silently by the UI).
+ *
+ * Special cases:
+ * - RECEIPT_ALREADY_IN_USE (error code 7): the Apple Account already has
+ *   an active LifeVault subscription linked to a different RevenueCat
+ *   appUserID (a different LifeVault account). Because Restore Behavior
+ *   is set to "Keep with Original App User ID", the receipt stays bound
+ *   to the original account. We surface a clear, specific message.
+ * - RECEIPT_IN_USE_BY_OTHER_SUBSCRIBER (error code 13): same scenario.
  */
 function wrapPurchaseError(err: unknown, planId: PlanId): Error {
   const raw = err instanceof Error ? err.message : String(err);
@@ -458,6 +467,21 @@ function wrapPurchaseError(err: unknown, planId: PlanId): Error {
   // User cancelled — pass through; UI handles this silently.
   if (/cancel|user.*cancell|user.*dismiss/i.test(raw)) {
     return new Error("Purchase cancelled by user.");
+  }
+
+  // Receipt already in use — the Apple Account has an active subscription
+  // linked to a different LifeVault account. This is NOT a generic error.
+  // With "Keep with Original App User ID" restore behavior, the receipt
+  // cannot be transferred; it stays bound to the original account until
+  // the subscription expires.
+  if (
+    /RECEIPT_ALREADY_IN_USE|7|RECEIPT_IN_USE_BY_OTHER|13/.test(raw) ||
+    /receipt.*(already|in.use|other.subscriber)/i.test(raw)
+  ) {
+    return new Error(
+      "This Apple Account already has an active LifeVault subscription linked to another LifeVault account. " +
+        "Sign in to the original LifeVault account, or use a different Apple Account.",
+    );
   }
 
   // StoreKit configuration issues — surface actionable detail.
@@ -521,13 +545,7 @@ export async function restoreIAPPurchases(): Promise<PremiumState> {
  */
 export async function checkSubscriptionStatus(): Promise<PremiumState> {
   if (!(await ensureConfigured())) {
-    return {
-      isPremium: false,
-      plan: null,
-      status: "none",
-      purchaseDate: null,
-      expiryDate: null,
-    };
+    return DEFAULT_PREMIUM_STATE;
   }
 
   try {
@@ -535,13 +553,7 @@ export async function checkSubscriptionStatus(): Promise<PremiumState> {
     return customerInfoToPremiumState(customerInfo);
   } catch (err) {
     console.error("[IAP] Failed to check subscription status:", err);
-    return {
-      isPremium: false,
-      plan: null,
-      status: "none",
-      purchaseDate: null,
-      expiryDate: null,
-    };
+    return DEFAULT_PREMIUM_STATE;
   }
 }
 
@@ -584,6 +596,18 @@ export async function removeCustomerInfoListener(
  *
  * Premium only unlocks if the "premium" entitlement is ACTIVE.
  * This is the single source of truth — no local spoofing.
+ *
+ * Trial detection uses RevenueCat's `periodType` field (not a local countdown):
+ *   - periodType === "TRIAL" → the user is in a free trial period.
+ *   - periodType === "INTRO" → introductory pricing period.
+ *   - periodType === "NORMAL" → regular paid subscription.
+ *
+ * `willRenew` comes directly from RevenueCat:
+ *   - true → auto-renew is on (subscription will continue).
+ *   - false → user cancelled but entitlement may still be active until expiry.
+ *
+ * Sandbox/TestFlight use Apple's accelerated subscription timing automatically —
+ * we never calculate trial duration ourselves.
  */
 export function customerInfoToPremiumState(
   info: CustomerInfo,
@@ -598,12 +622,22 @@ export function customerInfoToPremiumState(
         ? "monthly"
         : null;
 
+    const periodType = (entitlement.periodType as PeriodType) ?? null;
+    const isTrial = periodType === "TRIAL";
+    const willRenew = entitlement.willRenew;
+    const unsubAt = entitlement.unsubscribeDetectedAt || null;
+
     return {
       isPremium: true,
       plan,
       status: "active",
       purchaseDate: entitlement.latestPurchaseDate || null,
       expiryDate: entitlement.expirationDate || null,
+      isTrial,
+      willRenew,
+      periodType,
+      productIdentifier: productId,
+      unsubscribeDetectedAt: unsubAt,
     };
   }
 
@@ -616,6 +650,11 @@ export function customerInfoToPremiumState(
       status: "expired",
       purchaseDate: inactiveEntitlement.latestPurchaseDate || null,
       expiryDate: inactiveEntitlement.expirationDate || null,
+      isTrial: false,
+      willRenew: false,
+      periodType: null,
+      productIdentifier: inactiveEntitlement.productIdentifier || null,
+      unsubscribeDetectedAt: inactiveEntitlement.unsubscribeDetectedAt || null,
     };
   }
 
@@ -625,6 +664,11 @@ export function customerInfoToPremiumState(
     status: "none",
     purchaseDate: null,
     expiryDate: null,
+    isTrial: false,
+    willRenew: false,
+    periodType: null,
+    productIdentifier: null,
+    unsubscribeDetectedAt: null,
   };
 }
 

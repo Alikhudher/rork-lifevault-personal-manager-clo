@@ -63,14 +63,22 @@ export const FREE_FEATURE_FLAGS: Record<PremiumFeature, boolean> = {
  * Free-tier usage limits. Free users are subject to these limits;
  * Premium users have no limits.
  *
- * These are not currently enforced in the UI — they're defined here
- * so enforcement can be added per-screen when ready.
+ * These are enforced via `usePremium().hasFeature()` and `isWithinFreeLimit()`
+ * on AIAssistant (scans), BackupSync (cloud items), and ViewDocument (export).
  */
 export const FREE_TIER_LIMITS = {
   /** Maximum AI document scans per month for free users. */
-  monthlyAiScans: 10,
+  monthlyAiScans: 3,
   /** Maximum items in cloud backup for free users. */
-  cloudBackupItems: 50,
+  cloudBackupItems: 25,
+  /** Maximum documents a free user can store. */
+  maxDocuments: 10,
+  /** Maximum expenses a free user can track. */
+  maxExpenses: 20,
+  /** Maximum subscriptions a free user can track. */
+  maxSubscriptions: 5,
+  /** Maximum appointments a free user can create. */
+  maxAppointments: 10,
 } as const;
 
 /** Plan identifiers — must match the product IDs configured in App Store Connect / Google Play. */
@@ -204,7 +212,7 @@ export const FREE_FEATURES: FreeFeature[] = [
   {
     icon: "FileText",
     title: "Document storage",
-    description: "Save and organise all your important documents.",
+    description: `Save and organise up to ${FREE_TIER_LIMITS.maxDocuments} documents.`,
   },
   {
     icon: "Bell",
@@ -214,7 +222,7 @@ export const FREE_FEATURES: FreeFeature[] = [
   {
     icon: "Receipt",
     title: "Expense tracking",
-    description: "Track spending and manage your budget effortlessly.",
+    description: `Track up to ${FREE_TIER_LIMITS.maxExpenses} expenses and manage your budget.`,
   },
   {
     icon: "CalendarDays",

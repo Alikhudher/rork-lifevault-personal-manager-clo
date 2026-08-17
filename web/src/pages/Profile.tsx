@@ -66,6 +66,7 @@ import {
   WhatsNewSheet,
 } from "@/components/lifevault/AccountSheets";
 import { accountHasPassword, useApp, type RestoredRecord } from "@/context/AppContext";
+import { usePremium } from "@/context/PremiumContext";
 import { loadAllFileData, saveFileData } from "@/lib/file-store";
 import { shareText } from "@/lib/share";
 import { useI18n } from "@/context/I18nContext";
@@ -74,6 +75,7 @@ import { isLanguageCode, LANGUAGES } from "@/lib/i18n";
 import { dismissKeyboard, subscribeKeyboard } from "@/lib/keyboard";
 import { CURRENCIES } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { format } from "date-fns";
 
 const APP_VERSION = "1.0.0";
 
@@ -338,6 +340,7 @@ export default function Profile() {
     clearLocalData,
     applyRestoredRecords,
   } = useApp();
+  const { isPremium, premium, manageSubscription, iapAvailable } = usePremium();
   const { t, language, setLanguage } = useI18n();
   const navigate = useNavigate();
   const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
@@ -669,23 +672,50 @@ export default function Profile() {
 
       {/* Premium */}
       <section className="px-4 pt-6">
-        <button
-          type="button"
-          onClick={() => navigate("/premium")}
-          className="relative flex w-full items-center gap-4 overflow-hidden rounded-2xl bg-gradient-to-br from-[hsl(43,90%,55%)] via-[hsl(38,85%,50%)] to-[hsl(28,80%,45%)] p-4 text-left text-white shadow-lg shadow-amber-500/20 transition-transform active:scale-[0.99]"
-        >
-          <div className="absolute -right-8 -top-8 h-28 w-28 rounded-full bg-white/15 blur-2xl" aria-hidden />
-          <span className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/20 ring-1 ring-white/30">
-            <Crown className="h-6 w-6" strokeWidth={2.2} />
-          </span>
-          <div className="relative min-w-0 flex-1">
-            <p className="text-[15px] font-extrabold tracking-tight">LifeVault Premium</p>
-            <p className="truncate text-[12.5px] font-semibold text-white/80">
-              All features currently free — upgrade coming soon
-            </p>
+        {isPremium ? (
+          <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-500/15 via-emerald-500/8 to-transparent p-4 ring-1 ring-emerald-500/20">
+            <div className="flex items-center gap-3">
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-emerald-500/15 ring-1 ring-emerald-500/20">
+                <Crown className="h-5 w-5 text-emerald-600 dark:text-emerald-400" strokeWidth={2.2} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[15px] font-extrabold tracking-tight text-emerald-700 dark:text-emerald-300">
+                  Premium Active
+                </p>
+                <p className="truncate text-[12px] text-muted-foreground">
+                  {premium.plan === "yearly" ? "Yearly plan" : premium.plan === "monthly" ? "Monthly plan" : "Active"}
+                  {premium.expiryDate && ` · Renews ${format(new Date(premium.expiryDate), "d MMM yyyy")}`}
+                </p>
+              </div>
+            </div>
+            {iapAvailable && (
+              <button
+                onClick={() => void manageSubscription()}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/5 py-2.5 text-[13px] font-bold text-emerald-700 transition-colors hover:bg-emerald-500/10 dark:text-emerald-300"
+              >
+                Manage Subscription
+              </button>
+            )}
           </div>
-          <ChevronRight className="relative h-5 w-5 shrink-0 text-white/70 rtl:rotate-180" />
-        </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => navigate("/premium")}
+            className="relative flex w-full items-center gap-4 overflow-hidden rounded-2xl bg-gradient-to-br from-[hsl(43,90%,55%)] via-[hsl(38,85%,50%)] to-[hsl(28,80%,45%)] p-4 text-left text-white shadow-lg shadow-amber-500/20 transition-transform active:scale-[0.99]"
+          >
+            <div className="absolute -right-8 -top-8 h-28 w-28 rounded-full bg-white/15 blur-2xl" aria-hidden />
+            <span className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/20 ring-1 ring-white/30">
+              <Crown className="h-6 w-6" strokeWidth={2.2} />
+            </span>
+            <div className="relative min-w-0 flex-1">
+              <p className="text-[15px] font-extrabold tracking-tight">Upgrade to Premium</p>
+              <p className="truncate text-[12.5px] font-semibold text-white/80">
+                Unlimited scans, AI assistant, export & more
+              </p>
+            </div>
+            <ChevronRight className="relative h-5 w-5 shrink-0 text-white/70 rtl:rotate-180" />
+          </button>
+        )}
       </section>
 
       {/* Account */}

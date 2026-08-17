@@ -34,6 +34,7 @@ import { ReminderDaysPicker } from "@/components/lifevault/ReminderPicker";
 import { DocStatusBadge } from "@/components/lifevault/StatusBadge";
 import { CategoryBubble, DOCUMENT_META } from "@/components/lifevault/category-meta";
 import { useApp } from "@/context/AppContext";
+import { usePremium } from "@/context/PremiumContext";
 import { daysUntilLabel, documentStatus, formatDate } from "@/lib/format";
 import {
   DOCUMENT_CATEGORIES,
@@ -495,6 +496,7 @@ export default function ViewDocument() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { documents, updateDocument, deleteDocument } = useApp();
+  const { hasFeature, iapAvailable } = usePremium();
 
   const doc = useMemo<VaultDocument | undefined>(
     () => documents.find((d) => d.id === id),
@@ -560,6 +562,10 @@ export default function ViewDocument() {
 
   const handleShare = useCallback(async () => {
     if (!doc) return;
+    if (iapAvailable && !hasFeature("exportData")) {
+      toast.error("Sharing documents is a Premium feature. Upgrade to unlock.");
+      return;
+    }
     // fileData may not be hydrated from IndexedDB yet — load it on demand.
     const fileData = doc.fileData ?? (await loadFileData(doc.id));
     await shareDocument({
@@ -568,7 +574,7 @@ export default function ViewDocument() {
       fileData,
       fileName: doc.fileName ?? `${doc.name}`,
     });
-  }, [doc]);
+  }, [doc, iapAvailable, hasFeature]);
 
   /* ---- Not found ---- */
 
@@ -702,6 +708,7 @@ export default function ViewDocument() {
             icon={Share2}
             label="Share"
             onClick={handleShare}
+            disabled={iapAvailable && !hasFeature("exportData")}
           />
           <ActionButton
             icon={Trash2}

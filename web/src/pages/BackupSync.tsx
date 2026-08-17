@@ -25,6 +25,8 @@ import { Switch } from "@/components/ui/switch";
 import { PageHeader, SectionTitle } from "@/components/lifevault/PageHeader";
 import { useApp } from "@/context/AppContext";
 import { useSync } from "@/context/SyncContext";
+import { usePremium } from "@/context/PremiumContext";
+import { FREE_TIER_LIMITS, isWithinFreeLimit } from "@/lib/premium";
 import { supabaseConfigured } from "@/lib/supabase";
 import { formatBytes, type BackupHistoryEntry, type BackupPreferences } from "@/lib/sync";
 import { cn } from "@/lib/utils";
@@ -112,6 +114,7 @@ export default function BackupSync() {
   const navigate = useNavigate();
   const { user } = useApp();
   const sync = useSync();
+  const { isPremium, iapAvailable } = usePremium();
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
 
@@ -129,6 +132,8 @@ export default function BackupSync() {
 
   const prefs = sync.backupPrefs;
   const usage = sync.storageUsage;
+  const totalRecords = usage?.totalRecords ?? 0;
+  const cloudLimitReached = iapAvailable && !isPremium && !isWithinFreeLimit("cloudBackupItems", totalRecords, isPremium);
 
   // If Supabase env vars are missing, show a single setup-required card.
   if (!supabaseConfigured) {
@@ -232,7 +237,7 @@ export default function BackupSync() {
             icon={Database}
             bubble="bg-violet-500/12 text-violet-600 dark:text-violet-400"
             title="Total records"
-            subtitle="All synced data records"
+            subtitle={iapAvailable && !isPremium ? `Free plan: ${totalRecords}/${FREE_TIER_LIMITS.cloudBackupItems} records` : "All synced data records"}
             right={<StatValue value={(usage?.totalRecords ?? 0).toString()} />}
             isLast={false}
           />
@@ -245,6 +250,23 @@ export default function BackupSync() {
             isLast
           />
         </SettingsCard>
+        {cloudLimitReached && (
+          <div className="mt-3 flex items-center gap-3 rounded-2xl bg-amber-500/10 p-4 ring-1 ring-amber-500/20">
+            <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] font-bold text-amber-700 dark:text-amber-300">Cloud backup limit reached</p>
+              <p className="mt-0.5 text-[12px] text-muted-foreground">
+                You've reached the {FREE_TIER_LIMITS.cloudBackupItems}-record free plan limit. Upgrade to Premium for unlimited cloud backup.
+              </p>
+            </div>
+            <button
+              onClick={() => navigate("/premium")}
+              className="shrink-0 rounded-full bg-amber-500 px-4 py-2 text-[12px] font-bold text-white"
+            >
+              Upgrade
+            </button>
+          </div>
+        )}
       </section>
 
       {/* Progress bar while syncing */}

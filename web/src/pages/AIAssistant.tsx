@@ -33,6 +33,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useApp } from "@/context/AppContext";
+import { usePremium } from "@/context/PremiumContext";
+import { PaywallGate } from "@/components/lifevault/PaywallGate";
 import { useI18n } from "@/context/I18nContext";
 import { formatCurrency } from "@/lib/format";
 import {
@@ -1548,14 +1550,26 @@ export default function AIAssistant() {
         showResults ? (
           <ScanResultsView outcome={outcome} onReset={handleReset} />
         ) : (
-          <ScanPanel
-            pages={pages}
-            setPages={setPages}
-            onScanComplete={setOutcome}
-          />
+          <PaywallGate
+            feature="unlimitedScans"
+            title="AI Document Scanner"
+            description="Premium unlocks unlimited AI document scanning. Capture receipts, prescriptions, contracts, and more — the AI reads, understands, and organises everything for you."
+          >
+            <ScanPanel
+              pages={pages}
+              setPages={setPages}
+              onScanComplete={setOutcome}
+            />
+          </PaywallGate>
         )
       ) : (
-        <SearchPanel />
+        <PaywallGate
+          feature="aiAssistant"
+          title="AI Search"
+          description="Premium unlocks natural-language search across your entire vault. Ask questions like “How much did I spend on food?” or “When does my passport expire?”"
+        >
+          <SearchPanel />
+        </PaywallGate>
       )}
     </div>
   );

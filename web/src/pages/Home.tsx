@@ -6,6 +6,9 @@ import {
   Bell,
   CalendarClock,
   CalendarPlus,
+  CheckCircle2,
+  Clock,
+  Crown,
   FilePlus2,
   FileWarning,
   PiggyBank,
@@ -16,6 +19,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { useApp } from "@/context/AppContext";
+import { usePremium } from "@/context/PremiumContext";
 import { useI18n } from "@/context/I18nContext";
 import { daysUntil, documentStatus, formatCurrency, formatTime12, initials } from "@/lib/format";
 import { CategoryBubble, EXPENSE_META } from "@/components/lifevault/category-meta";
@@ -38,6 +42,7 @@ const QUICK_ACTIONS = [
 
 export default function Home() {
   const { user, settings, expenses, subscriptions, documents, appointments, unreadCount } = useApp();
+  const { isPremium, premium, iapAvailable, checkingStatus } = usePremium();
   const { t, fmtDate, relativeDay, dueIn } = useI18n();
   const navigate = useNavigate();
   const now = useMemo(() => new Date(), []);
@@ -82,6 +87,12 @@ export default function Home() {
     [expenses],
   );
 
+  const renewalDate = premium.expiryDate ? new Date(premium.expiryDate) : null;
+  const isTrial = premium.status === "active" && renewalDate && premium.purchaseDate
+    ? new Date(premium.purchaseDate) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    : false;
+  const showBanner = !checkingStatus && (iapAvailable ? true : !isPremium);
+
   return (
     <div className="animate-fade-in">
       {/* Header */}
@@ -113,6 +124,52 @@ export default function Home() {
           )}
         </Link>
       </header>
+
+      {/* Subscription status banner */}
+      {showBanner && (
+        <section className="px-4 pt-2">
+          {isPremium ? (
+            <button
+              onClick={() => navigate("/premium")}
+              className="flex w-full items-center gap-3 rounded-2xl bg-gradient-to-r from-amber-500/15 to-amber-500/5 p-3.5 ring-1 ring-amber-500/20 transition-transform active:scale-[0.99]"
+            >
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-500/15">
+                <CheckCircle2 className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+              </span>
+              <div className="min-w-0 flex-1 text-left">
+                <p className="text-[13px] font-extrabold text-amber-700 dark:text-amber-300">
+                  {isTrial ? "Free trial active" : "Premium active"}
+                </p>
+                <p className="truncate text-[11.5px] text-muted-foreground">
+                  {isTrial
+                    ? `Trial ends ${fmtDate(renewalDate!.toISOString(), "d MMM yyyy")}`
+                    : renewalDate
+                      ? `Renews ${fmtDate(renewalDate.toISOString(), "d MMM yyyy")}`
+                      : "All features unlocked"}
+                </p>
+              </div>
+            </button>
+          ) : (
+            <button
+              onClick={() => navigate("/premium")}
+              className="flex w-full items-center gap-3 rounded-2xl bg-gradient-to-r from-indigo-500/10 to-violet-500/10 p-3.5 ring-1 ring-indigo-500/15 transition-transform active:scale-[0.99]"
+            >
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white shadow-md shadow-indigo-500/20">
+                <Crown className="h-5 w-5" />
+              </span>
+              <div className="min-w-0 flex-1 text-left">
+                <p className="text-[13px] font-extrabold">You're on the Free plan</p>
+                <p className="truncate text-[11.5px] text-muted-foreground">
+                  Upgrade for unlimited scans, AI assistant & more
+                </p>
+              </div>
+              <span className="shrink-0 rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-1.5 text-[12px] font-bold text-white shadow-sm">
+                Upgrade
+              </span>
+            </button>
+          )}
+        </section>
+      )}
 
       {/* Budget hero */}
       <section className="px-4 pt-3">
@@ -166,7 +223,15 @@ export default function Home() {
             <Sparkles className="h-6 w-6" />
           </span>
           <div className="relative min-w-0 flex-1">
-            <p className="text-[15px] font-extrabold tracking-tight">{t("home.aiAssistant")}</p>
+            <div className="flex items-center gap-2">
+              <p className="text-[15px] font-extrabold tracking-tight">{t("home.aiAssistant")}</p>
+              {!isPremium && iapAvailable && (
+                <span className="flex items-center gap-1 rounded-full bg-amber-400/20 px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wide text-amber-200">
+                  <Crown className="h-2.5 w-2.5" />
+                  Premium
+                </span>
+              )}
+            </div>
             <p className="mt-0.5 truncate text-[12.5px] text-white/70">
               {t("home.aiAssistantSub")}
             </p>

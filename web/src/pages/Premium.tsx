@@ -1,21 +1,18 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Bell,
-  BellRing,
   CalendarDays,
   Check,
   Cloud,
   Crown,
   Download,
   FileText,
-  Headphones,
   Loader2,
   Receipt,
   ScanLine,
   Settings,
   ShieldCheck,
   Sparkles,
-  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -51,9 +48,6 @@ const PERK_ICONS: Record<string, typeof Crown> = {
   Cloud,
   Sparkles,
   Download,
-  BellRing,
-  Users,
-  Headphones,
 };
 
 const FREE_ICONS: Record<string, typeof Crown> = {

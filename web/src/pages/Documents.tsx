@@ -21,6 +21,8 @@ import { ReminderDaysPicker } from "@/components/lifevault/ReminderPicker";
 import { DocStatusBadge } from "@/components/lifevault/StatusBadge";
 import { CategoryBubble, DOCUMENT_META } from "@/components/lifevault/category-meta";
 import { useApp } from "@/context/AppContext";
+import { usePremium } from "@/context/PremiumContext";
+import { FREE_TIER_LIMITS, isWithinFreeLimit } from "@/lib/premium";
 import { daysUntil, daysUntilLabel, documentStatus, formatDate } from "@/lib/format";
 import {
   DOCUMENT_CATEGORIES,
@@ -83,6 +85,7 @@ function readFileAsDataUrl(file: File): Promise<string> {
 
 export default function Documents() {
   const { documents, addDocument, updateDocument, deleteDocument } = useApp();
+  const { isPremium, iapAvailable } = usePremium();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState<string>("");
@@ -150,6 +153,13 @@ export default function Documents() {
   const handleSave = () => {
     if (!form.name.trim()) {
       toast.error("Enter a document name");
+      return;
+    }
+    // Free-tier limit: check before creating a NEW document (not on edit)
+    if (!editingId && iapAvailable && !isPremium && !isWithinFreeLimit("maxDocuments", documents.length, isPremium)) {
+      toast.error(`Free plan allows up to ${FREE_TIER_LIMITS.maxDocuments} documents.`, {
+        description: "Upgrade to Premium for unlimited document storage.",
+      });
       return;
     }
     const payload = {

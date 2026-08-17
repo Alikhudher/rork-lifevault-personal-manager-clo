@@ -33,6 +33,8 @@ import { PageHeader } from "@/components/lifevault/PageHeader";
 import { Field, FormSheet } from "@/components/lifevault/FormSheet";
 import { AppointmentReminderPicker } from "@/components/lifevault/ReminderPicker";
 import { useApp } from "@/context/AppContext";
+import { usePremium } from "@/context/PremiumContext";
+import { FREE_TIER_LIMITS, isWithinFreeLimit } from "@/lib/premium";
 import { daysUntil, formatTime12, relativeDayLabel } from "@/lib/format";
 import { normalizeAppointmentReminder, type Appointment } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -59,6 +61,7 @@ function emptyForm(date?: Date): AptFormState {
 
 export default function CalendarPage() {
   const { appointments, addAppointment, updateAppointment, deleteAppointment } = useApp();
+  const { isPremium, iapAvailable } = usePremium();
   const [searchParams, setSearchParams] = useSearchParams();
   const [view, setView] = useState<"list" | "month">("list");
   const [month, setMonth] = useState<Date>(new Date());
@@ -115,6 +118,13 @@ export default function CalendarPage() {
     }
     if (!form.date) {
       toast.error("Pick a date");
+      return;
+    }
+    // Free-tier limit: check before creating a NEW appointment (not on edit)
+    if (!editingId && iapAvailable && !isPremium && !isWithinFreeLimit("maxAppointments", appointments.length, isPremium)) {
+      toast.error(`Free plan allows up to ${FREE_TIER_LIMITS.maxAppointments} appointments.`, {
+        description: "Upgrade to Premium for unlimited calendar appointments.",
+      });
       return;
     }
     const payload = {

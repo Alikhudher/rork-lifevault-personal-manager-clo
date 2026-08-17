@@ -36,6 +36,8 @@ import { useApp } from "@/context/AppContext";
 import { usePremium } from "@/context/PremiumContext";
 import { PaywallGate } from "@/components/lifevault/PaywallGate";
 import { useI18n } from "@/context/I18nContext";
+import { FREE_TIER_LIMITS } from "@/lib/premium";
+import { canFreeScan, incrementScanCount, remainingFreeScans } from "@/lib/scan-usage";
 import { formatCurrency } from "@/lib/format";
 import {
   askAboutScan,
@@ -159,9 +161,13 @@ interface ScanPanelProps {
   pages: string[];
   setPages: (pages: string[]) => void;
   onScanComplete: (outcome: ScanOutcome) => void;
+  /** Whether the user has premium (unlimited scans). */
+  isPremium: boolean;
+  /** Whether IAP is available (native). */
+  iapAvailable: boolean;
 }
 
-function ScanPanel({ pages, setPages, onScanComplete }: ScanPanelProps) {
+function ScanPanel({ pages, setPages, onScanComplete, isPremium, iapAvailable }: ScanPanelProps) {
   const { t } = useI18n();
   const [loading, setLoading] = useState<boolean>(false);
   const [analyzed, setAnalyzed] = useState<boolean>(false);
@@ -185,10 +191,24 @@ function ScanPanel({ pages, setPages, onScanComplete }: ScanPanelProps) {
   const handleAnalyze = useCallback(
     async () => {
       if (pages.length === 0) return;
+      // Free-tier scan limit check (native only — web has unlimited access)
+      if (iapAvailable && !isPremium) {
+        if (!canFreeScan(FREE_TIER_LIMITS.monthlyAiScans)) {
+          toast.error(
+            `You've used all ${FREE_TIER_LIMITS.monthlyAiScans} free scans this month.`,
+            { description: "Upgrade to Premium for unlimited AI scans." },
+          );
+          return;
+        }
+      }
       setLoading(true);
       setAnalyzed(false);
       try {
         const outcome = await scanDocuments(pages);
+        // Increment the free scan counter after a successful scan
+        if (iapAvailable && !isPremium) {
+          incrementScanCount();
+        }
         onScanComplete(outcome);
         setAnalyzed(true);
       } catch (err) {
@@ -198,7 +218,7 @@ function ScanPanel({ pages, setPages, onScanComplete }: ScanPanelProps) {
         setLoading(false);
       }
     },
-    [pages, onScanComplete],
+    [pages, onScanComplete, isPremium, iapAvailable],
   );
 
   return (
@@ -219,6 +239,13 @@ function ScanPanel({ pages, setPages, onScanComplete }: ScanPanelProps) {
             note, contract, ID, or boarding pass. LifeVault reads, understands, and
             organises it for you. English & Arabic supported.
           </p>
+          {/* Free-tier scan quota indicator */}
+          {iapAvailable && !isPremium && (
+            <div className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-[12px] font-bold text-white/80 ring-1 ring-white/15">
+              <Sparkles className="h-3 w-3" />
+              {remainingFreeScans(FREE_TIER_LIMITS.monthlyAiScans)} of {FREE_TIER_LIMITS.monthlyAiScans} free scans left this month
+            </div>
+          )}
 
           {/* Page thumbnails */}
           {pages.length > 0 && (
@@ -1498,6 +1525,7 @@ function MatchIcon({ type }: { type: SearchHit["type"] }) {
 
 export default function AIAssistant() {
   const { t } = useI18n();
+  const { isPremium, iapAvailable } = usePremium();
   const [tab, setTab] = useState<Tab>("scan");
   const [pages, setPages] = useState<string[]>([]);
   const [outcome, setOutcome] = useState<ScanOutcome | null>(null);
@@ -1550,17 +1578,13 @@ export default function AIAssistant() {
         showResults ? (
           <ScanResultsView outcome={outcome} onReset={handleReset} />
         ) : (
-          <PaywallGate
-            feature="unlimitedScans"
-            title="AI Document Scanner"
-            description="Premium unlocks unlimited AI document scanning. Capture receipts, prescriptions, contracts, and more — the AI reads, understands, and organises everything for you."
-          >
-            <ScanPanel
-              pages={pages}
-              setPages={setPages}
-              onScanComplete={setOutcome}
-            />
-          </PaywallGate>
+          <ScanPanel
+            pages={pages}
+            setPages={setPages}
+            onScanComplete={setOutcome}
+            isPremium={isPremium}
+            iapAvailable={iapAvailable}
+          />
         )
       ) : (
         <PaywallGate

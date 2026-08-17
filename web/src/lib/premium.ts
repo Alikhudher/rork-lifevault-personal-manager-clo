@@ -26,10 +26,7 @@ export type PremiumFeature =
   | "unlimitedScans"
   | "unlimitedCloudBackup"
   | "aiAssistant"
-  | "exportData"
-  | "advancedReminders"
-  | "familySharing"
-  | "prioritySupport";
+  | "exportData";
 
 /**
  * Feature-flag map. `true` = available to free users. `false` = Premium only.
@@ -54,9 +51,6 @@ export const FREE_FEATURE_FLAGS: Record<PremiumFeature, boolean> = {
   unlimitedCloudBackup: false,
   aiAssistant: false,
   exportData: false,
-  advancedReminders: false,
-  familySharing: false,
-  prioritySupport: false,
 };
 
 /**
@@ -178,23 +172,8 @@ export const PREMIUM_PERKS: PremiumPerk[] = [
   },
   {
     icon: "Download",
-    title: "Export all documents",
-    description: "Download everything as ZIP or PDF in one tap.",
-  },
-  {
-    icon: "BellRing",
-    title: "Advanced reminders & automation",
-    description: "Smart recurring reminders, auto-renew alerts, and custom rules.",
-  },
-  {
-    icon: "Users",
-    title: "Family sharing",
-    description: "Share selected documents with family members securely.",
-  },
-  {
-    icon: "Headphones",
-    title: "Priority support",
-    description: "Get faster responses from our dedicated support team.",
+    title: "Share & export documents",
+    description: "Share individual documents via the native share sheet or save them to your device.",
   },
 ];
 

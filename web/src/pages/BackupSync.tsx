@@ -293,9 +293,9 @@ export default function BackupSync() {
         <div className="grid grid-cols-2 gap-3">
           <Button
             onClick={() => {
-              if (!busy) void sync.syncNow();
+              if (!busy && !cloudLimitReached) void sync.syncNow();
             }}
-            disabled={busy}
+            disabled={busy || cloudLimitReached}
             className="h-[52px] rounded-2xl text-[14px] font-bold shadow-sm"
           >
             <RefreshCw className={cn("mr-2 h-5 w-5", busy && "animate-spin")} /> Sync now
@@ -309,7 +309,12 @@ export default function BackupSync() {
             <CloudDownload className="mr-2 h-5 w-5" /> Restore
           </Button>
         </div>
-        {!sync.cloudUnlocked && !sync.autoRestoreComplete && (
+        {cloudLimitReached && (
+          <p className="mt-3 text-center text-[12px] font-semibold text-amber-600 dark:text-amber-400">
+            Cloud sync is paused — you've reached the {FREE_TIER_LIMITS.cloudBackupItems}-record free plan limit. Upgrade to Premium to resume syncing.
+          </p>
+        )}
+        {!sync.cloudUnlocked && !sync.autoRestoreComplete && !cloudLimitReached && (
           <p className="mt-3 text-center text-[12px] text-muted-foreground">
             Cloud backup connects automatically when you sign in with your password. Sync will
             start once the connection is established.

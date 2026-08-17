@@ -43,6 +43,7 @@ import type { IntroEligibility } from "@revenuecat/purchases-capacitor";
 import { LegalLinks, LegalSheet, type LegalDocType } from "@/components/lifevault/LegalLinks";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
+import { useNavigate } from "react-router-dom";
 
 const PERK_ICONS: Record<string, typeof Crown> = {
   ScanLine,
@@ -105,6 +106,7 @@ export default function Premium() {
     checkingStatus,
     rcIdentityVersion,
   } = usePremium();
+  const navigate = useNavigate();
   const [selectedPlan, setSelectedPlan] = useState<PlanId>("yearly");
   const [purchasing, setPurchasing] = useState<boolean>(false);
   const [restoring, setRestoring] = useState<boolean>(false);
@@ -233,6 +235,10 @@ export default function Premium() {
       toast.success("Welcome to LifeVault Premium!", {
         description: "Your subscription is now active.",
       });
+      // Close the paywall and return to Home after a successful purchase.
+      // PremiumContext has already updated `isPremium` synchronously, so
+      // all gated features are immediately available on Home.
+      navigate("/", { replace: true });
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Purchase failed. Please try again.";

@@ -295,12 +295,23 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
     const newState = await iapPurchase(planId);
     setPremium(newState);
     if (!newState.isPremium) {
+      // The diagnostic details (productId, appUserID, entitlement IDs)
+      // are already logged inside iap.ts → logPremiumNotActivated().
+      // Here we surface a user-visible error.
+      console.warn(
+        `[Premium] Purchase completed for plan="${planId}" (supabaseUid="${supabaseUid ?? 'null'}") ` +
+          `but Premium was NOT activated. Check the [IAP] log lines above for ` +
+          `productId, appUserID, and entitlement IDs.`,
+      );
       throw new Error(
         "Purchase completed but Premium was not activated. " +
           "If this persists, try restoring purchases or contact support.",
       );
     }
-  }, []);
+    // Premium activated — refresh offerings/eligibility cache so the
+    // paywall UI updates immediately for the new premium user.
+    setRcIdentityVersion((v) => v + 1);
+  }, [supabaseUid]);
 
   const restore = useCallback(async () => {
     const newState = await restoreIAPPurchases();

@@ -400,7 +400,11 @@ export async function purchasePlan(
     try {
       const result = await Purchases.purchasePackage({ aPackage: pkg });
       console.log("[IAP] Purchase completed, checking entitlement…");
-      return customerInfoToPremiumState(result.customerInfo);
+      const state = customerInfoToPremiumState(result.customerInfo);
+      if (!state.isPremium) {
+        await logPremiumNotActivated(pkg.product.identifier, result.customerInfo);
+      }
+      return state;
     } catch (err) {
       throw wrapPurchaseError(err, planId);
     }
@@ -432,7 +436,11 @@ export async function purchasePlan(
   try {
     const result = await Purchases.purchaseStoreProduct({ product });
     console.log("[IAP] Direct purchase completed, checking entitlement…");
-    return customerInfoToPremiumState(result.customerInfo);
+    const state = customerInfoToPremiumState(result.customerInfo);
+    if (!state.isPremium) {
+      await logPremiumNotActivated(product.identifier, result.customerInfo);
+    }
+    return state;
   } catch (err) {
     throw wrapPurchaseError(err, planId);
   }
@@ -465,9 +473,14 @@ function wrapPurchaseError(err: unknown, planId: PlanId): Error {
 }
 
 /**
- * Restore previous purchases. Checks for any active entitlement.
- * Returns the updated PremiumState — Premium only unlocks if an active
- * subscription is found.
+ * Restore previous purchases — called by the user-facing "Restore Purchases"
+ * button. Calls `Purchases.restorePurchases()` (NOT `syncPurchases()`),
+ * then uses the returned CustomerInfo immediately to activate Premium only
+ * if the exact "premium" entitlement is active.
+ *
+ * This is the correct API for user-initiated restore: it fetches the latest
+ * receipt from Apple/Google, sends it to RevenueCat's backend for validation,
+ * and returns the updated CustomerInfo with fresh entitlement data.
  */
 export async function restoreIAPPurchases(): Promise<PremiumState> {
   if (!(await ensureConfigured())) {
@@ -476,11 +489,22 @@ export async function restoreIAPPurchases(): Promise<PremiumState> {
     );
   }
 
-  console.log("[IAP] Restoring purchases…");
+  console.log("[IAP] Restoring purchases (restorePurchases)…");
   try {
     const { customerInfo } = await Purchases.restorePurchases();
     console.log("[IAP] Restore completed, checking entitlement…");
-    return customerInfoToPremiumState(customerInfo);
+    const state = customerInfoToPremiumState(customerInfo);
+    if (!state.isPremium) {
+      const activeIds = Object.keys(customerInfo.entitlements.active);
+      const allIds = Object.keys(customerInfo.entitlements.all);
+      console.warn(
+        `[IAP] Restore completed but no active Premium entitlement. ` +
+          `activeEntitlements=[${activeIds.join(",") || "none"}], ` +
+          `allEntitlements=[${allIds.join(",") || "none"}], ` +
+          `expected="${PREMIUM_ENTITLEMENT_ID}"`,
+      );
+    }
+    return state;
   } catch (err) {
     console.error("[IAP] Restore failed:", err);
     throw new Error(
@@ -638,18 +662,52 @@ export async function invalidateCustomerInfoCache(): Promise<void> {
 }
 
 /**
- * Sync local StoreKit purchases with RevenueCat's backend. Call after a
- * user identity change so any existing App Store receipts are linked
- * to the new RevenueCat appUserID.
+ * Sync local StoreKit purchases with RevenueCat's backend.
+ *
+ * This is a background/migration utility — it is NOT used for the user-facing
+ * "Restore Purchases" button. That button calls {@link restoreIAPPurchases}
+ * which calls `Purchases.restorePurchases()` and returns CustomerInfo.
+ *
+ * `syncPurchases()` is useful when you need to link existing App Store
+ * receipts to the current RevenueCat appUserID without showing a restore
+ * flow (e.g. after a background identity migration).
  */
 export async function syncPurchases(): Promise<void> {
   if (!(await ensureConfigured())) return;
   try {
     await Purchases.syncPurchases();
-    console.log("[IAP] Purchases synced");
+    console.log("[IAP] Purchases synced (background)");
   } catch (err) {
     console.warn("[IAP] Failed to sync purchases:", err);
   }
+}
+
+/**
+ * Log diagnostic details when Apple completes a transaction but Premium
+ * is not activated. Logs the product ID, current RevenueCat appUserID,
+ * and all active/inactive entitlement IDs so the mismatch can be
+ * diagnosed in TestFlight console logs.
+ */
+async function logPremiumNotActivated(
+  productId: string,
+  customerInfo: CustomerInfo,
+): Promise<void> {
+  let appUserID: string | undefined;
+  try {
+    const { appUserID: uid } = await Purchases.getAppUserID();
+    appUserID = uid;
+  } catch {
+    // getAppUserID may fail on some platforms; appUserID stays undefined.
+  }
+  const activeEntitlementIds = Object.keys(customerInfo.entitlements.active);
+  const allEntitlementIds = Object.keys(customerInfo.entitlements.all);
+  console.warn(
+    `[IAP] Transaction completed but Premium NOT activated. ` +
+      `productId="${productId}", appUserID="${appUserID ?? 'unknown'}", ` +
+      `activeEntitlements=[${activeEntitlementIds.join(",") || "none"}], ` +
+      `allEntitlements=[${allEntitlementIds.join(",") || "none"}], ` +
+      `expectedEntitlementId="${PREMIUM_ENTITLEMENT_ID}"`,
+  );
 }
 
 /**
@@ -663,9 +721,8 @@ export async function syncPurchases(): Promise<void> {
  * Before logging in, the CustomerInfo cache is invalidated so eligibility
  * and entitlement data is fetched fresh from the server for the new user.
  *
- * Does NOT call syncPurchases() — that is the caller's responsibility and
- * should only be invoked on a genuine identity change (not on app restart
- * where configureIAP already set the correct user).
+ * Does NOT call `syncPurchases()` — that is a background-only utility and
+ * is NOT used for the user-facing "Restore Purchases" action.
  */
 export async function loginIAP(appUserID: string): Promise<PremiumState | null> {
   if (!(await ensureConfigured())) return null;

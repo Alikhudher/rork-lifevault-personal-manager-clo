@@ -664,9 +664,10 @@ export default function Premium() {
         </section>
       )}
 
-      {/* Fine print — Apple App Store Guideline 3.1.2(c) compliance */}
+      {/* Fine print — Apple App Store Guideline 3.1.2(c) compliance.
+          Purchase pricing details are hidden when already premium. */}
       <section className="px-4 pt-6 pb-6">
-        {iapAvailable && (
+        {!isPremium && iapAvailable && (
           <div className="mb-4 rounded-2xl bg-card p-4 ring-1 ring-border">
             <h3 className="text-[13px] font-extrabold text-foreground">
               {selectedPlan === "yearly" ? "LifeVault Premium — Yearly" : "LifeVault Premium — Monthly"}

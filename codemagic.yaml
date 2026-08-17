@@ -429,7 +429,18 @@ workflows:
           #       → select "Keep with Original App User ID"
           # All prior fixes included (premium gating, 7-day trial,
           #   cloud backup auto-unlock, email change, iPad, dark mode).
-          agvtool new-version -all 28
+          # Build 29: Final production-build verification of trial/subscription UI.
+          #
+          # Changes:
+          # - Premium.tsx: fine print purchase pricing card now hidden when
+          #   isPremium is true (was visible during trial/paid premium).
+          #   Only the generic auto-renew legal text and legal links remain.
+          # - iap.ts: RECEIPT_ALREADY_IN_USE regex fixed to check RC error
+          #   code property (7/13) instead of bare matching "7"/"13" in
+          #   the message body, which caused false positives (e.g. "7 days").
+          # - All prior fixes included (build 28 RC identity, 7-day trial,
+          #   premium gating, cloud backup auto-unlock, email change, iPad).
+          agvtool new-version -all 29
 
       - name: Apply iOS signing
         script: |

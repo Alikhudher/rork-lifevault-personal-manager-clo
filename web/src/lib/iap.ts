@@ -474,8 +474,21 @@ function wrapPurchaseError(err: unknown, planId: PlanId): Error {
   // With "Keep with Original App User ID" restore behavior, the receipt
   // cannot be transferred; it stays bound to the original account until
   // the subscription expires.
+  //
+  // RevenueCat error codes:
+  //   7 = RECEIPT_ALREADY_IN_USE_ERROR
+  //  13 = RECEIPT_IN_USE_BY_OTHER_SUBSCRIBER_ERROR
+  // We check the numeric code property (RC throws errors with a `code`
+  // field matching the PURCHASES_ERROR_CODE enum) and also match known
+  // textual patterns. We do NOT match bare "7"/"13" in the message body
+  // to avoid false positives (e.g. "7 days" or "product 13").
+  const rcErr = err as { code?: string };
+  const rcCode = rcErr?.code ?? "";
   if (
-    /RECEIPT_ALREADY_IN_USE|7|RECEIPT_IN_USE_BY_OTHER|13/.test(raw) ||
+    rcCode === "7" ||
+    rcCode === "13" ||
+    /RECEIPT_ALREADY_IN_USE/.test(raw) ||
+    /RECEIPT_IN_USE_BY_OTHER/.test(raw) ||
     /receipt.*(already|in.use|other.subscriber)/i.test(raw)
   ) {
     return new Error(

@@ -413,35 +413,39 @@ export default function Premium() {
         )}
       </section>
 
-      {/* Free features — what you already enjoy */}
-      <section className="px-4 pt-6">
-        <SectionTitle>Free forever</SectionTitle>
-        <p className="mb-3 text-[13px] text-muted-foreground">
-          Everything below is yours to keep — no subscription needed.
-        </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-          {FREE_FEATURES.map((feature) => {
-            const Icon = FREE_ICONS[feature.icon] ?? FileText;
-            return (
-              <div
-                key={feature.title}
-                className="flex items-center gap-3 rounded-2xl bg-card p-4 shadow-sm ring-1 ring-border"
-              >
-                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                  <Icon className="h-[20px] w-[20px]" strokeWidth={2.2} />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-[14px] font-bold">{feature.title}</p>
-                  <p className="text-[12.5px] text-muted-foreground">{feature.description}</p>
+      {/* Free features — what you already enjoy.
+          Hidden when premium (including trial) — premium users see only
+          premium benefits, not free-plan descriptions. */}
+      {!isPremium && (
+        <section className="px-4 pt-6">
+          <SectionTitle>Free forever</SectionTitle>
+          <p className="mb-3 text-[13px] text-muted-foreground">
+            Everything below is yours to keep — no subscription needed.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+            {FREE_FEATURES.map((feature) => {
+              const Icon = FREE_ICONS[feature.icon] ?? FileText;
+              return (
+                <div
+                  key={feature.title}
+                  className="flex items-center gap-3 rounded-2xl bg-card p-4 shadow-sm ring-1 ring-border"
+                >
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                    <Icon className="h-[20px] w-[20px]" strokeWidth={2.2} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[14px] font-bold">{feature.title}</p>
+                    <p className="text-[12.5px] text-muted-foreground">{feature.description}</p>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-success/10 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide text-success">
+                    Free
+                  </span>
                 </div>
-                <span className="shrink-0 rounded-full bg-success/10 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide text-success">
-                  Free
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      </section>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* Premium perks — what upgrading unlocks */}
       <section className="px-4 pt-6">

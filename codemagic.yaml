@@ -382,24 +382,31 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Build 28: Fixed RevenueCat introductory-offer eligibility
-          # not showing for new Sandbox Apple Accounts. Root cause:
-          # offerings + eligibility were fetched once on mount and cached
-          # for the previous (anonymous) user; loginIAP didn't invalidate
-          # the cache or sync StoreKit purchases.
+          # Build 28: Fixed RevenueCat identity to use Supabase user.id
+          # UUID instead of email as the appUserID.
           #
-          # Fixes:
-          # - loginIAP now invalidates CustomerInfo cache before login
-          #   and syncs StoreKit purchases after, so the new user's
-          #   eligibility is fetched fresh from RevenueCat's backend.
-          # - PremiumContext passes user email to configureIAP on mount
-          #   (avoids starting as anonymous on app restart).
-          # - PremiumContext bumps rcIdentityVersion on sign-in/sign-out,
-          #   so the paywall re-fetches offerings + eligibility for the
-          #   new RevenueCat user identity.
-          # - Premium.tsx depends on rcIdentityVersion, invalidates cache
-          #   before fetching offerings + eligibility.
-          # - Added invalidateCustomerInfoCache + syncPurchases exports.
+          # Why: email is not stable — it changes when the user updates
+          # their email, which would orphan their RevenueCat purchase
+          # history and free-trial eligibility. The Supabase user.id UUID
+          # is stable, unique, private, and never changes.
+          #
+          # Changes:
+          # - configureIAP(user.id) on mount when authenticated (never
+          #   starts anonymous if Supabase session exists).
+          # - loginIAP(user.id) only on genuine identity change (sign-in,
+          #   sign-out, account switch) — NOT on every app restart.
+          # - lastAppUserIdRef guards against redundant logIn calls when
+          #   the UUID hasn't changed.
+          # - rcIdentityVersion bumped only on genuine identity change.
+          # - Premium.tsx re-fetches offerings + eligibility + invalidates
+          #   CustomerInfo cache when rcIdentityVersion changes.
+          # - syncPurchases() is NOT called automatically — it stays as
+          #   the user's explicit "Restore Purchases" action only.
+          # - loginIAP invalidates CustomerInfo cache before logIn so
+          #   the new user's eligibility is fetched fresh from RC backend.
+          # - A purchase cannot transfer Premium between LifeVault accounts:
+          #   each Supabase UUID maps to exactly one RevenueCat appUserID,
+          #   and entitlements are checked per-appUserID.
           # All prior fixes included (premium gating, 7-day trial,
           #   cloud backup auto-unlock, email change, iPad, dark mode).
           agvtool new-version -all 28

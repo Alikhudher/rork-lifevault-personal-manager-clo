@@ -29,6 +29,7 @@ import {
 } from "@/lib/iap";
 import { Capacitor } from "@capacitor/core";
 import { useApp } from "@/context/AppContext";
+import { getSupabaseUserId } from "@/lib/supabase";
 
 const STORAGE_KEY = "lifevault-premium-v1";
 
@@ -79,7 +80,9 @@ function loadCachedState(): PremiumState {
  * Premium subscription provider — connected to real Apple/Google IAP.
  *
  * On native platforms (iOS/Android):
- *  - Configures RevenueCat on mount.
+ *  - Configures RevenueCat on mount with the Supabase user.id UUID as
+ *    the RevenueCat appUserID (never email — the UUID is stable, unique,
+ *    private, and never changes when the email changes).
  *  - Checks subscription status on app launch (server-side receipt validation).
  *  - Listens for customer info updates (renewals, expirations, cross-device).
  *  - Purchase shows the native Apple/Google purchase sheet.
@@ -102,6 +105,9 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
   // Bumped every time the RevenueCat appUserID changes. Components that
   // cache RC data (offerings, eligibility) depend on this to re-fetch.
   const [rcIdentityVersion, setRcIdentityVersion] = useState<number>(0);
+  // The Supabase user.id UUID for the currently signed-in user, or null
+  // if not signed in. This is the RevenueCat appUserID — never email.
+  const [supabaseUid, setSupabaseUid] = useState<string | null>(null);
 
   // Persist state to localStorage (cache for instant UI on next launch).
   useEffect(() => {
@@ -112,7 +118,43 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
     }
   }, [premium]);
 
-  // Configure RevenueCat and check subscription status on launch.
+  // ─── Fetch the Supabase user.id UUID whenever the signed-in user changes ─
+  //
+  // The UUID is the RevenueCat appUserID because it is:
+  //   - Stable: never changes when the user changes their email.
+  //   - Unique: guaranteed unique per Supabase auth user.
+  //   - Private: not a user-visible identifier like email.
+  //   - Consistent: the same UUID works across all devices for the same user.
+  //
+  // We fetch it from the Supabase session (async) whenever the AppContext
+  // user changes. On web (no Supabase session), it stays null.
+  useEffect(() => {
+    let cancelled = false;
+    // If the user signed out (no email), clear the UID immediately.
+    if (!user?.email) {
+      setSupabaseUid(null);
+      return;
+    }
+    // Fetch the UUID from the Supabase session. This works for both
+    // fresh sign-ins and app restarts with a persisted session.
+    void (async () => {
+      const uid = await getSupabaseUserId();
+      if (!cancelled) {
+        setSupabaseUid(uid);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.email]);
+
+  // ─── Configure RevenueCat on mount ───────────────────────────────────────
+  //
+  // RevenueCat is configured exactly once. If the Supabase user.id UUID is
+  // already available (app restart with persisted session), it is passed
+  // as the appUserID so RevenueCat starts with the correct identity — never
+  // anonymous. If the UUID is not yet available, RevenueCat is configured
+  // anonymously and `loginIAP` is called later when the UUID arrives.
   useEffect(() => {
     let mounted = true;
 
@@ -123,11 +165,16 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      // Configure RevenueCat with the platform's API key. If the user is
-      // already signed in (app restart), pass their email as the appUserID
-      // so RevenueCat starts with the correct identity instead of anonymous.
-      const initialUserID = user?.email ?? null;
-      await configureIAP(initialUserID);
+      // Try to get the Supabase UUID for the initial configuration.
+      // On app restart with a persisted session, this returns the UUID
+      // immediately so RevenueCat starts as the correct user — never anonymous.
+      const initialUid = await getSupabaseUserId();
+      if (!mounted) return;
+
+      // Configure RevenueCat with the UUID as the appUserID.
+      // If the UUID is not yet available, RevenueCat starts as anonymous
+      // and the syncIdentity effect below will call loginIAP shortly.
+      await configureIAP(initialUid);
 
       if (!isIAPAvailable()) {
         setCheckingStatus(false);
@@ -169,13 +216,26 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Link RevenueCat to the signed-in user and re-check subscription status
-  // whenever the user changes (sign-in / sign-out / account switch). On
-  // web (no IAP) this is a no-op. Premium only unlocks after RevenueCat
-  // confirms an active `premium` entitlement — never from the local cache.
+  // ─── Link RevenueCat to the signed-in user (UUID) ────────────────────────
+  //
+  // This effect fires whenever the Supabase user.id UUID changes:
+  //   - Sign-in: UUID transitions from null → UUID → call loginIAP.
+  //   - Sign-out: UUID transitions from UUID → null → call logoutIAP.
+  //   - Account switch: UUID changes from UUID-A → UUID-B → call loginIAP.
+  //
+  // Only genuine identity changes trigger loginIAP/logoutIAP — app restarts
+  // where the UUID is the same as what configureIAP was called with do NOT
+  // trigger a redundant logIn call (guarded by lastAppUserIdRef).
+  //
+  // On identity change:
+  //   - CustomerInfo cache is invalidated (inside loginIAP).
+  //   - rcIdentityVersion is bumped so Premium.tsx re-fetches offerings +
+  //     eligibility for the new user.
+  //   - syncPurchases is NOT called here — it is only the user's explicit
+  //     "Restore Purchases" action that triggers it.
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
-    const appUserID = user?.email ?? null;
+    const appUserID = supabaseUid;
 
     async function syncIdentity() {
       // Sign-out: log out RevenueCat and clear the cached Premium state so
@@ -190,8 +250,8 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
         }
         return;
       }
-      // Sign-in: log in RevenueCat with the user's email as appUserID and
-      // sync entitlement state from the server.
+      // Sign-in or account switch: only call loginIAP when the UUID
+      // actually changed from what we last logged in as.
       if (appUserID === lastAppUserIdRef.current) return;
       setCheckingStatus(true);
       try {
@@ -215,7 +275,8 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
       }
     }
     void syncIdentity();
-  }, [user?.email]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabaseUid]);
 
   // hasFeature: on web (no IAP), everything is free.
   // On native, check the feature flag for non-premium users.

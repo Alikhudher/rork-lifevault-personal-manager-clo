@@ -657,12 +657,15 @@ export async function syncPurchases(): Promise<void> {
  *
  * RevenueCat treats `logIn` as idempotent for an existing user and creates
  * an anonymous-to-known alias on first call. Safe to invoke after every
- * app sign-in. On web or when IAP isn't configured, this is a no-op.
+ * genuine identity change. On web or when IAP isn't configured, this is
+ * a no-op.
  *
  * Before logging in, the CustomerInfo cache is invalidated so eligibility
  * and entitlement data is fetched fresh from the server for the new user.
- * After login, StoreKit purchases are synced so existing App Store receipts
- * are linked to the new appUserID.
+ *
+ * Does NOT call syncPurchases() — that is the caller's responsibility and
+ * should only be invoked on a genuine identity change (not on app restart
+ * where configureIAP already set the correct user).
  */
 export async function loginIAP(appUserID: string): Promise<PremiumState | null> {
   if (!(await ensureConfigured())) return null;
@@ -672,8 +675,6 @@ export async function loginIAP(appUserID: string): Promise<PremiumState | null> 
     // entitlement data is fetched fresh from RevenueCat's backend.
     await invalidateCustomerInfoCache();
     const { customerInfo } = await Purchases.logIn({ appUserID });
-    // Sync StoreKit receipts to the new appUserID identity.
-    await syncPurchases();
     return customerInfoToPremiumState(customerInfo);
   } catch (err) {
     console.error("[IAP] logIn failed:", err);

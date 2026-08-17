@@ -623,17 +623,57 @@ export async function manageSubscription(): Promise<void> {
 }
 
 /**
+ * Invalidate RevenueCat's cached CustomerInfo so the next call fetches
+ * fresh data from the server. Call this before re-checking entitlement
+ * after a user identity change to avoid stale cached data.
+ */
+export async function invalidateCustomerInfoCache(): Promise<void> {
+  if (!(await ensureConfigured())) return;
+  try {
+    await Purchases.invalidateCustomerInfoCache();
+    console.log("[IAP] CustomerInfo cache invalidated");
+  } catch (err) {
+    console.warn("[IAP] Failed to invalidate CustomerInfo cache:", err);
+  }
+}
+
+/**
+ * Sync local StoreKit purchases with RevenueCat's backend. Call after a
+ * user identity change so any existing App Store receipts are linked
+ * to the new RevenueCat appUserID.
+ */
+export async function syncPurchases(): Promise<void> {
+  if (!(await ensureConfigured())) return;
+  try {
+    await Purchases.syncPurchases();
+    console.log("[IAP] Purchases synced");
+  } catch (err) {
+    console.warn("[IAP] Failed to sync purchases:", err);
+  }
+}
+
+/**
  * Log in a RevenueCat appUserID (linking purchases to the signed-in user).
  *
  * RevenueCat treats `logIn` as idempotent for an existing user and creates
  * an anonymous-to-known alias on first call. Safe to invoke after every
  * app sign-in. On web or when IAP isn't configured, this is a no-op.
+ *
+ * Before logging in, the CustomerInfo cache is invalidated so eligibility
+ * and entitlement data is fetched fresh from the server for the new user.
+ * After login, StoreKit purchases are synced so existing App Store receipts
+ * are linked to the new appUserID.
  */
 export async function loginIAP(appUserID: string): Promise<PremiumState | null> {
   if (!(await ensureConfigured())) return null;
   try {
     console.log(`[IAP] logIn appUserID="${appUserID}"`);
+    // Invalidate cache before login so the new user's eligibility +
+    // entitlement data is fetched fresh from RevenueCat's backend.
+    await invalidateCustomerInfoCache();
     const { customerInfo } = await Purchases.logIn({ appUserID });
+    // Sync StoreKit receipts to the new appUserID identity.
+    await syncPurchases();
     return customerInfoToPremiumState(customerInfo);
   } catch (err) {
     console.error("[IAP] logIn failed:", err);

@@ -382,18 +382,27 @@ workflows:
         script: |
           cd web/ios/App
           agvtool new-marketing-version 1.0
-          # Build 27: Full Free vs Premium feature gating audit
-          # and implementation. AI scans limited to 3/month for free
-          # users (scan-usage.ts), content creation limits enforced
-          # (10 docs, 20 expenses, 5 subscriptions, 10 appointments),
-          # cloud backup capped at 25 records for free, share/export
-          # gated to premium, subscription status banner on Home driven
-          # by real RevenueCat entitlement, premium badge on AI link,
-          # profile shows real subscription status with manage button.
-          # Removed unimplemented perks from paywall. All prior fixes
-          # included (7-day trial display, cloud backup auto-unlock,
-          # email change, iPad layout, dark mode, OTP errors).
-          agvtool new-version -all 27
+          # Build 28: Fixed RevenueCat introductory-offer eligibility
+          # not showing for new Sandbox Apple Accounts. Root cause:
+          # offerings + eligibility were fetched once on mount and cached
+          # for the previous (anonymous) user; loginIAP didn't invalidate
+          # the cache or sync StoreKit purchases.
+          #
+          # Fixes:
+          # - loginIAP now invalidates CustomerInfo cache before login
+          #   and syncs StoreKit purchases after, so the new user's
+          #   eligibility is fetched fresh from RevenueCat's backend.
+          # - PremiumContext passes user email to configureIAP on mount
+          #   (avoids starting as anonymous on app restart).
+          # - PremiumContext bumps rcIdentityVersion on sign-in/sign-out,
+          #   so the paywall re-fetches offerings + eligibility for the
+          #   new RevenueCat user identity.
+          # - Premium.tsx depends on rcIdentityVersion, invalidates cache
+          #   before fetching offerings + eligibility.
+          # - Added invalidateCustomerInfoCache + syncPurchases exports.
+          # All prior fixes included (premium gating, 7-day trial,
+          #   cloud backup auto-unlock, email change, iPad, dark mode).
+          agvtool new-version -all 28
 
       - name: Apply iOS signing
         script: |

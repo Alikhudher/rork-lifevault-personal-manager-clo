@@ -34,6 +34,7 @@ import {
   findPackageForPlan,
   runIAPDiagnostics,
   checkIntroEligibility,
+  invalidateCustomerInfoCache,
   getIntroOfferInfo,
   isEligibleForIntro,
   type IntroOfferInfo,
@@ -102,6 +103,7 @@ export default function Premium() {
     manageSubscription,
     iapAvailable,
     checkingStatus,
+    rcIdentityVersion,
   } = usePremium();
   const [selectedPlan, setSelectedPlan] = useState<PlanId>("yearly");
   const [purchasing, setPurchasing] = useState<boolean>(false);
@@ -116,10 +118,18 @@ export default function Premium() {
   // static price labels when no offering or package is available.
   // Also runs a full diagnostic sweep and logs all StoreKit products so
   // "Product not found" issues are visible in TestFlight console logs.
+  //
+  // Re-fetches whenever the RevenueCat identity changes (sign-in, sign-out,
+  // account switch) so offerings and introductory-offer eligibility are
+  // always fresh for the current user — never stale from a previous user.
   useEffect(() => {
     if (!iapAvailable) return;
     let mounted = true;
     (async () => {
+      // Invalidate cached CustomerInfo so offerings + eligibility are
+      // fetched fresh from RevenueCat's backend for the current user.
+      await invalidateCustomerInfoCache();
+
       // Run full diagnostics — logs platform, API key, config status,
       // all StoreKit products, and current offering to the console.
       const diag = await runIAPDiagnostics();
@@ -159,7 +169,7 @@ export default function Premium() {
     return () => {
       mounted = false;
     };
-  }, [iapAvailable]);
+  }, [iapAvailable, rcIdentityVersion]);
 
   // Get the localized price for a plan from the Offering's package, falling
   // back to the static label defined in PREMIUM_PLANS.

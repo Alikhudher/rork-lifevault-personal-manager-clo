@@ -16,6 +16,7 @@ import {
 import {
   checkSubscriptionStatus,
   configureIAP,
+  invalidateCustomerInfoCache,
   isIAPAvailable,
   loginIAP,
   logoutIAP,
@@ -56,6 +57,11 @@ interface PremiumContextValue {
   refreshStatus: () => Promise<void>;
   /** Reset premium state (used on logout). */
   resetPremium: () => void;
+  /** Monotonically increasing counter bumped every time the RevenueCat
+   *  appUserID changes (sign-in, sign-out, account switch). Components
+   *  that cache RevenueCat data (offerings, eligibility) should depend on
+   *  this to re-fetch fresh data for the new user. */
+  rcIdentityVersion: number;
 }
 
 function loadCachedState(): PremiumState {
@@ -93,6 +99,9 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
   // Track the last appUserID we logged in to RevenueCat so we only call
   // logIn when the identity actually changes (avoids redundant SDK calls).
   const lastAppUserIdRef = useRef<string | null>(null);
+  // Bumped every time the RevenueCat appUserID changes. Components that
+  // cache RC data (offerings, eligibility) depend on this to re-fetch.
+  const [rcIdentityVersion, setRcIdentityVersion] = useState<number>(0);
 
   // Persist state to localStorage (cache for instant UI on next launch).
   useEffect(() => {
@@ -114,8 +123,11 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      // Configure RevenueCat with the platform's API key.
-      await configureIAP();
+      // Configure RevenueCat with the platform's API key. If the user is
+      // already signed in (app restart), pass their email as the appUserID
+      // so RevenueCat starts with the correct identity instead of anonymous.
+      const initialUserID = user?.email ?? null;
+      await configureIAP(initialUserID);
 
       if (!isIAPAvailable()) {
         setCheckingStatus(false);
@@ -147,7 +159,7 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
     }
 
     init();
-
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     return () => {
       mounted = false;
       if (listenerIdRef.current) {
@@ -170,9 +182,11 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
       // the next user starts from a clean, unverified state.
       if (!appUserID) {
         if (lastAppUserIdRef.current !== null) {
+          await invalidateCustomerInfoCache();
           await logoutIAP();
           lastAppUserIdRef.current = null;
           setPremium(DEFAULT_PREMIUM_STATE);
+          setRcIdentityVersion((v) => v + 1);
         }
         return;
       }
@@ -191,6 +205,9 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
           setPremium(fallback);
         }
         lastAppUserIdRef.current = appUserID;
+        // Bump identity version so the paywall re-fetches offerings +
+        // eligibility for the new RevenueCat user.
+        setRcIdentityVersion((v) => v + 1);
       } catch (err) {
         console.warn("[Premium] Failed to sync RevenueCat identity:", err);
       } finally {
@@ -261,6 +278,7 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
     manageSubscription,
     refreshStatus,
     resetPremium,
+    rcIdentityVersion,
   };
 
   return (

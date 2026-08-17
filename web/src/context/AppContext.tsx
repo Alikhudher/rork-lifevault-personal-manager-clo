@@ -518,7 +518,71 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const signIn = useCallback(async (email: string, password: string): Promise<AuthResult> => {
     const normalized = email.trim().toLowerCase();
     const account = findAccount(stateRef.current.accounts, normalized);
+
     if (!account) {
+      // Local account not found — this happens after a new build install
+      // or when localStorage was cleared. Fall back to Supabase Auth to
+      // verify the credentials and recover the account WITHOUT creating
+      // a new user (which would produce a different Supabase user.id and
+      // cause RevenueCat RECEIPT_ALREADY_IN_USE errors).
+      //
+      // This calls signInWithPassword() ONLY — never signUp(). Signup and
+      // login remain separate actions. If the email doesn't exist in
+      // Supabase, the user is directed to the SignUp page.
+      const sb = getSupabase();
+      if (sb) {
+        try {
+          const { data, error } = await sb.auth.signInWithPassword({
+            email: normalized,
+            password,
+          });
+          if (error || !data.user) {
+            // Supabase returns the same error for "no account" and
+            // "wrong password" — we can't distinguish. Return not_found
+            // so the user is directed to sign up or reset password.
+            return { ok: false, error: "not_found" };
+          }
+          // Supabase sign-in succeeded — register the account locally
+          // so future sign-ins work even without a Supabase call.
+          // The Supabase user.id is preserved (same UUID every time).
+          const rec = await hashPassword(password);
+          const supabaseUser = data.user;
+          const recoveredAccount: RegisteredAccount = {
+            email: normalized,
+            name:
+              (supabaseUser.user_metadata?.name as string | undefined) ??
+              normalized.split("@")[0],
+            photo: null,
+            passwordHash: rec.hash,
+            passwordSalt: rec.salt,
+            passwordChangedAt: Date.now(),
+            createdAt: supabaseUser.created_at ?? new Date().toISOString(),
+            emailVerified: true,
+          };
+          const s = stateRef.current;
+          const next: PersistedState = {
+            ...s,
+            onboarded: true,
+            lastEmail: recoveredAccount.email,
+            accounts: [...s.accounts, recoveredAccount],
+            user: profileFromAccount(recoveredAccount),
+          };
+          // Store the plaintext password so SyncContext can auto-unlock
+          // cloud backup and so the Supabase session stays connected.
+          sessionPasswordRef.current = password;
+          void setSessionPasswordSecure(normalized, password);
+          stateRef.current = next;
+          setState(next);
+          console.log(
+            `[Auth] Account recovered via Supabase sign-in for ${normalized} — same user.id preserved`,
+          );
+          return { ok: true, error: null };
+        } catch {
+          // Network error or Supabase not configured — return not_found
+          // so the user can sign up or reset password.
+          return { ok: false, error: "not_found" };
+        }
+      }
       return { ok: false, error: "not_found" };
     }
     const matches = await accountPasswordMatches(account, password);

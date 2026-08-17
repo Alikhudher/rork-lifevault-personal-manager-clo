@@ -192,7 +192,9 @@ workflows:
           sed -i '' '/^VITE_SUPABASE_URL=/d; /^VITE_SUPABASE_ANON_KEY=/d' .env || true
           echo "VITE_SUPABASE_URL=$SB_URL" >> .env
           echo "VITE_SUPABASE_ANON_KEY=$SB_KEY" >> .env
-          echo "Wrote resolved Supabase vars to web/.env"
+          # Inject the git commit SHA for the hidden diagnostics panel.
+          echo "VITE_GIT_SHA=${CM_COMMIT:-unknown}" >> .env
+          echo "Wrote resolved Supabase vars + git SHA to web/.env"
           echo "  VITE_SUPABASE_URL      = $SB_URL"
           echo "  VITE_SUPABASE_ANON_KEY = present (len ${#SB_KEY})"
 
@@ -440,7 +442,31 @@ workflows:
           #   the message body, which caused false positives (e.g. "7 days").
           # - All prior fixes included (build 28 RC identity, 7-day trial,
           #   premium gating, cloud backup auto-unlock, email change, iPad).
-          agvtool new-version -all 29
+          #
+          # Build 30:
+          # - Auth fix: AppContext.signIn() falls back to Supabase
+          #   signInWithPassword() when the local account registry is
+          #   empty (new build install / cleared storage). Preserves
+          #   the exact same Supabase user.id UUID — never calls signUp()
+          #   during login. Prevents RevenueCat RECEIPT_ALREADY_IN_USE.
+          # - RC identity: verifyRCIdentity() checks RC appUserID ===
+          #   Supabase user.id before purchase AND restore. Blocks the
+          #   operation and shows a resync message if they mismatch.
+          # - Restore error handling: restoreIAPPurchases() now wraps
+          #   errors via wrapPurchaseError() so RECEIPT_ALREADY_IN_USE
+          #   shows the friendly account-conflict message.
+          # - Paywall fix: PremiumContext starts with DEFAULT_PREMIUM_STATE
+          #   (isPremium: false) instead of loading stale cached state
+          #   from localStorage. Prevents the plan picker (and trial
+          #   text) from being hidden by a stale premium=true cache.
+          # - UI tests: 8 paywall tests proving the trial text renders
+          #   for non-premium users and disappears during trial/paid.
+          # - Diagnostics panel: hidden sheet opened by tapping the app
+          #   version 5 times on Profile. Shows build number, git SHA,
+          #   Supabase project ref + user ID, RC app user ID + anonymous
+          #   status, active entitlement IDs, monthly/yearly eligibility.
+          #   Never displays API keys, tokens, passwords, or receipts.
+          agvtool new-version -all 30
 
       - name: Apply iOS signing
         script: |

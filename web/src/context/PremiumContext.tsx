@@ -26,6 +26,9 @@ import {
   restoreIAPPurchases,
   customerInfoToPremiumState,
   manageSubscription as iapManageSubscription,
+  verifyRCIdentity,
+  getRCAppUserID,
+  runIAPDiagnostics,
 } from "@/lib/iap";
 import { Capacitor } from "@capacitor/core";
 import { useApp } from "@/context/AppContext";
@@ -63,6 +66,12 @@ interface PremiumContextValue {
    *  that cache RevenueCat data (offerings, eligibility) should depend on
    *  this to re-fetch fresh data for the new user. */
   rcIdentityVersion: number;
+  /** The current Supabase user.id UUID used as the RevenueCat appUserID.
+   *  Exposed for the diagnostics panel. */
+  supabaseUid: string | null;
+  /** The current RevenueCat App User ID (may differ from supabaseUid
+   *  during identity mismatches). Exposed for the diagnostics panel. */
+  rcAppUserID: string | null;
 }
 
 function loadCachedState(): PremiumState {
@@ -95,7 +104,13 @@ function loadCachedState(): PremiumState {
  */
 export function PremiumProvider({ children }: { children: React.ReactNode }) {
   const { user } = useApp();
-  const [premium, setPremium] = useState<PremiumState>(() => loadCachedState());
+  // Start with DEFAULT_PREMIUM_STATE (isPremium: false) — never load the
+  // cached localStorage state on mount. The cache could hold a stale
+  // `isPremium: true` from a previous sandbox/TestFlight session, which
+  // would hide the plan picker (and the trial text) before RevenueCat
+  // has a chance to return the real status. RC sets the real state once
+  // `checkSubscriptionStatus()` completes.
+  const [premium, setPremium] = useState<PremiumState>(DEFAULT_PREMIUM_STATE);
   const [checkingStatus, setCheckingStatus] = useState<boolean>(true);
   const [iapAvailable] = useState<boolean>(() => isIAPAvailable());
   const listenerIdRef = useRef<string | null>(null);
@@ -108,6 +123,9 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
   // The Supabase user.id UUID for the currently signed-in user, or null
   // if not signed in. This is the RevenueCat appUserID — never email.
   const [supabaseUid, setSupabaseUid] = useState<string | null>(null);
+  // The current RevenueCat App User ID (for diagnostics). Updated after
+  // configureIAP and loginIAP complete.
+  const [rcAppUserID, setRcAppUserID] = useState<string | null>(null);
 
   // Persist state to localStorage (cache for instant UI on next launch).
   useEffect(() => {
@@ -203,6 +221,10 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
       if (callbackId) {
         listenerIdRef.current = callbackId;
       }
+
+      // Fetch the current RC appUserID for diagnostics.
+      const rcUid = await getRCAppUserID();
+      if (mounted) setRcAppUserID(rcUid);
     }
 
     init();
@@ -265,6 +287,9 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
           setPremium(fallback);
         }
         lastAppUserIdRef.current = appUserID;
+        // Update the RC appUserID for diagnostics.
+        const rcUid = await getRCAppUserID();
+        setRcAppUserID(rcUid);
         // Bump identity version so the paywall re-fetches offerings +
         // eligibility for the new RevenueCat user.
         setRcIdentityVersion((v) => v + 1);
@@ -292,6 +317,16 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
   );
 
   const purchase = useCallback(async (planId: PlanId) => {
+    // Pre-purchase identity check: verify the RC appUserID exactly matches
+    // the Supabase user.id. If they don't match, block the purchase —
+    // the receipt would be linked to the wrong RC user, causing
+    // RECEIPT_ALREADY_IN_USE errors.
+    if (supabaseUid) {
+      const identityCheck = await verifyRCIdentity(supabaseUid);
+      if (!identityCheck.ok) {
+        throw new Error(identityCheck.error ?? "Identity mismatch. Please sign out and sign back in.");
+      }
+    }
     const newState = await iapPurchase(planId);
     setPremium(newState);
     if (!newState.isPremium) {
@@ -314,6 +349,13 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
   }, [supabaseUid]);
 
   const restore = useCallback(async () => {
+    // Pre-restore identity check: verify the RC appUserID matches Supabase user.id.
+    if (supabaseUid) {
+      const identityCheck = await verifyRCIdentity(supabaseUid);
+      if (!identityCheck.ok) {
+        throw new Error(identityCheck.error ?? "Identity mismatch. Please sign out and sign back in.");
+      }
+    }
     const newState = await restoreIAPPurchases();
     setPremium(newState);
     if (!newState.isPremium) {
@@ -351,6 +393,8 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
     refreshStatus,
     resetPremium,
     rcIdentityVersion,
+    supabaseUid,
+    rcAppUserID,
   };
 
   return (

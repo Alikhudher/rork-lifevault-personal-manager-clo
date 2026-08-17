@@ -65,6 +65,7 @@ import {
   SupportSheet,
   WhatsNewSheet,
 } from "@/components/lifevault/AccountSheets";
+import DiagnosticsSheet from "@/components/lifevault/DiagnosticsSheet";
 import { accountHasPassword, useApp, type RestoredRecord } from "@/context/AppContext";
 import { usePremium } from "@/context/PremiumContext";
 import { loadAllFileData, saveFileData } from "@/lib/file-store";
@@ -78,6 +79,8 @@ import { cn } from "@/lib/utils";
 import { format } from "date-fns";
 
 const APP_VERSION = "1.0.0";
+/** Number of taps on the version text to open the hidden diagnostics panel. */
+const DIAG_TAP_THRESHOLD = 5;
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
   AUD: "A$",
@@ -350,6 +353,9 @@ export default function Profile() {
   const [legalDoc, setLegalDoc] = useState<LegalDocType | null>(null);
   const [sheet, setSheet] = useState<SheetKind>(null);
   const [budgetOpen, setBudgetOpen] = useState<boolean>(false);
+  // Hidden diagnostics panel — opened by tapping the app version 5 times.
+  const [diagOpen, setDiagOpen] = useState<boolean>(false);
+  const [diagTapCount, setDiagTapCount] = useState<number>(0);
 
   /** Deleting the account is a sensitive action — the password is verified first. */
   const deleteRequiresPassword = useMemo(() => {
@@ -991,7 +997,17 @@ export default function Profile() {
             isLast
           />
         </SettingsCard>
-        <p className="pb-6 pt-6 text-center text-[12px] text-muted-foreground">
+        <p
+          className="pb-6 pt-6 text-center text-[12px] text-muted-foreground select-none"
+          onClick={() => {
+            const next = diagTapCount + 1;
+            setDiagTapCount(next);
+            if (next >= DIAG_TAP_THRESHOLD) {
+              setDiagOpen(true);
+              setDiagTapCount(0);
+            }
+          }}
+        >
           {t("profile.footer", { version: APP_VERSION })}
         </p>
       </section>
@@ -1093,6 +1109,9 @@ export default function Profile() {
         open={legalDoc !== null}
         onOpenChange={(open) => !open && setLegalDoc(null)}
       />
+
+      {/* Hidden diagnostics panel — opened by tapping the version 5 times */}
+      <DiagnosticsSheet open={diagOpen} onOpenChange={setDiagOpen} />
     </div>
   );
 }

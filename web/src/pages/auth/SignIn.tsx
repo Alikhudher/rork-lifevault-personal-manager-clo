@@ -33,7 +33,7 @@ export default function SignIn() {
             ? "Incorrect password. Please try again."
             : result.error === "email_unverified"
               ? "This account's email was never verified. Use “Forgot password?” to verify your email and set a password."
-              : "No account found with that email.",
+              : "No account found with that email. Create a new account or use “Forgot password?” to recover an existing one.",
         );
         return;
       }

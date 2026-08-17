@@ -370,6 +370,56 @@ export function findPackageForPlan(
 // ─── Purchase / Restore ────────────────────────────────────────────────
 
 /**
+ * Get the current RevenueCat App User ID (or null if not configured).
+ * Used by the pre-purchase/restore identity check to verify the RC
+ * appUserID exactly matches the authenticated Supabase user.id.
+ */
+export async function getRCAppUserID(): Promise<string | null> {
+  if (!(await ensureConfigured())) return null;
+  try {
+    const { appUserID } = await Purchases.getAppUserID();
+    return appUserID;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Verify that the current RevenueCat App User ID exactly matches the
+ * expected Supabase user.id. If they don't match, the purchase or restore
+ * is BLOCKED — the receipt would be linked to the wrong RevenueCat user,
+ * causing RECEIPT_ALREADY_IN_USE errors and cross-account contamination.
+ *
+ * Returns `true` when IDs match (or when IAP is unavailable on web).
+ * Returns `false` with an error message when there's a mismatch —
+ * the caller should show the error and NOT proceed.
+ */
+export async function verifyRCIdentity(
+  expectedUserId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!isIAPAvailable()) return { ok: true };
+  if (!(await ensureConfigured())) return { ok: true };
+  const rcUid = await getRCAppUserID();
+  if (!rcUid) {
+    return {
+      ok: false,
+      error: "RevenueCat is not initialized. Please restart the app and try again.",
+    };
+  }
+  if (rcUid !== expectedUserId) {
+    console.warn(
+      `[IAP] Identity mismatch: RC appUserID="${rcUid}" vs Supabase user.id="${expectedUserId}" — blocking purchase/restore`,
+    );
+    return {
+      ok: false,
+      error:
+        "Your subscription identity needs to be synchronised. Please sign out and sign back in, then try again.",
+    };
+  }
+  return { ok: true };
+}
+
+/**
  * Initiate a purchase for the given plan.
  * Displays Apple's / Google's native purchase sheet.
  *
@@ -544,11 +594,11 @@ export async function restoreIAPPurchases(): Promise<PremiumState> {
     return state;
   } catch (err) {
     console.error("[IAP] Restore failed:", err);
-    throw new Error(
-      `Could not restore purchases: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
+    // Handle RECEIPT_ALREADY_IN_USE in the restore path too — the same
+    // error can occur when the Apple Account's receipt is bound to a
+    // different RevenueCat appUserID (a different LifeVault account).
+    const wrapped = wrapPurchaseError(err, "yearly");
+    throw wrapped;
   }
 }
 
@@ -888,4 +938,69 @@ export async function runIAPDiagnostics(): Promise<{
 
   console.log("[IAP Diagnostics] Full result:", result);
   return result;
+}
+
+/**
+ * Get diagnostic details for the hidden diagnostics panel.
+ * Returns the current RC appUserID, anonymous status, active entitlement
+ * IDs, and intro eligibility results. Never exposes API keys, tokens,
+ * or receipts.
+ */
+export async function getDiagnosticsInfo(): Promise<{
+  rcAppUserID: string | null;
+  rcIsAnonymous: boolean | null;
+  activeEntitlementIds: string[];
+  monthlyEligibility: string;
+  yearlyEligibility: string;
+}> {
+  if (!isIAPAvailable() || !(await ensureConfigured())) {
+    return {
+      rcAppUserID: null,
+      rcIsAnonymous: null,
+      activeEntitlementIds: [],
+      monthlyEligibility: "IAP unavailable",
+      yearlyEligibility: "IAP unavailable",
+    };
+  }
+
+  let rcAppUserID: string | null = null;
+  let rcIsAnonymous: boolean | null = null;
+  let activeEntitlementIds: string[] = [];
+
+  try {
+    const { appUserID } = await Purchases.getAppUserID();
+    rcAppUserID = appUserID;
+    // RC anonymous IDs start with "$" — a signed-in user has a UUID.
+    rcIsAnonymous = appUserID.startsWith("$");
+  } catch {
+    // getAppUserID may fail if RC isn't fully initialized.
+  }
+
+  try {
+    const { customerInfo } = await Purchases.getCustomerInfo();
+    activeEntitlementIds = Object.keys(customerInfo.entitlements.active);
+  } catch {
+    // CustomerInfo may not be available yet.
+  }
+
+  // Check intro eligibility for both plans.
+  const eligibility = await checkIntroEligibility();
+  const monthlyElig = eligibility[PRODUCT_IDS.monthly];
+  const yearlyElig = eligibility[PRODUCT_IDS.yearly];
+  const formatElig = (e: IntroEligibility | undefined): string => {
+    if (!e) return "Not checked";
+    const status = e.status;
+    if (status === INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_ELIGIBLE) return "Eligible";
+    if (status === INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_INELIGIBLE) return "Ineligible";
+    if (status === INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_NO_INTRO_OFFER_EXISTS) return "No intro offer";
+    return "Unknown";
+  };
+
+  return {
+    rcAppUserID,
+    rcIsAnonymous,
+    activeEntitlementIds,
+    monthlyEligibility: formatElig(monthlyElig),
+    yearlyEligibility: formatElig(yearlyElig),
+  };
 }

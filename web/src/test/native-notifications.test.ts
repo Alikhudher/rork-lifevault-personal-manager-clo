@@ -36,6 +36,8 @@ vi.mock("@capacitor/local-notifications", () => ({
 
 import { LocalNotifications } from "@capacitor/local-notifications";
 import { reconcileNotifications } from "../lib/native-notifications";
+import { computeAppointmentNotifications } from "../lib/reminder-scheduling";
+import { APPOINTMENT_REMINDERS, type Appointment } from "../lib/types";
 
 type PermissionDisplay = "granted" | "denied" | "prompt";
 
@@ -119,6 +121,44 @@ describe("reconcileNotifications — sound + permission contract", () => {
       notifications: Array<{ id: number }>;
     };
     expect(payload.notifications).toHaveLength(1);
+  });
+
+  it("schedules the default sound for EVERY appointment reminder option", async () => {
+    // "At event time", every minute/hour/day preset, and a custom value —
+    // all must carry sound: "default" (a missing sound = silent delivery).
+    const reminders = [...APPOINTMENT_REMINDERS, "3 days before"];
+    const d = new Date(Date.now() + 10 * 86_400_000);
+    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+    const desired = reminders.flatMap((reminder) =>
+      computeAppointmentNotifications(
+        {
+          id: `apt-${reminder}`,
+          title: "Dentist",
+          date,
+          time: "23:30",
+          location: "",
+          notes: "",
+          reminder,
+        } as Appointment,
+        { appointments: true, documents: false, subscriptions: false, bills: false, budget: false },
+      ),
+    );
+
+    // Every option (including "At event time") produced exactly one reminder.
+    expect(desired).toHaveLength(reminders.length);
+
+    mockPermission("granted");
+    const result = await reconcileNotifications(desired);
+
+    expect(result.scheduled).toBe(reminders.length);
+    const payload = vi.mocked(LocalNotifications.schedule).mock.calls[0][0] as {
+      notifications: Array<{ sound?: string }>;
+    };
+    expect(payload.notifications).toHaveLength(reminders.length);
+    for (const n of payload.notifications) {
+      expect(n.sound).toBe("default");
+    }
   });
 
   it("cancels all pending notifications before scheduling the desired set", async () => {

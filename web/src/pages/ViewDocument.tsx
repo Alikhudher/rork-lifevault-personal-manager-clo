@@ -562,19 +562,28 @@ export default function ViewDocument() {
 
   const handleShare = useCallback(async () => {
     if (!doc) return;
+    // Sharing is a Premium feature — free users go straight to the upgrade
+    // screen (never a dead grey button). Premium status is reactive, so the
+    // button works immediately after subscribing or restoring.
     if (iapAvailable && !hasFeature("exportData")) {
-      toast.error("Sharing documents is a Premium feature. Upgrade to unlock.");
+      navigate("/premium");
       return;
     }
     // fileData may not be hydrated from IndexedDB yet — load it on demand.
     const fileData = doc.fileData ?? (await loadFileData(doc.id));
+    if (!fileData) {
+      toast.error("File not found", {
+        description: "The document file is missing on this device and can't be shared.",
+      });
+      return;
+    }
     await shareDocument({
       title: doc.name,
       text: doc.notes || `${doc.name} — ${doc.category}`,
       fileData,
       fileName: doc.fileName ?? `${doc.name}`,
     });
-  }, [doc, iapAvailable, hasFeature]);
+  }, [doc, iapAvailable, hasFeature, navigate]);
 
   /* ---- Not found ---- */
 
@@ -704,12 +713,7 @@ export default function ViewDocument() {
             onClick={openEdit}
             primary
           />
-          <ActionButton
-            icon={Share2}
-            label="Share"
-            onClick={handleShare}
-            disabled={iapAvailable && !hasFeature("exportData")}
-          />
+          <ActionButton icon={Share2} label="Share" onClick={handleShare} />
           <ActionButton
             icon={Trash2}
             label="Delete"

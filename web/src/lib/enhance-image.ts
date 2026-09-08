@@ -1,6 +1,13 @@
 /**
  * Client-side image enhancement for OCR / document understanding.
  *
+ * IMPORTANT: the output of this module is a THROWAWAY OCR-ONLY COPY. It
+ * must never replace the stored document image — the original full-colour
+ * file is what gets saved as fileData and shown everywhere (thumbnails,
+ * previews, full-screen view, share sheet, exports and backups). The
+ * grayscale/contrast pipeline below exists solely to improve text
+ * recognition by the vision LLM.
+ *
  * Photos of paper documents are often dim, shadowed, slightly rotated, or
  * low-contrast. The vision LLM handles many of these well, but pre-processing
  * on the canvas before upload measurably improves handwritten-text and

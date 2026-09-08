@@ -164,27 +164,56 @@ export interface Appointment {
   title: string;
   /** ISO date (yyyy-MM-dd) */
   date: string;
-  /** 24h time (HH:mm) */
+  /** 24h time (HH:mm) — exact hour & minute of the event */
   time: string;
   location: string;
   notes: string;
-  /** e.g. "1 hour before" */
+  /** Canonical reminder string, e.g. "At event time", "15 minutes before",
+   *  "1 hour before", "2 days before", or a custom "N minutes/hours/days before". */
   reminder: string;
 }
 
+/**
+ * Preset appointment reminders shown as chips. Any further interval is
+ * expressible through the Custom option (any number of Minutes, Hours or
+ * Days). Stored strings are parsed by `parseAppointmentReminderMinutes`.
+ */
 export const APPOINTMENT_REMINDERS: string[] = [
-  "At time of event",
+  "At event time",
+  "5 minutes before",
+  "10 minutes before",
+  "15 minutes before",
+  "30 minutes before",
+  "45 minutes before",
   "1 hour before",
+  "2 hours before",
   "3 hours before",
+  "6 hours before",
+  "12 hours before",
   "1 day before",
-  "2 days before",
-  "3 days before",
-  "7 days before",
-  "14 days before",
-  "30 days before",
-  "60 days before",
-  "90 days before",
 ];
+
+/** Unit for a custom appointment reminder interval. */
+export type ReminderUnit = "minutes" | "hours" | "days";
+
+export const REMINDER_UNITS: ReminderUnit[] = ["minutes", "hours", "days"];
+
+/** Bounds for a custom appointment reminder value (per unit). */
+export const REMINDER_UNIT_LIMITS: Record<ReminderUnit, { min: number; max: number }> = {
+  minutes: { min: 1, max: 60 * 24 * 30 }, // up to 30 days worth of minutes
+  hours: { min: 1, max: 24 * 60 }, // up to 60 days
+  days: { min: 1, max: 365 },
+};
+
+/** Canonical "N unit before" reminder string for a custom interval. */
+export function appointmentReminderForCustom(value: number, unit: ReminderUnit): string {
+  const { min, max } = REMINDER_UNIT_LIMITS[unit];
+  const n = Math.min(max, Math.max(min, Math.round(value)));
+  const label = unit === "minutes" ? (n === 1 ? "minute" : "minutes")
+    : unit === "hours" ? (n === 1 ? "hour" : "hours")
+    : (n === 1 ? "day" : "days");
+  return `${n} ${label} before`;
+}
 
 /** Canonical "N day(s) before" reminder string for a custom day count. */
 export function appointmentReminderForDays(days: number): string {
@@ -208,13 +237,48 @@ export function parseAppointmentReminderDays(reminder: string): number | null {
 }
 
 /**
- * Maps legacy stored values (e.g. "1 week before") to their canonical form
- * so old appointments select the right picker option. Unknown values pass
- * through untouched so no stored data is ever lost.
+ * Parses any canonical appointment reminder string into a lead time in
+ * minutes before the event. Returns null for unrecognised values.
+ *
+ *   "At event time"        → 0
+ *   "15 minutes before"    → 15
+ *   "1 hour before"        → 60
+ *   "12 hours before"      → 720
+ *   "2 days before"        → 2880
+ *   "1 week before" (legacy) → 10080
+ */
+export function parseAppointmentReminderMinutes(reminder: string): number | null {
+  const norm = reminder.trim().toLowerCase();
+  if (norm === "at event time" || norm === "at time of event" || norm === "at the time of event") return 0;
+  const match = norm.match(/^(\d+)\s+(minutes?|mins?|hours?|hrs?|days?|weeks?)\s+before$/);
+  if (!match) return null;
+  const n = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(n) || n < 0) return null;
+  const unit = match[2].startsWith("m")
+    ? 1
+    : match[2].startsWith("h")
+      ? 60
+      : match[2].startsWith("d")
+        ? 1440
+        : 10080; // weeks (legacy)
+  return n * unit;
+}
+
+/**
+ * Maps legacy stored values (e.g. "1 week before", "At time of event",
+ * "3 days before") to their canonical form so old appointments select the
+ * right picker option. Unknown values pass through untouched so no stored
+ * data is ever lost.
  */
 export function normalizeAppointmentReminder(reminder: string): string {
+  const norm = reminder.trim().toLowerCase();
+  if (norm === "at time of event" || norm === "at the time of event") return "At event time";
   const days = parseAppointmentReminderDays(reminder);
-  if (days !== null) return appointmentReminderForDays(days);
+  if (days !== null) {
+    // Time-of-day presets (5 min … 12 h) win over a day-based chip when the
+    // stored value maps onto one (e.g. "1 day before" stays a day chip).
+    return appointmentReminderForDays(days);
+  }
   return reminder.trim() || "1 day before";
 }
 

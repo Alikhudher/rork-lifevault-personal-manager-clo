@@ -383,7 +383,7 @@ workflows:
       - name: Set version and build number
         script: |
           cd web/ios/App
-          agvtool new-marketing-version 1.0
+          agvtool new-marketing-version 1.0.1
           # Build 28: Fixed RevenueCat identity to use Supabase user.id
           # UUID instead of email as the appUserID.
           #
@@ -466,7 +466,34 @@ workflows:
           #   Supabase project ref + user ID, RC app user ID + anonymous
           #   status, active entitlement IDs, monthly/yearly eligibility.
           #   Never displays API keys, tokens, passwords, or receipts.
-          agvtool new-version -all 30
+          #
+          # Build 31 (v1.0.1):
+          # - Native iOS notifications via @capacitor/local-notifications:
+          #   permission requested on first reminder creation, LifeVault Hub
+          #   appears under iPhone Settings → Notifications, reminders fire
+          #   while the app is open/backgrounded/closed, tap deep-links to
+          #   the exact item, edit/delete/complete cancels old
+          #   notifications, reconcile pass makes duplicates impossible.
+          # - Appointment reminders: exact date+time, presets from "at event
+          #   time" through 12 hours and 1+ days, Custom with Minutes/Hours/
+          #   Days, past reminder times rejected, "Expired" badge, auto-
+          #   delete 48h after the event (appointments ONLY — no other data
+          #   is ever auto-deleted).
+          # - Document colours preserved: OCR enhancement now runs on a
+          #   separate temporary copy only; the original full-colour image
+          #   is stored/displayed/shared/exported everywhere.
+          # - Document sharing fixed: Share button never dead — Premium
+          #   users get the native iOS share sheet with the real original
+          #   file; free users are taken to the Premium upgrade screen;
+          #   missing files show a clear error.
+          # - Localized subscription pricing: displayed prices come only
+          #   from RevenueCat/StoreKit (displayPrice) for the user's App
+          #   Store storefront — no hardcoded prices anywhere, loading
+          #   state while products load, retry on failure, purchases
+          #   disabled until the real price is shown.
+          # - Notification settings: permission status, enable button and
+          #   "Open Settings" path when permission was denied.
+          agvtool new-version -all 31
 
       - name: Apply iOS signing
         script: |

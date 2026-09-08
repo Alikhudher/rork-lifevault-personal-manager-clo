@@ -35,8 +35,12 @@ import { AppointmentReminderPicker } from "@/components/lifevault/ReminderPicker
 import { useApp } from "@/context/AppContext";
 import { usePremium } from "@/context/PremiumContext";
 import { FREE_TIER_LIMITS, isWithinFreeLimit } from "@/lib/premium";
-import { daysUntil, formatTime12, relativeDayLabel } from "@/lib/format";
-import { normalizeAppointmentReminder, type Appointment } from "@/lib/types";
+import { formatTime12, relativeDayLabel } from "@/lib/format";
+import {
+  appointmentEventDate,
+  isAppointmentExpired,
+} from "@/lib/reminder-scheduling";
+import { normalizeAppointmentReminder, parseAppointmentReminderMinutes, type Appointment } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 interface AptFormState {
@@ -84,8 +88,16 @@ export default function CalendarPage() {
     () => [...appointments].sort((a, b) => `${a.date}${a.time}`.localeCompare(`${b.date}${b.time}`)),
     [appointments],
   );
-  const upcoming = useMemo(() => sorted.filter((a) => daysUntil(a.date) >= 0), [sorted]);
-  const past = useMemo(() => sorted.filter((a) => daysUntil(a.date) < 0).reverse(), [sorted]);
+  // Expiry is decided by the exact date+TIME, not just the calendar day —
+  // an appointment at 09:00 today is "Expired" from 09:00:01 onward.
+  const [nowTick, setNowTick] = useState<number>(Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const now = useMemo(() => new Date(nowTick), [nowTick]);
+  const upcoming = useMemo(() => sorted.filter((a) => !isAppointmentExpired(a, now)), [sorted, now]);
+  const past = useMemo(() => sorted.filter((a) => isAppointmentExpired(a, now)).reverse(), [sorted, now]);
 
   const monthDays = useMemo(() => {
     const start = startOfWeek(startOfMonth(month), { weekStartsOn: 1 });
@@ -135,6 +147,17 @@ export default function CalendarPage() {
       notes: form.notes.trim(),
       reminder: form.reminder,
     };
+    // A reminder that would fire in the past is never allowed — block the
+    // save so the user picks a shorter lead or a later date/time. Reminders
+    // are calculated from the exact appointment date, time and timezone.
+    const eventAt = appointmentEventDate(payload).getTime();
+    const leadMinutes = parseAppointmentReminderMinutes(payload.reminder);
+    if (eventAt > Date.now() && leadMinutes !== null && eventAt - leadMinutes * 60_000 <= Date.now()) {
+      toast.error("That reminder time has already passed", {
+        description: "Pick a later date/time or a shorter reminder interval.",
+      });
+      return;
+    }
     if (editingId) {
       updateAppointment(editingId, payload);
       toast.success("Appointment updated");
@@ -401,6 +424,7 @@ export default function CalendarPage() {
 }
 
 function AppointmentRow({ apt, onOpen }: { apt: Appointment; onOpen: (apt: Appointment) => void }) {
+  const expired = isAppointmentExpired(apt);
   return (
     <button
       onClick={() => onOpen(apt)}
@@ -411,7 +435,14 @@ function AppointmentRow({ apt, onOpen }: { apt: Appointment; onOpen: (apt: Appoi
         <span className="text-[17px] font-extrabold leading-tight">{format(parseISO(apt.date), "d")}</span>
       </span>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[14px] font-bold">{apt.title}</p>
+        <div className="flex items-center gap-2">
+          <p className="truncate text-[14px] font-bold">{apt.title}</p>
+          {expired && (
+            <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-muted-foreground">
+              Expired
+            </span>
+          )}
+        </div>
         <p className="flex items-center gap-1 text-[12px] text-muted-foreground">
           <Clock className="h-3 w-3 shrink-0" />
           {relativeDayLabel(apt.date)} · {formatTime12(apt.time)}

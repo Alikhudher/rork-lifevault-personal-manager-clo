@@ -13,6 +13,7 @@
         "@capacitor/filesystem": "^8.1.2",
         "@capacitor/ios": "^8.4.2",
         "@capacitor/keyboard": "^8.0.5",
+        "@capacitor/local-notifications": "^8.0.0",
         "@capacitor/privacy-screen": "^2.0.1",
         "@capacitor/share": "^8.0.1",
         "@hookform/resolvers": "^3.10.0",
@@ -136,6 +137,8 @@
     "@capacitor/ios": ["@capacitor/ios@8.4.2", "", { "peerDependencies": { "@capacitor/core": "^8.4.0" } }, "sha512-ClVzIjK++yRjsRPOpdEzhsZfbHfoEc0f4M6vD0v7sWh0qcoF6NkxNAeHpWTn4OPJpJfpGGoYsq+IfEHrYyBiWA=="],
 
     "@capacitor/keyboard": ["@capacitor/keyboard@8.0.5", "", { "peerDependencies": { "@capacitor/core": ">=8.0.0" } }, "sha512-oFXygC4eKYA5l2MdpTR06L2M/4x6e2SLD5yS1T9+UBDKTkzyvhWKEhbYLUaTIBPpLKqlfGudJw1X73S1H9eUzQ=="],
+
+    "@capacitor/local-notifications": ["@capacitor/local-notifications@8.3.1", "", { "peerDependencies": { "@capacitor/core": ">=8.0.0" } }, "sha512-F7zu/+p/mIR958YP4axOkeI5hBKRaXDyYjbNPrAil2wWfd7OxScPSTvP9t85NpQ0eULVRu0/sntoxOg6ck477A=="],
 
     "@capacitor/privacy-screen": ["@capacitor/privacy-screen@2.0.1", "", { "peerDependencies": { "@capacitor/core": ">=8.0.0" } }, "sha512-NDKXhf2tGMZu6JcVTDtwfUw0Y7BMBfcoinhxVqRhzHaBCO7HgXF7MRX2HLk0T+l4/2uzmRb3AvUKHiF4BW8drA=="],
 

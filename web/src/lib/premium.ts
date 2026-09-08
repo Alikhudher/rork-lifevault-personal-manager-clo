@@ -82,10 +82,6 @@ export interface PremiumPlan {
   id: PlanId;
   /** Product ID for App Store Connect / Google Play. */
   productId: string;
-  /** Fallback price label — replaced with the store's localized price when available. */
-  priceLabel: string;
-  /** Price per period, numeric — used for savings calculation only. */
-  price: number;
   /** Billing period label, e.g. "per month". */
   periodLabel: string;
   /** Whether this is the default / recommended plan. */
@@ -94,20 +90,18 @@ export interface PremiumPlan {
   savingsLabel?: string;
 }
 
-/** The two plans the Upgrade screen offers. */
+/** The two plans the Upgrade screen offers. Prices are NEVER hardcoded —
+ *  they come exclusively from Apple/Google (RevenueCat localized
+ *  priceString / displayPrice) for the user's App Store storefront. */
 export const PREMIUM_PLANS: PremiumPlan[] = [
   {
     id: "monthly",
     productId: "com.lifevault.premium.monthly",
-    priceLabel: "$4.99",
-    price: 4.99,
     periodLabel: "per month",
   },
   {
     id: "yearly",
     productId: "com.lifevault.premium.yearly",
-    priceLabel: "$39.99",
-    price: 39.99,
     periodLabel: "per year",
     recommended: true,
     savingsLabel: "Save 33%",

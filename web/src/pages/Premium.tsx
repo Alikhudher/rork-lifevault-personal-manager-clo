@@ -112,6 +112,8 @@ export default function Premium() {
   const [restoring, setRestoring] = useState<boolean>(false);
   const [offering, setOffering] = useState<PurchasesOffering | null>(null);
   const [productCount, setProductCount] = useState<number>(0);
+  const [offeringLoading, setOfferingLoading] = useState<boolean>(iapAvailable);
+  const [reloadNonce, setReloadNonce] = useState<number>(0);
   const [introEligibility, setIntroEligibility] = useState<Record<string, IntroEligibility>>({});
   const [legalDoc, setLegalDoc] = useState<LegalDocType | null>(null);
 
@@ -125,8 +127,12 @@ export default function Premium() {
   // account switch) so offerings and introductory-offer eligibility are
   // always fresh for the current user — never stale from a previous user.
   useEffect(() => {
-    if (!iapAvailable) return;
+    if (!iapAvailable) {
+      setOfferingLoading(false);
+      return;
+    }
     let mounted = true;
+    setOfferingLoading(true);
     (async () => {
       // Invalidate cached CustomerInfo so offerings + eligibility are
       // fetched fresh from RevenueCat's backend for the current user.
@@ -167,25 +173,34 @@ export default function Premium() {
       const eligibility = await checkIntroEligibility();
       if (!mounted) return;
       setIntroEligibility(eligibility);
+      setOfferingLoading(false);
     })();
     return () => {
       mounted = false;
     };
-  }, [iapAvailable, rcIdentityVersion]);
+  }, [iapAvailable, rcIdentityVersion, reloadNonce]);
 
-  // Get the localized price for a plan from the Offering's package, falling
-  // back to the static label defined in PREMIUM_PLANS.
+  /**
+   * Get the OFFICIAL localized price for a plan straight from the
+   * RevenueCat StoreProduct — Apple's displayPrice for the user's App
+   * Store storefront (never derived from phone language, location or
+   * manual conversion). Returns null until StoreKit has loaded: the UI
+   * must show a loading state and NEVER a hardcoded fallback price.
+   */
   const getPriceLabel = useMemo(() => {
-    return (planId: PlanId): string => {
-      const fallback = PREMIUM_PLANS.find((p) => p.id === planId);
-      if (!fallback) return "";
+    return (planId: PlanId): string | null => {
       const pkg = findPackageForPlan(offering, planId);
       if (pkg && pkg.product.priceString) {
         return pkg.product.priceString;
       }
-      return fallback.priceLabel;
+      return null;
     };
   }, [offering]);
+
+  /** True once the localized price for a plan has loaded from the store. */
+  const priceLoaded = (planId: PlanId): boolean => getPriceLabel(planId) !== null;
+  const pricesFailed =
+    iapAvailable && !offeringLoading && !priceLoaded("monthly") && !priceLoaded("yearly");
 
   /**
    * Get the introductory offer info for a plan.
@@ -553,7 +568,9 @@ export default function Premium() {
                     </div>
                     {intro && intro.isFreeTrial ? (
                       <p className={cn("mt-0.5 text-[13px] font-semibold", isSelected ? "text-emerald-200" : "text-success")}>
-                        {formatDurationWords(intro)} free, then {priceLabel}{p.id === "yearly" ? "/year" : "/month"}
+                        {priceLabel
+                          ? `${formatDurationWords(intro)} free, then ${priceLabel}${p.id === "yearly" ? "/year" : "/month"}`
+                          : `${formatDurationWords(intro)} free — then the App Store price`}
                       </p>
                     ) : (
                       <p className={cn("mt-0.5 text-[13px]", isSelected ? "text-white/70" : "text-muted-foreground")}>
@@ -573,7 +590,16 @@ export default function Premium() {
                       </p>
                     )}
                     <p className={cn("text-[22px] font-extrabold tabular", isSelected ? "text-white" : "text-foreground")}>
-                      {priceLabel}
+                      {priceLabel ? (
+                        priceLabel
+                      ) : iapAvailable ? (
+                        <span
+                          className={cn("inline-block h-6 w-20 animate-pulse rounded-md align-middle", isSelected ? "bg-white/25" : "bg-muted-foreground/20")}
+                          aria-label="Loading price"
+                        />
+                      ) : (
+                        <span className="text-[13px] font-bold text-muted-foreground">App Store pricing</span>
+                      )}
                     </p>
                     {intro && intro.isFreeTrial && (
                       <p className={cn("text-[11px] font-medium", isSelected ? "text-white/50" : "text-muted-foreground")}>
@@ -604,6 +630,29 @@ export default function Premium() {
         </section>
       )}
 
+      {/* Couldn't load localized prices — retry. Purchases stay disabled so
+          the user is never shown (or charged) an incorrect amount. */}
+      {!isPremium && iapAvailable && pricesFailed && (
+        <section className="px-4 pt-4">
+          <div className="rounded-2xl bg-amber-500/10 px-4 py-3 ring-1 ring-amber-500/20">
+            <p className="text-[13px] font-bold text-amber-600 dark:text-amber-400">
+              Couldn't load App Store prices
+            </p>
+            <p className="mt-1 text-[12px] text-muted-foreground">
+              Purchases are disabled until the official localized price loads for your App Store
+              storefront — you'll never be shown the wrong amount.
+            </p>
+            <Button
+              onClick={() => setReloadNonce((n) => n + 1)}
+              variant="outline"
+              className="mt-3 h-10 rounded-xl px-5 text-[13px] font-bold"
+            >
+              Retry
+            </Button>
+          </div>
+        </section>
+      )}
+
       {/* CTA buttons — hidden if already premium */}
       {!isPremium && (
         <section className="px-4 pt-6">
@@ -611,7 +660,7 @@ export default function Premium() {
             <>
               <Button
                 onClick={handlePurchase}
-                disabled={purchasing}
+                disabled={purchasing || (iapAvailable && !priceLoaded(selectedPlan))}
                 className="h-13 w-full rounded-2xl bg-gradient-to-r from-[hsl(43,90%,55%)] to-[hsl(33,85%,48%)] py-3.5 text-[15px] font-extrabold text-white shadow-lg shadow-amber-500/25 transition-transform active:scale-[0.98]"
                 style={{ height: "52px" }}
               >
@@ -632,8 +681,13 @@ export default function Premium() {
                   </>
                 )}
               </Button>
-              {/* Price after trial + auto-renew notice — directly below the button */}
-              {getIntroOffer(selectedPlan)?.isFreeTrial ? (
+              {/* Price after trial + auto-renew notice — directly below the button.
+                  Never renders a price until the official localized one has loaded. */}
+              {!priceLoaded(selectedPlan) ? (
+                <p className="mt-2.5 text-center text-[13px] font-bold text-muted-foreground">
+                  {offeringLoading ? "Loading price from the App Store…" : "Price unavailable — try again"}
+                </p>
+              ) : getIntroOffer(selectedPlan)?.isFreeTrial ? (
                 <div className="mt-2.5 text-center">
                   <p className="text-[13px] font-bold text-muted-foreground">
                     {formatDurationWords(getIntroOffer(selectedPlan)!)} free, then {getPriceLabel(selectedPlan)}{selectedPlan === "yearly" ? "/year" : "/month"} · auto-renews unless cancelled
@@ -671,7 +725,7 @@ export default function Premium() {
       {/* Fine print — Apple App Store Guideline 3.1.2(c) compliance.
           Purchase pricing details are hidden when already premium. */}
       <section className="px-4 pt-6 pb-6">
-        {!isPremium && iapAvailable && (
+        {!isPremium && iapAvailable && priceLoaded(selectedPlan) && (
           <div className="mb-4 rounded-2xl bg-card p-4 ring-1 ring-border">
             <h3 className="text-[13px] font-extrabold text-foreground">
               {selectedPlan === "yearly" ? "LifeVault Premium — Yearly" : "LifeVault Premium — Monthly"}

@@ -1,8 +1,9 @@
 import { useEffect } from "react";
 import { Capacitor } from "@capacitor/core";
 import { App } from "@capacitor/app";
-import { Navigate, Outlet, useLocation } from "react-router-dom";
+import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
+import { addNotificationTapListener } from "@/lib/native-notifications";
 import { useKeyboardAvoidance } from "@/hooks/useKeyboardAvoidance";
 import { BottomNav } from "./BottomNav";
 import { AppLock } from "./AppLock";
@@ -57,6 +58,25 @@ function useAutoLockLifecycle() {
   }, [noteBackgrounded, noteForegrounded]);
 }
 
+/**
+ * Deep-links notification taps to the exact item: appointments open the
+ * Calendar, documents open their View page, subscriptions open the
+ * Subscriptions list. Works for taps while the app is open, backgrounded,
+ * and on cold start after a tap while the app was fully closed.
+ */
+function useNotificationTapRouting() {
+  const navigate = useNavigate();
+  useEffect(
+    () =>
+      addNotificationTapListener(({ kind, itemId }) => {
+        if (kind === "appointment") navigate("/calendar");
+        else if (kind === "document") navigate(`/documents/${itemId}`);
+        else navigate("/subscriptions");
+      }),
+    [navigate],
+  );
+}
+
 /** Layout for authenticated tab screens: centered mobile frame + bottom navigation. */
 export function AppShell() {
   const { user, onboarded, authReady } = useApp();
@@ -64,6 +84,7 @@ export function AppShell() {
   const scrollRef = useKeyboardAvoidance();
 
   useAutoLockLifecycle();
+  useNotificationTapRouting();
 
   if (!onboarded) return <Navigate to="/onboarding" replace />;
   // Wait for the initial Supabase session check to complete before

@@ -57,6 +57,8 @@ import {
 import { getSupabase } from "@/lib/supabase";
 import type { Session, User as SupabaseAuthUser } from "@supabase/supabase-js";
 import { setSessionKey } from "@/lib/crypto";
+import { computeAllNotifications, findStaleAppointments } from "@/lib/reminder-scheduling";
+import { reconcileNotifications } from "@/lib/native-notifications";
 
 const STORAGE_KEY = "lifevault-state-v1";
 
@@ -1365,6 +1367,61 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       notifications: s.notifications.map((n) => ({ ...n, read: true })),
     }));
   }, []);
+
+  /*
+   * Native iOS/Android notification scheduling.
+   *
+   * The desired notification set is computed from the exact stored dates,
+   * times, reminder intervals and the device timezone. Any change to
+   * documents, subscriptions, appointments or notification preferences
+   * (add, edit, delete, complete) re-reconciles: stale notifications are
+   * cancelled and the new set is scheduled. Permission is requested on the
+   * first scheduling attempt — i.e. when the user creates their first
+   * reminder — and nothing is reported scheduled unless the native
+   * scheduler confirmed it. Web is a no-op (no browser notifications).
+   */
+  const desiredNotifications = useMemo(
+    () =>
+      computeAllNotifications({
+        documents: state.documents,
+        subscriptions: state.subscriptions,
+        appointments: state.appointments,
+        prefs: state.settings.notifications,
+      }),
+    [state.documents, state.subscriptions, state.appointments, state.settings.notifications],
+  );
+  const desiredKey = useMemo(
+    () =>
+      desiredNotifications
+        .map((n) => `${n.id}:${n.title}:${n.body}:${n.at.getTime()}`)
+        .join("|"),
+    [desiredNotifications],
+  );
+  useEffect(() => {
+    void reconcileNotifications(desiredNotifications);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [desiredKey]);
+
+  /*
+   * Appointment expiry retention: an expired appointment is kept for 48
+   * hours after its exact time, then automatically deleted (with its
+   * notifications cancelled by the reconcile above). This cleanup applies
+   * ONLY to appointments — documents, expenses, purchases, subscriptions,
+   * payments and bills are NEVER automatically deleted.
+   */
+  useEffect(() => {
+    const cleanup = () => {
+      const stale = findStaleAppointments(state.appointments);
+      if (stale.length === 0) return;
+      for (const apt of stale) deleteAppointment(apt.id);
+      console.log(
+        `[Cleanup] Auto-deleted ${stale.length} appointment(s) after the 48h retention window`,
+      );
+    };
+    cleanup();
+    const id = window.setInterval(cleanup, 60_000);
+    return () => window.clearInterval(id);
+  }, [state.appointments, deleteAppointment]);
 
   const applyRestoredRecords = useCallback((rawRecords: RestoredRecord[]) => {
     // Old cloud backups may still contain pre-release demo rows — never

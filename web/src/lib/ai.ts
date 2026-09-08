@@ -1053,7 +1053,11 @@ function normalizeScanResponse(raw: unknown): RawScan | null {
 
 /**
  * Scan one or more document photos and return a universal understanding
- * result. Each page is enhanced for OCR before being sent to the model.
+ * result. Each page is enhanced for OCR before being sent to the model —
+ * but ONLY on a separate temporary copy. The ORIGINAL full-colour images
+ * are always returned in `pages` and are what the caller stores as the
+ * document's fileData, so thumbnails, previews, shares, exports and
+ * backups keep their original colours, orientation and quality.
  *
  * @param pages Array of image data URLs (one per captured page/photo).
  */
@@ -1061,14 +1065,15 @@ export async function scanDocuments(pages: string[]): Promise<ScanOutcome> {
   if (pages.length === 0) {
     throw new Error("AI_NO_PAGES");
   }
-  // Enhance each page in parallel; enhancement falls back to the original
-  // image on any internal error, so this never throws.
+  // Enhance each page in parallel on a TEMPORARY copy used for OCR only.
+  // Enhancement falls back to the original image on any internal error, so
+  // this never throws. The enhanced copies are never stored or returned.
   // (Static import — a lazy chunk here used to break scanning whenever a
   // redeploy rotated the hashed chunk filenames mid-session.)
-  const enhanced = await Promise.all(
+  const ocrCopies = await Promise.all(
     pages.map((p) => enhanceForOCR(p, 3_000_000).catch(() => ({ dataUrl: p, base64: "", mimeType: "image/jpeg" as const }))),
   );
-  const imageParts = enhanced.map((e) => ({
+  const imageParts = ocrCopies.map((e) => ({
     type: "image_url" as const,
     image_url: { url: e.dataUrl },
   }));
@@ -1126,9 +1131,11 @@ export async function scanDocuments(pages: string[]): Promise<ScanOutcome> {
   }
 
   const documents = parsed.documents.map((d, i) => buildScanResult(d, i));
+  // Return the ORIGINAL captured images — never the OCR-enhanced copies —
+  // so the saved document keeps its original full colours.
   return {
     documents,
-    pages: enhanced.map((e) => e.dataUrl),
+    pages,
   };
 }
 

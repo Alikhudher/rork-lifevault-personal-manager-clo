@@ -151,6 +151,10 @@ export async function reconcileNotifications(
           title: n.title,
           body: n.body,
           schedule: { at: n.at, allowWhileIdle: true },
+          // REQUIRED on iOS: without an explicit sound the notification is
+          // delivered SILENTLY (no sound, no vibration/haptic). "default"
+          // is the standard iOS notification sound and its linked haptic.
+          sound: "default",
           // Attach routing data; Android needs an id string.
           extra: { kind: n.data.kind, itemId: n.data.itemId },
           actionTypeId: "",

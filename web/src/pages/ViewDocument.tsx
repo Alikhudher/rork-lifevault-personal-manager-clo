@@ -496,7 +496,8 @@ export default function ViewDocument() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { documents, updateDocument, deleteDocument } = useApp();
-  const { hasFeature, iapAvailable } = usePremium();
+  const { hasFeature, iapAvailable, isPremium, checkingStatus, refreshStatus } =
+    usePremium();
 
   const doc = useMemo<VaultDocument | undefined>(
     () => documents.find((d) => d.id === id),
@@ -566,11 +567,46 @@ export default function ViewDocument() {
     // screen (never a dead grey button). Premium status is reactive, so the
     // button works immediately after subscribing or restoring.
     if (iapAvailable && !hasFeature("exportData")) {
-      navigate("/premium");
-      return;
+      // ── TEMP SHARE-DIAG (remove before App Store release) ─────────────
+      console.log(
+        "[ShareDiag] Cached entitlement says not premium — re-checking RevenueCat live",
+        {
+          iapAvailable,
+          cachedIsPremium: isPremium,
+          checkingStatus,
+          docId: doc.id,
+        },
+      );
+      // ──────────────────────────────────────────────────────────────────
+      // Live entitlement re-check: the cached state can be stale (launch
+      // race, delayed RC sync). Ask RevenueCat directly before ever
+      // redirecting a paying user to the Premium screen.
+      const fresh = await refreshStatus();
+      // ── TEMP SHARE-DIAG (remove before App Store release) ─────────────
+      console.log("[ShareDiag] Live entitlement result", {
+        isPremium: fresh.isPremium,
+        plan: fresh.plan,
+        status: fresh.status,
+        productIdentifier: fresh.productIdentifier,
+      });
+      // ──────────────────────────────────────────────────────────────────
+      if (!fresh.isPremium) {
+        navigate("/premium");
+        return;
+      }
     }
     // fileData may not be hydrated from IndexedDB yet — load it on demand.
     const fileData = doc.fileData ?? (await loadFileData(doc.id));
+    // ── TEMP SHARE-DIAG (remove before App Store release) ─────────────
+    console.log("[ShareDiag] File loaded", {
+      docId: doc.id,
+      hadInMemory: Boolean(doc.fileData),
+      loadedFromStore: fileData !== doc.fileData && Boolean(fileData),
+      byteLength: fileData?.length ?? 0,
+      fileName: doc.fileName ?? null,
+      fileKind: doc.fileKind,
+    });
+    // ──────────────────────────────────────────────────────────────────
     if (!fileData) {
       toast.error("File not found", {
         description: "The document file is missing on this device and can't be shared.",
@@ -583,7 +619,7 @@ export default function ViewDocument() {
       fileData,
       fileName: doc.fileName ?? `${doc.name}`,
     });
-  }, [doc, iapAvailable, hasFeature, navigate]);
+  }, [doc, iapAvailable, hasFeature, navigate, isPremium, checkingStatus, refreshStatus]);
 
   /* ---- Not found ---- */
 

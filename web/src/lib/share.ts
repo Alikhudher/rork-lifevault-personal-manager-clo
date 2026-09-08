@@ -44,6 +44,23 @@ async function dataUrlToCacheFile(
       recursive: true,
     });
     const uri = await Filesystem.getUri({ path, directory: Directory.Cache });
+    // ── TEMP SHARE-DIAG (remove before App Store release) ─────────────
+    try {
+      const stat = await Filesystem.stat({ path, directory: Directory.Cache });
+      console.log("[ShareDiag] Cache file written & verified", {
+        path,
+        size: stat.size,
+        uri: uri.uri,
+        base64InputLength: base64.length,
+      });
+    } catch (statErr) {
+      console.warn("[ShareDiag] Cache file stat FAILED (file missing?)", {
+        path,
+        uri: uri.uri,
+        statErr,
+      });
+    }
+    // ──────────────────────────────────────────────────────────────────
     return uri.uri; // file:// URI
   } catch (err) {
     console.warn("dataUrlToCacheFile failed", err);
@@ -137,19 +154,37 @@ export async function shareDocument({
       // This is the only reliable way to attach a real binary file to the
       // native iOS/Android share sheet — blob: URLs are rejected.
       const fileUri = await dataUrlToCacheFile(fileData, resolvedName);
+      // ── TEMP SHARE-DIAG (remove before App Store release) ─────────────
+      console.log("[ShareDiag] Native share attempt", {
+        fileName: resolvedName,
+        cacheFilePrepared: Boolean(fileUri),
+        dataUrlLength: fileData.length,
+      });
+      // ──────────────────────────────────────────────────────────────────
       if (fileUri) {
         try {
-          await Share.share({
+          const result = await Share.share({
             title,
             text: text || undefined,
             dialogTitle: title,
             files: [fileUri],
           });
+          // ── TEMP SHARE-DIAG (remove before App Store release) ─────────
+          console.log("[ShareDiag] Share.share resolved", { result });
+          // ────────────────────────────────────────────────────────────
           // Clean up the temp file after sharing completes.
           const path = fileUri.split("/").pop() ?? "";
           if (path) void cleanupCacheFile(path);
           return;
         } catch (err) {
+          // ── TEMP SHARE-DIAG (remove before App Store release) ─────────
+          console.warn(
+            isCancellation(err)
+              ? "[ShareDiag] Share sheet dismissed by user"
+              : "[ShareDiag] Share.share FAILED",
+            err,
+          );
+          // ────────────────────────────────────────────────────────────
           const path = fileUri.split("/").pop() ?? "";
           if (path) void cleanupCacheFile(path);
           if (isCancellation(err)) return;

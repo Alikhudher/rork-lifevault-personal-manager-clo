@@ -493,7 +493,28 @@ workflows:
           #   disabled until the real price is shown.
           # - Notification settings: permission status, enable button and
           #   "Open Settings" path when permission was denied.
-          agvtool new-version -all 31
+          #
+          # Build 32 (v1.0.1) — fixes from real-iPhone testing of Build 31:
+          # - Notification sound: every scheduled notification now explicitly
+          #   uses the standard iOS notification sound (sound: "default").
+          #   Build 31 omitted the sound, and Capacitor's iOS plugin delivers
+          #   notifications SILENTLY (no sound, no vibration) when the sound
+          #   is not set — banners arrived but were silent. Permission
+          #   requests already include alerts, sounds and badges
+          #   ([.badge, .alert, .sound]). No Critical Alerts entitlement is
+          #   used. Regression-tested for appointments, documents and
+          #   subscriptions (all kinds share the same scheduling path).
+          # - Document share entitlement: tapping Share with an active
+          #   Premium entitlement now ALWAYS opens the native iOS share
+          #   sheet. When the cached premium state says non-premium, the
+          #   app re-checks the entitlement live with RevenueCat before
+          #   redirecting — a paying user can no longer be sent to the
+          #   Premium screen. Free accounts still go to the Premium screen.
+          # - Temporary diagnostic logging ([ShareDiag]) for entitlement
+          #   status, cache-file path/size verification, and the native
+          #   Share result, to diagnose any remaining device-specific
+          #   share failures. TO BE REMOVED before App Store review.
+          agvtool new-version -all 32
 
       - name: Apply iOS signing
         script: |

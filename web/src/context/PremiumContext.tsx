@@ -57,8 +57,9 @@ interface PremiumContextValue {
   restore: () => Promise<void>;
   /** Open the platform's subscription management page. */
   manageSubscription: () => Promise<void>;
-  /** Refresh subscription status from RevenueCat. */
-  refreshStatus: () => Promise<void>;
+  /** Refresh subscription status from RevenueCat. Returns the fresh state
+   *  so callers (e.g. the document Share gate) can act on it immediately. */
+  refreshStatus: () => Promise<PremiumState>;
   /** Reset premium state (used on logout). */
   resetPremium: () => void;
   /** Monotonically increasing counter bumped every time the RevenueCat
@@ -365,10 +366,11 @@ export function PremiumProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const refreshStatus = useCallback(async () => {
-    if (!isIAPAvailable()) return;
+  const refreshStatus = useCallback(async (): Promise<PremiumState> => {
+    if (!isIAPAvailable()) return DEFAULT_PREMIUM_STATE;
     const state = await checkSubscriptionStatus();
     setPremium(state);
+    return state;
   }, []);
 
   const manageSubscription = useCallback(async () => {

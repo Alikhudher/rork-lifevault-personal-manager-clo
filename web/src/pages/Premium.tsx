@@ -1,16 +1,16 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  Bell,
   CalendarDays,
   Check,
   Cloud,
   Crown,
-  Download,
   FileText,
   Loader2,
   Receipt,
   ScanLine,
+  Search,
   Settings,
+  Share2,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
@@ -49,14 +49,14 @@ const PERK_ICONS: Record<string, typeof Crown> = {
   ScanLine,
   Cloud,
   Sparkles,
-  Download,
+  Search,
 };
 
 const FREE_ICONS: Record<string, typeof Crown> = {
   FileText,
-  Bell,
-  Receipt,
   CalendarDays,
+  Share2,
+  Receipt,
   ScanLine,
   Cloud,
 };

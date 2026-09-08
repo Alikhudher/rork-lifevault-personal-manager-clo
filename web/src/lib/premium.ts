@@ -7,9 +7,9 @@
  * Free tier includes: document storage, basic reminders, expense
  * tracking, calendar, limited AI scans, and basic cloud backup.
  *
- * Premium adds: unlimited AI scans, unlimited cloud backup, AI
- * Assistant, document export (ZIP/PDF), advanced reminders &
- * automation, family sharing, and priority support.
+ * Premium adds: unlimited AI scans, unlimited cloud backup & sync, AI
+ * Assistant with advanced AI search across all documents, and advanced
+ * bulk tools (sharing/exporting more than 10 documents at once).
  *
  * Premium is unlocked ONLY when Apple/Google confirms a successful
  * purchase and RevenueCat's server-side receipt validation returns
@@ -25,19 +25,18 @@
 export type PremiumFeature =
   | "unlimitedScans"
   | "unlimitedCloudBackup"
-  | "aiAssistant"
-  | "exportData";
+  | "aiAssistant";
 
 /**
  * Feature-flag map. `true` = available to free users. `false` = Premium only.
  *
  * Free tier (always available, no flag needed):
- *   - Save & organise documents
- *   - Basic reminders
- *   - Expense tracking
- *   - Calendar
- *   - Basic AI scanning (up to FREE_TIER_LIMITS.monthlyAiScans per month)
- *   - Basic cloud backup (up to FREE_TIER_LIMITS.cloudBackupItems items)
+ *   - Save & organise unlimited documents
+ *   - Unlimited expenses, subscriptions, payments, bills & appointments
+ *   - Exact appointment reminders (date, hour, minute)
+ *   - Sharing individual documents (unlimited) + up to 10 together
+ *   - AI scanning (up to FREE_TIER_LIMITS.monthlyAiScans per month)
+ *   - Cloud backup (up to FREE_TIER_LIMITS.cloudBackupItems items)
  *
  * These flags control which features show an upgrade prompt for free
  * users. On native platforms with IAP configured, `hasFeature()` in
@@ -50,29 +49,24 @@ export const FREE_FEATURE_FLAGS: Record<PremiumFeature, boolean> = {
   unlimitedScans: false,
   unlimitedCloudBackup: false,
   aiAssistant: false,
-  exportData: false,
 };
 
 /**
  * Free-tier usage limits. Free users are subject to these limits;
  * Premium users have no limits.
  *
- * These are enforced via `usePremium().hasFeature()` and `isWithinFreeLimit()`
- * on AIAssistant (scans), BackupSync (cloud items), and ViewDocument (export).
+ * NOTE: document, expense, subscription, payment, bill and appointment
+ * management are UNLIMITED on the free plan — essential basics are
+ * never paywalled. Only AI scans, cloud backup and bulk (10+)
+ * document sharing are limited or premium.
  */
 export const FREE_TIER_LIMITS = {
   /** Maximum AI document scans per month for free users. */
   monthlyAiScans: 3,
   /** Maximum items in cloud backup for free users. */
   cloudBackupItems: 25,
-  /** Maximum documents a free user can store. */
-  maxDocuments: 10,
-  /** Maximum expenses a free user can track. */
-  maxExpenses: 20,
-  /** Maximum subscriptions a free user can track. */
-  maxSubscriptions: 5,
-  /** Maximum appointments a free user can create. */
-  maxAppointments: 10,
+  /** Maximum documents a free user can share in one bulk share. */
+  multiShareDocuments: 10,
 } as const;
 
 /** Plan identifiers — must match the product IDs configured in App Store Connect / Google Play. */
@@ -175,7 +169,7 @@ export const PREMIUM_PERKS: PremiumPerk[] = [
   {
     icon: "Cloud",
     title: "Unlimited cloud backup",
-    description: "Back up unlimited documents and sync across all your devices.",
+    description: "Back up unlimited items and sync across all your devices.",
   },
   {
     icon: "Sparkles",
@@ -183,9 +177,9 @@ export const PREMIUM_PERKS: PremiumPerk[] = [
     description: "Ask questions about your vault and get instant AI-powered answers.",
   },
   {
-    icon: "Download",
-    title: "Share & export documents",
-    description: "Share individual documents via the native share sheet or save them to your device.",
+    icon: "Search",
+    title: "Advanced AI search",
+    description: "Search and ask questions across every stored document at once.",
   },
 ];
 
@@ -203,31 +197,31 @@ export const FREE_FEATURES: FreeFeature[] = [
   {
     icon: "FileText",
     title: "Document storage",
-    description: `Save and organise up to ${FREE_TIER_LIMITS.maxDocuments} documents.`,
-  },
-  {
-    icon: "Bell",
-    title: "Basic reminders",
-    description: "Never miss a renewal or appointment deadline.",
-  },
-  {
-    icon: "Receipt",
-    title: "Expense tracking",
-    description: `Track up to ${FREE_TIER_LIMITS.maxExpenses} expenses and manage your budget.`,
+    description: "Save and organise unlimited documents — no cap.",
   },
   {
     icon: "CalendarDays",
-    title: "Calendar",
-    description: "View appointments and reminders in one place.",
+    title: "Appointment reminders",
+    description: "Exact reminders by date, hour and minute — completely free.",
+  },
+  {
+    icon: "Share2",
+    title: "Document sharing",
+    description: "Share any document via the native share sheet — plus up to 10 together.",
+  },
+  {
+    icon: "Receipt",
+    title: "Expenses, bills & subscriptions",
+    description: "Track unlimited expenses, payments, bills and subscriptions.",
   },
   {
     icon: "ScanLine",
-    title: "Basic AI scanning",
+    title: "AI scanning",
     description: `Up to ${FREE_TIER_LIMITS.monthlyAiScans} AI document scans per month.`,
   },
   {
     icon: "Cloud",
-    title: "Basic cloud backup",
+    title: "Cloud backup",
     description: `Back up up to ${FREE_TIER_LIMITS.cloudBackupItems} items to the cloud securely.`,
   },
 ];

@@ -21,8 +21,6 @@ import { ReminderDaysPicker } from "@/components/lifevault/ReminderPicker";
 import { SubStatusBadge } from "@/components/lifevault/StatusBadge";
 import { CategoryBubble, EXPENSE_META, PAYMENT_META } from "@/components/lifevault/category-meta";
 import { useApp } from "@/context/AppContext";
-import { usePremium } from "@/context/PremiumContext";
-import { FREE_TIER_LIMITS, isWithinFreeLimit } from "@/lib/premium";
 import {
   daysUntilLabel,
   formatCurrency,
@@ -66,7 +64,6 @@ function emptyForm(): SubFormState {
 
 export default function Subscriptions() {
   const { subscriptions, settings, addSubscription, updateSubscription, deleteSubscription } = useApp();
-  const { isPremium, iapAvailable } = usePremium();
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTab] = useState<"active" | "cancelled">("active");
   const [sheetOpen, setSheetOpen] = useState<boolean>(false);
@@ -124,13 +121,8 @@ export default function Subscriptions() {
       toast.error("Enter a valid price");
       return;
     }
-    // Free-tier limit: check before creating a NEW subscription (not on edit)
-    if (!editingId && iapAvailable && !isPremium && !isWithinFreeLimit("maxSubscriptions", subscriptions.length, isPremium)) {
-      toast.error(`Free plan allows up to ${FREE_TIER_LIMITS.maxSubscriptions} subscriptions.`, {
-        description: "Upgrade to Premium for unlimited subscription tracking.",
-      });
-      return;
-    }
+    // NOTE: subscription tracking is UNLIMITED on the free plan —
+    // essential basics are never paywalled.
     const payload = {
       name: form.name.trim(),
       price: Math.round(price * 100) / 100,

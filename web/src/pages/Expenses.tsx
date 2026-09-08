@@ -20,8 +20,6 @@ import { PageHeader, SectionTitle } from "@/components/lifevault/PageHeader";
 import { ChipPicker, Field, FormSheet } from "@/components/lifevault/FormSheet";
 import { CategoryBubble, EXPENSE_META, PAYMENT_META } from "@/components/lifevault/category-meta";
 import { useApp } from "@/context/AppContext";
-import { usePremium } from "@/context/PremiumContext";
-import { FREE_TIER_LIMITS, isWithinFreeLimit } from "@/lib/premium";
 import { useI18n } from "@/context/I18nContext";
 import { formatCurrency, formatTime12 } from "@/lib/format";
 import {
@@ -70,7 +68,6 @@ function emptyForm(): ExpenseFormState {
 
 export default function Expenses() {
   const { expenses, settings, addExpense, updateExpense, deleteExpense } = useApp();
-  const { isPremium, iapAvailable } = usePremium();
   const { t, fmtDate, relativeDay } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const [sheetOpen, setSheetOpen] = useState<boolean>(false);
@@ -147,13 +144,8 @@ export default function Expenses() {
       toast.error(t("expenses.pickDate"));
       return;
     }
-    // Free-tier limit: check before creating a NEW expense (not on edit)
-    if (!editingId && iapAvailable && !isPremium && !isWithinFreeLimit("maxExpenses", expenses.length, isPremium)) {
-      toast.error(`Free plan allows up to ${FREE_TIER_LIMITS.maxExpenses} expenses.`, {
-        description: "Upgrade to Premium for unlimited expense tracking.",
-      });
-      return;
-    }
+    // NOTE: expense tracking is UNLIMITED on the free plan — essential
+    // basics are never paywalled.
     const iso = new Date(`${form.date}T${form.time || "12:00"}`).toISOString();
     const payload = {
       amount: Math.round(amount * 100) / 100,

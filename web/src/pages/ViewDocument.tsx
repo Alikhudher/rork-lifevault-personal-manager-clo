@@ -34,7 +34,6 @@ import { ReminderDaysPicker } from "@/components/lifevault/ReminderPicker";
 import { DocStatusBadge } from "@/components/lifevault/StatusBadge";
 import { CategoryBubble, DOCUMENT_META } from "@/components/lifevault/category-meta";
 import { useApp } from "@/context/AppContext";
-import { usePremium } from "@/context/PremiumContext";
 import { daysUntilLabel, documentStatus, formatDate } from "@/lib/format";
 import {
   DOCUMENT_CATEGORIES,
@@ -496,8 +495,6 @@ export default function ViewDocument() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { documents, updateDocument, deleteDocument } = useApp();
-  const { hasFeature, iapAvailable, isPremium, checkingStatus, refreshStatus } =
-    usePremium();
 
   const doc = useMemo<VaultDocument | undefined>(
     () => documents.find((d) => d.id === id),
@@ -563,38 +560,9 @@ export default function ViewDocument() {
 
   const handleShare = useCallback(async () => {
     if (!doc) return;
-    // Sharing is a Premium feature — free users go straight to the upgrade
-    // screen (never a dead grey button). Premium status is reactive, so the
-    // button works immediately after subscribing or restoring.
-    if (iapAvailable && !hasFeature("exportData")) {
-      // ── TEMP SHARE-DIAG (remove before App Store release) ─────────────
-      console.log(
-        "[ShareDiag] Cached entitlement says not premium — re-checking RevenueCat live",
-        {
-          iapAvailable,
-          cachedIsPremium: isPremium,
-          checkingStatus,
-          docId: doc.id,
-        },
-      );
-      // ──────────────────────────────────────────────────────────────────
-      // Live entitlement re-check: the cached state can be stale (launch
-      // race, delayed RC sync). Ask RevenueCat directly before ever
-      // redirecting a paying user to the Premium screen.
-      const fresh = await refreshStatus();
-      // ── TEMP SHARE-DIAG (remove before App Store release) ─────────────
-      console.log("[ShareDiag] Live entitlement result", {
-        isPremium: fresh.isPremium,
-        plan: fresh.plan,
-        status: fresh.status,
-        productIdentifier: fresh.productIdentifier,
-      });
-      // ──────────────────────────────────────────────────────────────────
-      if (!fresh.isPremium) {
-        navigate("/premium");
-        return;
-      }
-    }
+    // Sharing is FREE and unlimited for every user (individual documents).
+    // This must NEVER redirect to the Premium screen — the native share
+    // sheet opens directly with the real file attached.
     // fileData may not be hydrated from IndexedDB yet — load it on demand.
     const fileData = doc.fileData ?? (await loadFileData(doc.id));
     // ── TEMP SHARE-DIAG (remove before App Store release) ─────────────
@@ -619,7 +587,7 @@ export default function ViewDocument() {
       fileData,
       fileName: doc.fileName ?? `${doc.name}`,
     });
-  }, [doc, iapAvailable, hasFeature, navigate, isPremium, checkingStatus, refreshStatus]);
+  }, [doc]);
 
   /* ---- Not found ---- */
 

@@ -514,7 +514,29 @@ workflows:
           #   status, cache-file path/size verification, and the native
           #   Share result, to diagnose any remaining device-specific
           #   share failures. TO BE REMOVED before App Store review.
-          agvtool new-version -all 32
+          #
+          # Build 33 (v1.0.1) — free plan restructure + free sharing:
+          # - Sharing is FREE and unlimited for individual documents: the
+          #   Share button opens the native iOS share sheet with the real
+          #   file attached for every user — it NEVER redirects to the
+          #   Premium screen, with or without a subscription.
+          # - NEW: multi-select bulk share in Documents — select and share
+          #   up to 10 documents together on the free plan; Premium has no
+          #   limit. Every real file is attached to a single share sheet
+          #   invocation (Messages, Mail, WhatsApp, AirDrop, Save to Files).
+          # - Free plan is genuinely useful: unlimited documents, expenses,
+          #   subscriptions, payments, bills and appointments (previous
+          #   10/20/5/10 caps removed — essential basics are never
+          #   paywalled). Premium stays focused on: unlimited AI scans
+          #   (free: 3/month), unlimited encrypted cloud backup + sync
+          #   (free: 25 items), AI Assistant, and advanced AI search
+          #   across all stored documents.
+          # - Premium screen updated: "Share & export documents" removed
+          #   from the perk list; "Advanced AI search" added; free list
+          #   now shows free sharing, free reminders, 3 scans/month and
+          #   25-item backup. Combined PDF/ZIP bulk export is NOT
+          #   advertised anywhere (not implemented yet).
+          agvtool new-version -all 33
 
       - name: Apply iOS signing
         script: |

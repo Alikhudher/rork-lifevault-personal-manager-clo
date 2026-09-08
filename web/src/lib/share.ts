@@ -124,6 +124,119 @@ export interface ShareDocumentOptions {
   fileName?: string | null;
 }
 
+/** One file to attach in a multi-document share. */
+export interface ShareFileItem {
+  /** File content as a data URL (base64). */
+  fileData: string;
+  /** Original file name including extension. */
+  fileName: string;
+}
+
+/**
+ * Share multiple documents at once — attaches every real file to a single
+ * native share sheet invocation (Messages, Mail, WhatsApp, AirDrop,
+ * Save to Files, etc.). Used by the Documents multi-select bulk share
+ * (up to 10 documents on the free plan, unlimited with Premium).
+ */
+export async function shareDocuments(
+  items: ShareFileItem[],
+  title: string,
+  text?: string,
+): Promise<void> {
+  if (items.length === 0) {
+    toast.error("Nothing to share", { description: "Select at least one document first." });
+    return;
+  }
+  if (items.length === 1) {
+    await shareDocument({
+      title,
+      text,
+      fileData: items[0]!.fileData,
+      fileName: items[0]!.fileName,
+    });
+    return;
+  }
+
+  // ---- Native (Capacitor): write every file to cache, share all URIs ----
+  if (isNative()) {
+    const written: Array<{ uri: string; path: string }> = [];
+    for (const item of items) {
+      const uri = await dataUrlToCacheFile(item.fileData, item.fileName);
+      if (uri) {
+        written.push({ uri, path: uri.split("/").pop() ?? "" });
+      }
+    }
+    // ── TEMP SHARE-DIAG (remove before App Store release) ─────────────
+    console.log("[ShareDiag] Bulk native share attempt", {
+      requested: items.length,
+      cacheFilesPrepared: written.length,
+    });
+    // ──────────────────────────────────────────────────────────────────
+    if (written.length === 0) {
+      toast.error("Could not prepare files for sharing", {
+        description: "Please try again or share documents individually.",
+      });
+      return;
+    }
+    try {
+      const result = await Share.share({
+        title,
+        text: text || undefined,
+        dialogTitle: title,
+        files: written.map((w) => w.uri),
+      });
+      // ── TEMP SHARE-DIAG (remove before App Store release) ─────────────
+      console.log("[ShareDiag] Bulk Share.share resolved", { result });
+      // ──────────────────────────────────────────────────────────────────
+    } catch (err) {
+      // ── TEMP SHARE-DIAG (remove before App Store release) ─────────────
+      console.warn(
+        isCancellation(err)
+          ? "[ShareDiag] Bulk share sheet dismissed by user"
+          : "[ShareDiag] Bulk Share.share FAILED",
+        err,
+      );
+      // ──────────────────────────────────────────────────────────────────
+      if (isCancellation(err)) return;
+      toast.error("Could not open share sheet", {
+        description: "Try sharing fewer documents at once.",
+      });
+      return;
+    } finally {
+      for (const w of written) {
+        if (w.path) void cleanupCacheFile(w.path);
+      }
+    }
+    return;
+  }
+
+  // ---- Web: Web Share API with multiple files, fallback to downloads ----
+  const files: File[] = [];
+  for (const item of items) {
+    const file = await dataUrlToFile(item.fileData, item.fileName);
+    if (file) files.push(file);
+  }
+  if (
+    files.length === items.length &&
+    typeof navigator !== "undefined" &&
+    navigator.canShare &&
+    navigator.canShare({ files })
+  ) {
+    try {
+      await navigator.share({ files, title, text: text || undefined });
+      return;
+    } catch (err) {
+      if (isCancellation(err)) return;
+    }
+  }
+  for (const item of items) {
+    downloadDataUrl(item.fileData, item.fileName);
+  }
+  toast.info(`${items.length} files downloaded`, {
+    description: "Multi-file sharing isn't available in this browser — the files were downloaded instead.",
+  });
+}
+
 /**
  * Share a document. If `fileData` is provided, shares the actual file
  * (image/PDF/etc.) via the native share sheet. Otherwise shares the

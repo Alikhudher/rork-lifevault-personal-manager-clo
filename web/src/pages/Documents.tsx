@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { CloudUpload, FileImage, FileText, FolderOpen, Plus, Search, Trash2 } from "lucide-react";
+import { CloudUpload, CheckCircle2, Circle, FileImage, FileText, FolderOpen, Loader2, Plus, Search, Share2, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,7 +22,9 @@ import { DocStatusBadge } from "@/components/lifevault/StatusBadge";
 import { CategoryBubble, DOCUMENT_META } from "@/components/lifevault/category-meta";
 import { useApp } from "@/context/AppContext";
 import { usePremium } from "@/context/PremiumContext";
-import { FREE_TIER_LIMITS, isWithinFreeLimit } from "@/lib/premium";
+import { FREE_TIER_LIMITS } from "@/lib/premium";
+import { loadFileData } from "@/lib/file-store";
+import { shareDocuments, type ShareFileItem } from "@/lib/share";
 import { daysUntil, daysUntilLabel, documentStatus, formatDate } from "@/lib/format";
 import {
   DOCUMENT_CATEGORIES,
@@ -96,6 +98,16 @@ export default function Documents() {
   const [form, setForm] = useState<DocFormState>(EMPTY_FORM);
   const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Multi-select share mode — free users can share up to 10 documents
+  // together; Premium users have no limit.
+  const [selectMode, setSelectMode] = useState<boolean>(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [sharing, setSharing] = useState<boolean>(false);
+
+  // On web (no IAP) everything is free — the 10-doc bulk-share cap only
+  // applies to native free users.
+  const bulkShareLimit: number | null =
+    iapAvailable && !isPremium ? FREE_TIER_LIMITS.multiShareDocuments : null;
 
   useEffect(() => {
     if (searchParams.get("add") === "1") {
@@ -155,13 +167,8 @@ export default function Documents() {
       toast.error("Enter a document name");
       return;
     }
-    // Free-tier limit: check before creating a NEW document (not on edit)
-    if (!editingId && iapAvailable && !isPremium && !isWithinFreeLimit("maxDocuments", documents.length, isPremium)) {
-      toast.error(`Free plan allows up to ${FREE_TIER_LIMITS.maxDocuments} documents.`, {
-        description: "Upgrade to Premium for unlimited document storage.",
-      });
-      return;
-    }
+    // NOTE: document storage is UNLIMITED on the free plan — essential
+    // basics are never paywalled.
     const payload = {
       name: form.name.trim(),
       category: form.category,
@@ -191,17 +198,134 @@ export default function Documents() {
     toast.success("Document deleted");
   };
 
+  /* ---- Multi-select bulk share (up to 10 free, unlimited with Premium) ---- */
+
+  const toggleSelectMode = () => {
+    setSelectMode((v) => !v);
+    setSelected(new Set());
+  };
+
+  const toggleSelected = (docId: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(docId)) {
+        next.delete(docId);
+        return next;
+      }
+      if (bulkShareLimit !== null && next.size >= bulkShareLimit) {
+        toast.error(
+          `Free sharing supports up to ${bulkShareLimit} documents at once.`,
+          {
+            description:
+              "Upgrade to Premium for advanced bulk export of more documents.",
+          },
+        );
+        return prev;
+      }
+      next.add(docId);
+      return next;
+    });
+  };
+
+  const handleBulkShare = async () => {
+    if (selected.size === 0) {
+      toast.error("Select at least one document");
+      return;
+    }
+    setSharing(true);
+    try {
+      const items: ShareFileItem[] = [];
+      let missing = 0;
+      // Iterate in vault order so the share attachments are deterministic.
+      for (const doc of documents) {
+        if (!selected.has(doc.id)) continue;
+        // fileData may not be hydrated from IndexedDB yet — load on demand.
+        const fileData = doc.fileData ?? (await loadFileData(doc.id));
+        if (!fileData) {
+          missing += 1;
+          continue;
+        }
+        items.push({ fileData, fileName: doc.fileName ?? `${doc.name}` });
+      }
+      if (missing > 0) {
+        toast.info(
+          `${missing} document${missing === 1 ? "" : "s"} skipped`,
+          { description: "They have no attached file to share." },
+        );
+      }
+      if (items.length === 0) {
+        toast.error("No shareable files", {
+          description: "The selected documents have no attached files.",
+        });
+        return;
+      }
+      await shareDocuments(
+        items,
+        "LifeVault documents",
+        `${items.length} document${items.length === 1 ? "" : "s"} shared from LifeVault.`,
+      );
+      setSelectMode(false);
+      setSelected(new Set());
+    } finally {
+      setSharing(false);
+    }
+  };
+
   return (
     <div className="animate-fade-in">
       <PageHeader
         title="Documents"
         subtitle={`${documents.length} stored securely`}
         actions={
-          <Button size="icon" onClick={openAdd} aria-label="Add document" className="h-10 w-10 rounded-full shadow-md shadow-primary/20">
-            <Plus className="h-5 w-5" />
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={toggleSelectMode}
+              aria-label={selectMode ? "Exit selection" : "Select documents to share"}
+              className="h-10 rounded-full px-4 text-[13px] font-bold"
+            >
+              {selectMode ? (
+                <X className="h-4 w-4" />
+              ) : (
+                <Share2 className="h-4 w-4" />
+              )}
+              {selectMode ? "Cancel" : "Share"}
+            </Button>
+            <Button size="icon" onClick={openAdd} aria-label="Add document" className="h-10 w-10 rounded-full shadow-md shadow-primary/20">
+              <Plus className="h-5 w-5" />
+            </Button>
+          </div>
         }
       />
+
+      {/* Bulk-share selection bar */}
+      {selectMode && (
+        <div className="px-4 pt-4">
+          <div className="flex items-center gap-2.5 rounded-2xl bg-card p-3 shadow-sm ring-1 ring-border">
+            <p className="min-w-0 flex-1 text-[13px] font-bold">
+              {selected.size} selected
+              {bulkShareLimit !== null && (
+                <span className="ml-1.5 font-medium text-muted-foreground">
+                  · up to {bulkShareLimit} on free
+                </span>
+              )}
+            </p>
+            <Button
+              variant="outline"
+              onClick={handleBulkShare}
+              disabled={sharing || selected.size === 0}
+              className="h-10 rounded-xl px-4 text-[13px] font-bold"
+            >
+              {sharing ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <Share2 className="mr-1.5 h-4 w-4" />
+              )}
+              Share
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Search */}
       <div className="px-4 pt-4">
@@ -266,12 +390,27 @@ export default function Documents() {
         ) : (
           filtered.map((doc) => {
             const docStatus = documentStatus(doc);
+            const isSelected = selected.has(doc.id);
             return (
               <button
                 key={doc.id}
-                onClick={() => navigate(`/documents/${doc.id}`)}
-                className="flex w-full items-center gap-3 rounded-2xl bg-card p-3.5 text-left shadow-sm ring-1 ring-border transition-transform active:scale-[0.99]"
+                onClick={() => (selectMode ? toggleSelected(doc.id) : navigate(`/documents/${doc.id}`))}
+                aria-label={
+                  selectMode
+                    ? `${isSelected ? "Deselect" : "Select"} ${doc.name}`
+                    : `Open ${doc.name}`
+                }
+                className={cn(
+                  "flex w-full items-center gap-3 rounded-2xl bg-card p-3.5 text-left shadow-sm ring-1 ring-border transition-transform active:scale-[0.99]",
+                  selectMode && isSelected && "ring-2 ring-primary",
+                )}
               >
+                {selectMode &&
+                  (isSelected ? (
+                    <CheckCircle2 className="h-5 w-5 shrink-0 text-primary" strokeWidth={2.4} />
+                  ) : (
+                    <Circle className="h-5 w-5 shrink-0 text-muted-foreground/40" />
+                  ))}
                 <CategoryBubble meta={DOCUMENT_META[doc.category]} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
